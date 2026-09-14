@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 
 TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = str(os.environ["TELEGRAM_CHAT_ID"])
-
 BASE = "https://api.exchange.coinbase.com"
 TRACKER = "tracker.json"
 
@@ -36,72 +35,74 @@ def api(url, params=None):
     return r.json()
 
 
-def send(text):
-    url = "https://api.telegram.org/bot" + TOKEN + "/sendMessage"
-    r = requests.post(
-        url,
-        data={
-            "chat_id": CHAT_ID,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True
-        },
-        timeout=20
-    )
+def tg(method, data=None):
+    url = "https://api.telegram.org/bot" + TOKEN + "/" + method
+    r = requests.post(url, data=data or {}, timeout=20)
     r.raise_for_status()
+    result = r.json()
+    if not result.get("ok"):
+        raise RuntimeError(str(result))
+    return result["result"]
 
 
-def load_tracker():
+def send(text):
+    for i in range(0, len(text), 3900):
+        tg("sendMessage", {
+            "chat_id": CHAT_ID,
+            "text": text[i:i + 3900],
+            "parse_mode": "HTML",
+            "disable_web_page_preview": "true"
+        })
+
+
+def load():
     if not os.path.exists(TRACKER):
         return {"signals": [], "offset": 0}
-
     try:
         with open(TRACKER, encoding="utf-8") as f:
-            data = json.load(f)
-
-        data.setdefault("signals", [])
-        data.setdefault("offset", 0)
-        return data
+            x = json.load(f)
+        if not isinstance(x, dict):
+            raise ValueError()
+        x.setdefault("signals", [])
+        x.setdefault("offset", 0)
+        return x
     except Exception:
         return {"signals": [], "offset": 0}
 
 
-def save_tracker(data):
+def save(data):
     with open(TRACKER, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
 
-def ema(values, period):
-    if len(values) < period:
+def ema(v, p):
+    if len(v) < p:
         raise ValueError("not enough EMA data")
-
-    value = sum(values[:period]) / period
-    k = 2 / (period + 1)
-
-    for price in values[period:]:
-        value = price * k + value * (1 - k)
-
-    return value
+    x = sum(v[:p]) / p
+    k = 2 / (p + 1)
+    for n in v[p:]:
+        x = n * k + x * (1 - k)
+    return x
 
 
-def rsi(values, period=14):
-    if len(values) < period + 1:
+def rsi(v, p=14):
+    if len(v) < p + 1:
         raise ValueError("not enough RSI data")
 
     gains = []
     losses = []
 
-    for i in range(1, len(values)):
-        change = values[i] - values[i - 1]
-        gains.append(max(change, 0))
-        losses.append(max(-change, 0))
+    for i in range(1, len(v)):
+        d = v[i] - v[i - 1]
+        gains.append(max(d, 0))
+        losses.append(max(-d, 0))
 
-    gain = sum(gains[:period]) / period
-    loss = sum(losses[:period]) / period
+    gain = sum(gains[:p]) / p
+    loss = sum(losses[:p]) / p
 
-    for i in range(period, len(gains)):
-        gain = (gain * (period - 1) + gains[i]) / period
-        loss = (loss * (period - 1) + losses[i]) / period
+    for i in range(p, len(gains)):
+        gain = (gain * (p - 1) + gains[i]) / p
+        loss = (loss * (p - 1) + losses[i]) / p
 
     if loss == 0:
         return 100.0
@@ -109,16 +110,16 @@ def rsi(values, period=14):
     return 100 - 100 / (1 + gain / loss)
 
 
-def macd(values):
-    if len(values) < 60:
+def macd(v):
+    if len(v) < 60:
         raise ValueError("not enough MACD data")
 
     lines = []
 
-    for i in range(26, len(values) + 1):
-        fast = ema(values[:i], 12)
-        slow = ema(values[:i], 26)
-        lines.append(fast - slow)
+    for i in range(26, len(v) + 1):
+        lines.append(
+            ema(v[:i], 12) - ema(v[:i], 26)
+        )
 
     line = lines[-1]
     signal = ema(lines, 9)
@@ -126,26 +127,25 @@ def macd(values):
     return line, signal, line - signal
 
 
-def get_closes(product, seconds):
-    url = BASE + "/products/" + product + "/candles"
-    data = api(url, {"granularity": seconds})
+def candles(product, seconds):
+    data = api(
+        BASE + "/products/" + product + "/candles",
+        {"granularity": seconds}
+    )
 
     if not isinstance(data, list) or len(data) < 61:
-        raise ValueError("insufficient candle data")
+        raise ValueError("insufficient candles")
 
     data.sort(key=lambda x: x[0])
+    values = [float(x[4]) for x in data]
 
-    closes = [float(x[4]) for x in data]
-
-    # Ignore newest candle because it may still be forming.
-    closes = closes[:-1]
-
-    return closes[-200:]
+    # Ignore newest candle.
+    return values[:-1][-200:]
 
 
-def get_markets():
+def markets():
     data = api(BASE + "/products")
-    markets = {}
+    found = {}
 
     for item in data:
         if item.get("status") != "online":
@@ -154,125 +154,132 @@ def get_markets():
         base = item.get("base_currency")
         quote = item.get("quote_currency")
 
-        if base not in ASSETS:
-            continue
+        if base in ASSETS and quote in ("USD", "USDC"):
+            if base not in found:
+                found[base] = item["id"]
 
-        if quote not in ("USD", "USDC"):
-            continue
-
-        if base not in markets:
-            markets[base] = item["id"]
-
-    return markets
+    return found
 
 
 def analyze(symbol, product):
-    m5 = get_closes(product, 300)
-    m1 = get_closes(product, 60)
+    m5 = candles(product, 300)
+    m1 = candles(product, 60)
 
-    price5 = m5[-1]
-    price1 = m1[-1]
+    p5 = m5[-1]
+    p1 = m1[-1]
 
-    ema20 = ema(m5, 20)
-    ema50 = ema(m5, 50)
-    old_ema20 = ema(m5[:-3], 20)
-    rsi5 = rsi(m5)
-    _, _, macd5 = macd(m5)
+    e20 = ema(m5, 20)
+    e50 = ema(m5, 50)
+    old20 = ema(m5[:-3], 20)
 
-    ema9 = ema(m1, 9)
-    ema21 = ema(m1, 21)
-    rsi1 = rsi(m1)
-    _, _, macd1 = macd(m1)
+    r5 = rsi(m5)
+    _, _, h5 = macd(m5)
+
+    e9 = ema(m1, 9)
+    e21 = ema(m1, 21)
+    r1 = rsi(m1)
+    _, _, h1 = macd(m1)
 
     bull = 0
     bear = 0
 
-    if price5 > ema20:
+    # 5M price vs EMA20: 2 points.
+    if p5 > e20:
         bull += 2
-    elif price5 < ema20:
+    elif p5 < e20:
         bear += 2
 
-    if ema20 > ema50:
+    # 5M EMA20 vs EMA50: 2 points.
+    if e20 > e50:
         bull += 2
-    elif ema20 < ema50:
+    elif e20 < e50:
         bear += 2
 
-    if ema20 > old_ema20:
+    # 5M EMA20 slope: 1 point.
+    if e20 > old20:
         bull += 1
-    elif ema20 < old_ema20:
+    elif e20 < old20:
         bear += 1
 
-    if 50 <= rsi5 < 70:
+    # 5M RSI: 1 point.
+    if 50 <= r5 < 70:
         bull += 1
-    elif 30 < rsi5 < 50:
+    elif 30 < r5 < 50:
         bear += 1
 
-    if macd5 > 0:
+    # 5M MACD: 1 point.
+    if h5 > 0:
         bull += 1
-    elif macd5 < 0:
+    elif h5 < 0:
         bear += 1
 
-    if ema9 > ema21:
+    # 1M price vs EMA9: 1 point.
+    if p1 > e9:
         bull += 1
-    elif ema9 < ema21:
+    elif p1 < e9:
         bear += 1
 
-    if macd1 > 0:
+    # 1M EMA9 vs EMA21: 1 point.
+    if e9 > e21:
         bull += 1
-    elif macd1 < 0:
+    elif e9 < e21:
         bear += 1
 
-    if 50 <= rsi1 < 70:
+    # 1M MACD: 1 point.
+    if h1 > 0:
         bull += 1
-    elif 30 < rsi1 < 50:
+    elif h1 < 0:
         bear += 1
 
-    if price1 > m1[-2]:
+    # 1M momentum: 1 point.
+    if p1 > m1[-2]:
         bull += 1
-    elif price1 < m1[-2]:
+    elif p1 < m1[-2]:
         bear += 1
 
     signal = "NO TRADE"
     score = max(bull, bear)
 
-    call_ok = (
+    call = (
         bull >= 10
         and bull > bear
-        and price5 > ema20
-        and ema20 > ema50
-        and ema20 > old_ema20
-        and price1 > ema9
-        and ema9 > ema21
-        and rsi5 < 70
-        and rsi1 < 70
-        and macd5 > 0
-        and macd1 > 0
+        and p5 > e20
+        and e20 > e50
+        and e20 > old20
+        and h5 > 0
+        and p1 > e9
+        and e9 > e21
+        and h1 > 0
+        and p1 > m1[-2]
+        and r5 < 70
+        and r1 < 70
     )
 
-    put_ok = (
+    put = (
         bear >= 10
         and bear > bull
-        and price5 < ema20
-        and ema20 < ema50
-        and ema20 < old_ema20
-        and price1 < ema9
-        and ema9 < ema21
-        and rsi5 > 30
-        and rsi1 > 30
-        and macd5 < 0
-        and macd1 < 0
+        and p5 < e20
+        and e20 < e50
+        and e20 < old20
+        and h5 < 0
+        and p1 < e9
+        and e9 < e21
+        and h1 < 0
+        and p1 < m1[-2]
+        and r5 > 30
+        and r1 > 30
     )
 
-    if call_ok:
+    if call:
         signal = "CALL"
-    elif put_ok:
+    elif put:
         signal = "PUT"
 
     return {
         "symbol": symbol,
-        "price": price5,
-        "rsi5": rsi5,
-        "rsi1": rsi1,
+        "price": p5,
+        "rsi5": r5,
+        "rsi1": r1,
         "score": score,
         "signal": signal
     }
@@ -283,117 +290,149 @@ def winrate(items):
         return 0.0
 
     wins = 0
-
-    for item in items:
-        if item["result"] == "WIN":
+    for x in items:
+        if x["result"] == "WIN":
             wins += 1
 
     return wins * 100 / len(items)
 
 
-def process_updates(data):
+def help_text():
+    return (
+        "🤖 <b>PRECISION SCANNER V2</b>\n\n"
+        "Commands:\n"
+        "/start - show help\n"
+        "/win SIGNAL-ID - record WIN\n"
+        "/loss SIGNAL-ID - record LOSS\n"
+        "/stats - performance report\n\n"
+        "Example:\n"
+        "<code>/win LTC-131117</code>\n"
+        "<code>/loss SOL-131117</code>\n\n"
+        "⚠️ DEMO ONLY.\n"
+        "Coinbase is a proxy for Pocket Option OTC."
+    )
+
+
+def process_commands(data):
+    print("Checking Telegram commands...")
+
     try:
-        url = "https://api.telegram.org/bot" + TOKEN + "/getUpdates"
-        result = api(
-            url,
-            {
-                "offset": data["offset"] + 1,
-                "timeout": 2
-            }
-        )
-    except Exception as error:
-        print("Telegram update error:", error)
+        updates = tg("getUpdates", {
+            "offset": data["offset"] + 1,
+            "limit": 100,
+            "timeout": 1
+        })
+    except Exception as e:
+        print("Telegram command error:", e)
         return
 
-    for update in result.get("result", []):
+    changed = False
+
+    for update in updates:
         data["offset"] = update["update_id"]
 
-        message = update.get("message", {})
-        chat = message.get("chat", {})
-        chat_id = str(chat.get("id", ""))
+        msg = update.get("message", {})
+        chat = msg.get("chat", {})
 
-        if chat_id != CHAT_ID:
+        if str(chat.get("id", "")) != CHAT_ID:
             continue
 
-        text = str(message.get("text", "")).strip()
+        text = str(msg.get("text", "")).strip()
         parts = text.split()
 
-        if len(parts) == 1 and parts[0].lower() == "/stats":
+        if not parts:
+            continue
+
+        command = parts[0].split("@")[0].lower()
+
+        if command == "/start" and len(parts) == 1:
+            send(help_text())
+            continue
+
+        if command == "/stats" and len(parts) == 1:
             send(stats(data))
             continue
 
-        if len(parts) != 2:
-            continue
+        if command in ("/win", "/loss"):
+            if len(parts) != 2:
+                send(
+                    "⚠️ <b>Invalid command.</b>\n"
+                    "Use <code>" + command +
+                    " SIGNAL-ID</code>"
+                )
+                continue
 
-        command = parts[0].lower()
+            wanted = parts[1]
+            found = None
 
-        if command not in ("/win", "/loss"):
-            continue
+            for item in data["signals"]:
+                if item["id"] == wanted:
+                    found = item
+                    break
 
-        signal_id = parts[1]
-        result_value = "WIN" if command == "/win" else "LOSS"
-        found = None
+            if found is None:
+                send(
+                    "❌ Signal not found: <code>" +
+                    html.escape(wanted) + "</code>"
+                )
+                continue
 
-        for signal in data["signals"]:
-            if signal["id"] == signal_id:
-                found = signal
-                break
+            if found["result"] != "PENDING":
+                send(
+                    "⚠️ <code>" +
+                    html.escape(wanted) +
+                    "</code> is already <b>" +
+                    html.escape(found["result"]) +
+                    "</b>."
+                )
+                continue
 
-        if found is None:
+            value = "WIN" if command == "/win" else "LOSS"
+
+            found["result"] = value
+            found["result_time"] = (
+                datetime.now(timezone.utc).isoformat()
+            )
+
+            changed = True
+
             send(
-                "⚠️ Signal not found: <code>"
-                + html.escape(signal_id)
-                + "</code>"
+                "✅ <b>RESULT RECORDED</b>\n"
+                "Signal: <code>" +
+                html.escape(wanted) +
+                "</code>\n"
+                "Result: <b>" + value + "</b>"
             )
             continue
 
-        if found["result"] != "PENDING":
+        if command.startswith("/"):
             send(
-                "<code>"
-                + html.escape(signal_id)
-                + "</code> is already <b>"
-                + html.escape(found["result"])
-                + "</b>."
+                "❓ Unknown command.\n\n" +
+                help_text()
             )
-            continue
 
-        found["result"] = result_value
-        found["result_time"] = datetime.now(
-            timezone.utc
-        ).isoformat()
-
-        send(
-            "✅ <b>RESULT RECORDED</b>\n"
-            "Signal: <code>"
-            + html.escape(signal_id)
-            + "</code>\n"
-            "Result: <b>"
-            + result_value
-            + "</b>"
-        )
+    if changed:
+        save(data)
 
 
 def stats(data):
     done = []
+    pending = 0
 
-    for signal in data["signals"]:
-        if signal["result"] in ("WIN", "LOSS"):
-            done.append(signal)
+    for x in data["signals"]:
+        if x["result"] in ("WIN", "LOSS"):
+            done.append(x)
+        elif x["result"] == "PENDING":
+            pending += 1
 
     wins = sum(x["result"] == "WIN" for x in done)
     losses = len(done) - wins
-
-    pending = 0
-
-    for signal in data["signals"]:
-        if signal["result"] == "PENDING":
-            pending += 1
 
     lines = [
         "📊 <b>PRECISION SCANNER V2</b>",
         "",
         "<b>NEW V2 TRACKER</b>",
-        "Signals: " + str(len(done)),
+        "Total: " + str(len(done)),
         "Wins: " + str(wins),
         "Losses: " + str(losses),
         "Win rate: %.1f%%" % winrate(done),
@@ -404,20 +443,18 @@ def stats(data):
     for side in ("CALL", "PUT"):
         group = []
 
-        for signal in done:
-            if signal["signal"] == side:
-                group.append(signal)
+        for x in done:
+            if x["signal"] == side:
+                group.append(x)
 
         sw = sum(x["result"] == "WIN" for x in group)
-        sl = sum(x["result"] == "LOSS" for x in group)
+        sl = len(group) - sw
 
-        lines.append("<b>" + side + "</b>")
         lines.append(
-            str(sw)
-            + "W / "
-            + str(sl)
-            + "L = "
-            + "%.1f%%" % winrate(group)
+            side + ": " +
+            str(sw) + "W / " +
+            str(sl) + "L = " +
+            "%.1f%%" % winrate(group)
         )
 
     lines += ["", "<b>SCORE PERFORMANCE</b>"]
@@ -425,122 +462,115 @@ def stats(data):
     for score in (11, 10, 9, 8):
         group = []
 
-        for signal in done:
-            if signal["score"] == score:
-                group.append(signal)
+        for x in done:
+            if x["score"] == score:
+                group.append(x)
 
         if group:
-            text = "%.1f%% (%d)" % (
-                winrate(group),
-                len(group)
+            lines.append(
+                str(score) + "/11 → " +
+                "%.1f%% (%d)" %
+                (winrate(group), len(group))
             )
         else:
-            text = "no data"
-
-        lines.append(
-            str(score) + "/11 → " + text
-        )
+            lines.append(
+                str(score) + "/11 → no data"
+            )
 
     asset_groups = {}
 
-    for signal in done:
-        name = signal["symbol"]
+    for x in done:
+        name = x["symbol"]
 
         if name not in asset_groups:
             asset_groups[name] = []
 
-        asset_groups[name].append(signal)
+        asset_groups[name].append(x)
 
-    eligible = []
+    assets = []
 
     for name in asset_groups:
         if len(asset_groups[name]) >= 3:
-            eligible.append(
+            assets.append(
                 (name, asset_groups[name])
             )
 
     lines += ["", "<b>ASSET PERFORMANCE</b>"]
 
-    if eligible:
-        eligible.sort(
-            key=lambda item: winrate(item[1]),
+    if assets:
+        assets.sort(
+            key=lambda x: winrate(x[1]),
             reverse=True
         )
 
-        for name, group in eligible:
+        for name, group in assets:
             lines.append(
-                name
-                + " OTC → "
-                + "%.1f%% (%d)" % (
-                    winrate(group),
-                    len(group)
-                )
+                name + " OTC → " +
+                "%.1f%% (%d)" %
+                (winrate(group), len(group))
             )
 
         lines.append(
-            "Best asset: <b>"
-            + eligible[0][0]
-            + " OTC</b>"
+            "Best asset: <b>" +
+            assets[0][0] +
+            " OTC</b>"
         )
 
         lines.append(
-            "Worst asset: <b>"
-            + eligible[-1][0]
-            + " OTC</b>"
+            "Worst asset: <b>" +
+            assets[-1][0] +
+            " OTC</b>"
         )
     else:
         lines.append(
             "Need 3 completed trades per asset."
         )
 
-    hour_groups = {}
+    hours = {}
 
-    for signal in done:
+    for x in done:
         try:
             hour = datetime.fromisoformat(
-                signal["time"]
+                x["time"]
             ).hour
 
-            if hour not in hour_groups:
-                hour_groups[hour] = []
+            if hour not in hours:
+                hours[hour] = []
 
-            hour_groups[hour].append(signal)
+            hours[hour].append(x)
         except Exception:
             pass
 
-    hours = []
+    good_hours = []
 
-    for hour in hour_groups:
-        if len(hour_groups[hour]) >= 3:
-            hours.append(
-                (hour, hour_groups[hour])
+    for hour in hours:
+        if len(hours[hour]) >= 3:
+            good_hours.append(
+                (hour, hours[hour])
             )
 
     lines += ["", "<b>TIME PERFORMANCE</b>"]
 
-    if hours:
-        hours.sort(
-            key=lambda item: winrate(item[1]),
+    if good_hours:
+        good_hours.sort(
+            key=lambda x: winrate(x[1]),
             reverse=True
         )
 
-        for hour, group in hours:
+        for hour, group in good_hours:
             lines.append(
-                "%02d:00 UTC → %.1f%% (%d)" % (
-                    hour,
-                    winrate(group),
-                    len(group)
-                )
+                "%02d:00 UTC → %.1f%% (%d)" %
+                (hour, winrate(group), len(group))
             )
 
         lines.append(
-            "Best period: <b>%02d:00 UTC</b>"
-            % hours[0][0]
+            "Best period: <b>%02d:00 UTC</b>" %
+            good_hours[0][0]
         )
 
         lines.append(
-            "Worst period: <b>%02d:00 UTC</b>"
-            % hours[-1][0]
+            "Worst period: <b>%02d:00 UTC</b>" %
+            good_hours[-1][0]
         )
     else:
         lines.append(
@@ -557,22 +587,22 @@ def stats(data):
         "58W / 42L = 58%",
         "CALL: 31W / 19L = 62%",
         "PUT: 27W / 23L = 54%",
-        "8/11: 48%",
-        "9/11: 55%",
-        "10/11: 63%",
-        "11/11: 68%",
+        "8/11 = 48%",
+        "9/11 = 55%",
+        "10/11 = 63%",
+        "11/11 = 68%",
         "Best asset: LINK OTC",
         "Worst asset: ETH OTC",
         "",
         "<b>COMBINED EXPERIMENT</b>",
-        "Signals: " + str(combined_total),
+        "Total: " + str(combined_total),
         "Wins: " + str(combined_wins),
         "Losses: " + str(combined_losses),
-        "Win rate: %.1f%%"
-        % (combined_wins * 100 / combined_total),
+        "Win rate: %.1f%%" %
+        (combined_wins * 100 / combined_total),
         "",
-        "⚠️ Demo only.",
-        "Coinbase is a proxy for Pocket Option OTC."
+        "⚠️ DEMO ONLY.",
+        "No guaranteed results."
     ]
 
     return "\n".join(lines)
@@ -584,9 +614,8 @@ def build_report(results, errors, data):
     lines = [
         "🧠 <b>PRECISION SCANNER V2</b>",
         "",
-        "Scan: " + now.strftime(
-            "%Y-%m-%d %H:%M:%S UTC"
-        ),
+        "Scan: " +
+        now.strftime("%Y-%m-%d %H:%M:%S UTC"),
         "Data source: Coinbase proxy",
         "Primary timeframe: 5M",
         "Confirmation timeframe: 1M",
@@ -597,37 +626,32 @@ def build_report(results, errors, data):
 
     trades = []
 
-    for result in results:
-        if result["signal"] != "NO TRADE":
-            trades.append(result)
+    for x in results:
+        if x["signal"] != "NO TRADE":
+            trades.append(x)
+
+    existing = set()
+
+    for x in data["signals"]:
+        existing.add(x["id"])
 
     if not trades:
         lines += [
             "⚪ <b>NO QUALIFIED SIGNALS</b>",
-            "",
-            "No setup currently meets the V2 rules."
+            "No setup meets all V2 rules."
         ]
     else:
-        lines += [
-            "🔥 <b>QUALIFIED SIGNALS</b>",
-            ""
-        ]
-
         trades.sort(
-            key=lambda item: item["score"],
+            key=lambda x: x["score"],
             reverse=True
         )
 
-        existing = set()
+        number = 0
 
-        for signal in data["signals"]:
-            existing.add(signal["id"])
-
-        for number, result in enumerate(trades, 1):
+        for x in trades:
             signal_id = (
-                result["symbol"]
-                + "-"
-                + now.strftime("%H%M%S")
+                x["symbol"] + "-" +
+                now.strftime("%H%M%S")
             )
 
             if signal_id in existing:
@@ -635,41 +659,37 @@ def build_report(results, errors, data):
 
             data["signals"].append({
                 "id": signal_id,
-                "symbol": result["symbol"],
-                "signal": result["signal"],
-                "score": result["score"],
+                "symbol": x["symbol"],
+                "signal": x["signal"],
+                "score": x["score"],
                 "time": now.isoformat(),
-                "price": result["price"],
+                "price": x["price"],
                 "result": "PENDING",
                 "result_time": None
             })
 
             existing.add(signal_id)
+            number += 1
 
             lines += [
-                "<b>#"
-                + str(number)
-                + " "
-                + result["symbol"]
-                + " OTC</b>",
-                "🎯 <b>"
-                + result["signal"]
-                + "</b>",
-                "Strength: <b>"
-                + str(result["score"])
-                + "/11</b>",
-                "Price: %.6f" % result["price"],
-                "5M RSI: %.1f" % result["rsi5"],
-                "1M RSI: %.1f" % result["rsi1"],
-                "Signal ID: <code>"
-                + signal_id
-                + "</code>",
+                "<b>#" + str(number) +
+                " " + x["symbol"] + " OTC</b>",
+                "🎯 <b>" + x["signal"] + "</b>",
+                "Strength: <b>" +
+                str(x["score"]) + "/11</b>",
+                "Price: %.6f" % x["price"],
+                "5M RSI: %.1f" % x["rsi5"],
+                "1M RSI: %.1f" % x["rsi1"],
+                "Signal ID: <code>" +
+                signal_id + "</code>",
                 "Expiry: <b>5 MINUTES</b>",
                 ""
             ]
 
     if errors:
-        lines += ["⚠️ <b>UNAVAILABLE MARKETS</b>"]
+        lines.append(
+            "⚠️ <b>UNAVAILABLE MARKETS</b>"
+        )
 
         for error in errors:
             lines.append(
@@ -678,22 +698,23 @@ def build_report(results, errors, data):
 
     lines += [
         "",
-        "Use /win SIGNAL-ID",
-        "Use /loss SIGNAL-ID",
-        "Use /stats",
+        "Commands:",
+        "/start",
+        "/win SIGNAL-ID",
+        "/loss SIGNAL-ID",
+        "/stats",
         "",
-        "⚠️ Demo only. No guaranteed results."
+        "⚠️ DEMO ONLY.",
+        "Coinbase is a proxy for Pocket Option OTC."
     ]
 
     return "\n".join(lines)
 
 
-def commit_tracker():
+def commit():
     subprocess.run(
         [
-            "git",
-            "config",
-            "user.name",
+            "git", "config", "user.name",
             "github-actions[bot]"
         ],
         check=True
@@ -701,9 +722,7 @@ def commit_tracker():
 
     subprocess.run(
         [
-            "git",
-            "config",
-            "user.email",
+            "git", "config", "user.email",
             "41898282+github-actions[bot]"
             "@users.noreply.github.com"
         ],
@@ -725,8 +744,7 @@ def commit_tracker():
 
     subprocess.run(
         [
-            "git",
-            "commit",
+            "git", "commit",
             "-m",
             "Update scanner tracker"
         ],
@@ -738,19 +756,19 @@ def commit_tracker():
         check=True
     )
 
-    print("Tracker committed.")
+    print("Tracker pushed successfully.")
 
 
 def main():
     print("Starting scanner")
 
-    data = load_tracker()
+    data = load()
 
     print("Processing Telegram commands")
-    process_updates(data)
+    process_commands(data)
 
     print("Loading Coinbase markets")
-    found = get_markets()
+    found = markets()
 
     results = []
     errors = []
@@ -760,7 +778,8 @@ def main():
 
         if symbol not in found:
             errors.append(
-                symbol + ": Coinbase market unavailable"
+                symbol +
+                ": Coinbase market unavailable"
             )
             continue
 
@@ -773,13 +792,9 @@ def main():
             results.append(result)
 
             print(
-                "Signal: "
-                + symbol
-                + " "
-                + result["signal"]
-                + " "
-                + str(result["score"])
-                + "/11"
+                symbol + ": " +
+                result["signal"] + " " +
+                str(result["score"]) + "/11"
             )
 
         except Exception as error:
@@ -788,18 +803,14 @@ def main():
             )
 
             print(
-                "Error: "
-                + symbol
-                + " "
-                + str(error)
+                symbol + ": ERROR " +
+                str(error)
             )
 
     if not results:
         raise RuntimeError(
-            "All markets failed."
+            "All Coinbase markets failed."
         )
-
-    save_tracker(data)
 
     message = build_report(
         results,
@@ -807,23 +818,13 @@ def main():
         data
     )
 
-    save_tracker(data)
+    save(data)
 
     print("Sending Telegram report")
-
-    if len(message) <= 3900:
-        send(message)
-    else:
-        start = 0
-
-        while start < len(message):
-            send(message[start:start + 3900])
-            start += 3900
-
-    save_tracker(data)
+    send(message)
 
     print("Updating GitHub tracker")
-    commit_tracker()
+    commit()
 
     print("Scanner complete")
 
