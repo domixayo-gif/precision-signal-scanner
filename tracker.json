@@ -79,6 +79,16 @@
       "price": 102.87,
       "result": "PENDING",
       "result_time": null
+    },
+    {
+      "id": "BNB-230932",
+      "symbol": "BNB",
+      "signal": "PUT",
+      "score": 11,
+      "time": "2026-09-14T23:09:32.536958+00:00",
+      "price": 720.32,
+      "result": "PENDING",
+      "result_time": null
     }
   ],
   "offset": 840821682
