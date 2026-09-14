@@ -2,36 +2,47 @@ import os
 import requests
 from datetime import datetime, timezone
 
-# =========================
+# ============================================================
 # CONFIG
-# =========================
+# ============================================================
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+SYMBOLS = {
+    "BTC": "BTC-USD",
+    "ETH": "ETH-USD",
+    "SOL": "SOL-USD",
+}
 
-BINANCE_URL = "https://api.binance.com/api/v3/klines"
+COINBASE_URL = "https://api.exchange.coinbase.com/products"
 
-TIMEFRAME = "5m"
-CANDLE_LIMIT = 100
+GRANULARITY = 300       # 5 minutes
+CANDLE_LIMIT = 200      # enough for EMA/RSI/MACD
+
+TIMEOUT = 20
 
 
-# =========================
+# ============================================================
 # TELEGRAM
-# =========================
+# ============================================================
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-    data = {
+    payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
 
-    response = requests.post(url, data=data, timeout=20)
+    response = requests.post(
+        url,
+        data=payload,
+        timeout=TIMEOUT
+    )
+
     response.raise_for_status()
 
     result = response.json()
@@ -42,26 +53,74 @@ def send_telegram(message):
     return result
 
 
-# =========================
-# MARKET DATA
-# =========================
+# ============================================================
+# COINBASE MARKET DATA
+# ============================================================
 
-def get_klines(symbol):
+def get_candles(product_id):
+    """
+    Get recent 5-minute OHLCV candles from Coinbase.
+
+    Coinbase candle format:
+    [timestamp, low, high, open, close, volume]
+    """
+
+    url = f"{COINBASE_URL}/{product_id}/candles"
+
     params = {
-        "symbol": symbol,
-        "interval": TIMEFRAME,
-        "limit": CANDLE_LIMIT,
+        "granularity": GRANULARITY,
     }
 
-    response = requests.get(BINANCE_URL, params=params, timeout=20)
-    response.raise_for_status()
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "precision-signal-scanner/1.0",
+    }
 
-    return response.json()
+    response = requests.get(
+        url,
+        params=params,
+        headers=headers,
+        timeout=TIMEOUT,
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"Coinbase API returned HTTP {response.status_code}: "
+            f"{response.text[:300]}"
+        )
+
+    data = response.json()
+
+    if not isinstance(data, list):
+        raise RuntimeError(f"Unexpected Coinbase response: {data}")
+
+    if len(data) < 60:
+        raise RuntimeError(
+            f"Not enough candles returned: {len(data)}"
+        )
+
+    # Coinbase normally returns newest first.
+    # Sort oldest -> newest.
+    data = sorted(data, key=lambda candle: candle[0])
+
+    candles = []
+
+    for candle in data[-CANDLE_LIMIT:]:
+        candles.append({
+            "timestamp": int(candle[0]),
+            "low": float(candle[1]),
+            "high": float(candle[2]),
+            "open": float(candle[3]),
+            "close": float(candle[4]),
+            "volume": float(candle[5]),
+        })
+
+    return candles
 
 
-# =========================
-# INDICATORS
-# =========================
+# ============================================================
+# EMA
+# ============================================================
 
 def ema(values, period):
     if len(values) < period:
@@ -72,12 +131,19 @@ def ema(values, period):
     value = sum(values[:period]) / period
 
     for price in values[period:]:
-        value = (price - value) * multiplier + value
+        value = (
+            (price - value) * multiplier
+            + value
+        )
 
     return value
 
 
-def rsi(values, period=14):
+# ============================================================
+# RSI
+# ============================================================
+
+def calculate_rsi(values, period=14):
     if len(values) <= period:
         return None
 
@@ -87,230 +153,327 @@ def rsi(values, period=14):
     for i in range(1, len(values)):
         change = values[i] - values[i - 1]
 
-        if change > 0:
-            gains.append(change)
-            losses.append(0)
-        else:
-            gains.append(0)
-            losses.append(abs(change))
+        gains.append(max(change, 0))
+        losses.append(max(-change, 0))
 
     avg_gain = sum(gains[:period]) / period
     avg_loss = sum(losses[:period]) / period
 
     for i in range(period, len(gains)):
-        avg_gain = ((avg_gain * (period - 1)) + gains[i]) / period
-        avg_loss = ((avg_loss * (period - 1)) + losses[i]) / period
+        avg_gain = (
+            (avg_gain * (period - 1))
+            + gains[i]
+        ) / period
+
+        avg_loss = (
+            (avg_loss * (period - 1))
+            + losses[i]
+        ) / period
 
     if avg_loss == 0:
-        return 100
+        return 100.0
 
     rs = avg_gain / avg_loss
 
     return 100 - (100 / (1 + rs))
 
 
-def macd(values):
-    ema12 = ema(values, 12)
-    ema26 = ema(values, 26)
+# ============================================================
+# MACD
+# ============================================================
 
-    if ema12 is None or ema26 is None:
-        return None, None
+def calculate_macd(values):
+    """
+    Standard MACD:
+    Fast EMA  = 12
+    Slow EMA  = 26
+    Signal    = 9
+    """
 
-    macd_line = ema12 - ema26
+    if len(values) < 35:
+        return None, None, None
 
-    # Approximate signal line using recent MACD calculations
-    macd_values = []
+    macd_series = []
 
     for i in range(26, len(values) + 1):
-        short = ema(values[:i], 12)
-        long = ema(values[:i], 26)
+        subset = values[:i]
 
-        if short is not None and long is not None:
-            macd_values.append(short - long)
+        fast = ema(subset, 12)
+        slow = ema(subset, 26)
 
-    signal_line = ema(macd_values, 9)
+        if fast is not None and slow is not None:
+            macd_series.append(fast - slow)
 
-    return macd_line, signal_line
+    if len(macd_series) < 9:
+        return None, None, None
+
+    macd_line = macd_series[-1]
+
+    signal_line = ema(macd_series, 9)
+
+    if signal_line is None:
+        return None, None, None
+
+    histogram = macd_line - signal_line
+
+    return macd_line, signal_line, histogram
 
 
-# =========================
+# ============================================================
 # ANALYSIS
-# =========================
+# ============================================================
 
-def analyze(symbol):
-    raw = get_klines(symbol)
+def analyze(name, product_id):
 
-    closes = [float(candle[4]) for candle in raw]
+    candles = get_candles(product_id)
 
-    current_price = closes[-1]
+    closes = [
+        candle["close"]
+        for candle in candles
+    ]
+
+    price = closes[-1]
 
     ema20 = ema(closes, 20)
     ema50 = ema(closes, 50)
 
-    current_rsi = rsi(closes, 14)
+    rsi = calculate_rsi(closes, 14)
 
-    macd_line, signal_line = macd(closes)
+    macd_line, macd_signal, macd_hist = calculate_macd(
+        closes
+    )
 
-    bullish_points = 0
-    bearish_points = 0
+    bullish = 0
+    bearish = 0
 
     reasons = []
 
-    # EMA trend
-    if ema20 and ema50:
+    # --------------------------------------------------------
+    # PRICE VS EMA20
+    # --------------------------------------------------------
 
-        if current_price > ema20:
-            bullish_points += 1
-            reasons.append("Price above EMA20")
-        else:
-            bearish_points += 1
-            reasons.append("Price below EMA20")
+    if price > ema20:
+        bullish += 1
+        reasons.append("Price > EMA20")
+    else:
+        bearish += 1
+        reasons.append("Price < EMA20")
 
-        if ema20 > ema50:
-            bullish_points += 1
-            reasons.append("EMA20 above EMA50")
-        else:
-            bearish_points += 1
-            reasons.append("EMA20 below EMA50")
+    # --------------------------------------------------------
+    # EMA20 VS EMA50
+    # --------------------------------------------------------
 
+    if ema20 > ema50:
+        bullish += 2
+        reasons.append("EMA20 > EMA50")
+    else:
+        bearish += 2
+        reasons.append("EMA20 < EMA50")
+
+    # --------------------------------------------------------
     # RSI
-    if current_rsi is not None:
+    # --------------------------------------------------------
 
-        if current_rsi < 30:
-            bullish_points += 2
-            reasons.append("RSI oversold")
+    if rsi >= 70:
+        bearish += 2
+        reasons.append("RSI overbought")
 
-        elif current_rsi > 70:
-            bearish_points += 2
-            reasons.append("RSI overbought")
+    elif rsi <= 30:
+        bullish += 2
+        reasons.append("RSI oversold")
 
-        elif current_rsi >= 50:
-            bullish_points += 1
-            reasons.append("RSI bullish")
+    elif rsi >= 50:
+        bullish += 1
+        reasons.append("RSI bullish")
 
-        else:
-            bearish_points += 1
-            reasons.append("RSI bearish")
+    else:
+        bearish += 1
+        reasons.append("RSI bearish")
 
+    # --------------------------------------------------------
     # MACD
-    if macd_line is not None and signal_line is not None:
+    # --------------------------------------------------------
 
-        if macd_line > signal_line:
-            bullish_points += 1
-            reasons.append("MACD bullish")
+    if macd_hist > 0:
+        bullish += 2
+        reasons.append("MACD bullish")
 
-        else:
-            bearish_points += 1
-            reasons.append("MACD bearish")
+    else:
+        bearish += 2
+        reasons.append("MACD bearish")
 
-    # Final signal
-    if bullish_points >= 4 and bullish_points > bearish_points:
+    # --------------------------------------------------------
+    # FINAL SIGNAL
+    # --------------------------------------------------------
+
+    if bullish >= 5 and bullish > bearish:
         signal = "🟢 BUY"
 
-    elif bearish_points >= 4 and bearish_points > bullish_points:
+    elif bearish >= 5 and bearish > bullish:
         signal = "🔴 SELL"
 
     else:
         signal = "⚪ NO TRADE"
 
     return {
-        "symbol": symbol,
-        "price": current_price,
+        "name": name,
+        "product": product_id,
+        "price": price,
         "ema20": ema20,
         "ema50": ema50,
-        "rsi": current_rsi,
+        "rsi": rsi,
         "macd": macd_line,
-        "macd_signal": signal_line,
-        "bullish": bullish_points,
-        "bearish": bearish_points,
+        "macd_signal": macd_signal,
+        "macd_hist": macd_hist,
+        "bullish": bullish,
+        "bearish": bearish,
         "signal": signal,
         "reasons": reasons,
+        "candles": len(candles),
     }
 
 
-# =========================
+# ============================================================
+# FORMAT PRICE
+# ============================================================
+
+def format_price(price):
+
+    if price >= 1000:
+        return f"{price:,.2f}"
+
+    if price >= 1:
+        return f"{price:,.4f}"
+
+    return f"{price:.6f}"
+
+
+# ============================================================
 # TELEGRAM REPORT
-# =========================
+# ============================================================
 
-def build_report(results):
+def build_report(results, errors):
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
 
     message = (
         "📊 <b>PRECISION SIGNAL SCANNER</b>\n"
         f"⏰ {now}\n"
-        f"🕐 Timeframe: <b>{TIMEFRAME}</b>\n\n"
+        "📡 Data: Coinbase\n"
+        "🕐 Timeframe: <b>5 MINUTES</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
     )
 
     for result in results:
 
-        symbol = result["symbol"].replace("USDT", "")
-
         message += (
-            f"<b>━━ {symbol}/USDT ━━</b>\n"
-            f"💰 Price: <b>{result['price']:,.4f}</b>\n"
-            f"📈 EMA20: {result['ema20']:,.4f}\n"
-            f"📊 EMA50: {result['ema50']:,.4f}\n"
-            f"〽️ RSI: <b>{result['rsi']:.2f}</b>\n"
-            f"MACD: {result['macd']:.6f}\n"
-            f"Signal: {result['macd_signal']:.6f}\n\n"
-            f"🟢 Bullish score: {result['bullish']}\n"
-            f"🔴 Bearish score: {result['bearish']}\n"
+            f"<b>━━ {result['name']}/USD ━━</b>\n"
+            f"💰 Price: <b>"
+            f"{format_price(result['price'])}"
+            f"</b>\n"
+            f"📈 EMA20: "
+            f"{format_price(result['ema20'])}\n"
+            f"📊 EMA50: "
+            f"{format_price(result['ema50'])}\n"
+            f"〽️ RSI14: "
+            f"<b>{result['rsi']:.2f}</b>\n"
+            f"📉 MACD: "
+            f"{result['macd']:.6f}\n"
+            f"📍 Signal: "
+            f"{result['macd_signal']:.6f}\n"
+            f"📊 Histogram: "
+            f"{result['macd_hist']:.6f}\n\n"
+            f"🟢 Bullish score: "
+            f"{result['bullish']}\n"
+            f"🔴 Bearish score: "
+            f"{result['bearish']}\n"
             f"🎯 <b>{result['signal']}</b>\n"
-            f"📝 {', '.join(result['reasons'])}\n\n"
+            f"📝 {', '.join(result['reasons'])}\n"
+            f"🕯 Candles: {result['candles']}\n\n"
         )
 
+    if errors:
+
+        message += (
+            "⚠️ <b>DATA ERRORS</b>\n"
+        )
+
+        for error in errors:
+            message += (
+                f"• {error}\n"
+            )
+
+        message += "\n"
+
     message += (
-        "━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━━\n"
         "⚠️ <i>Technical analysis only. "
-        "This is not financial advice.</i>"
+        "Not financial advice.</i>"
     )
 
     return message
 
 
-# =========================
+# ============================================================
 # MAIN
-# =========================
+# ============================================================
 
 def main():
 
     print("Starting Precision Signal Scanner...")
 
     results = []
+    errors = []
 
-    for symbol in SYMBOLS:
+    for name, product_id in SYMBOLS.items():
+
+        print(f"Analyzing {product_id}...")
 
         try:
-            print(f"Analyzing {symbol}...")
 
-            result = analyze(symbol)
+            result = analyze(
+                name,
+                product_id
+            )
 
             results.append(result)
 
             print(
-                f"{symbol}: "
+                f"{product_id}: "
                 f"{result['signal']} "
                 f"Price={result['price']}"
             )
 
         except Exception as error:
 
-            print(f"Error analyzing {symbol}: {error}")
+            error_message = (
+                f"{product_id}: {error}"
+            )
 
-            # Continue analyzing the other coins
-            continue
+            print(error_message)
+
+            errors.append(error_message)
 
     if not results:
-        raise RuntimeError("No market analysis was successfully completed.")
 
-    report = build_report(results)
+        raise RuntimeError(
+            "No market analysis was successfully completed."
+        )
 
-    print("\nSending Telegram report...")
+    report = build_report(
+        results,
+        errors
+    )
+
+    print("Sending Telegram report...")
 
     send_telegram(report)
 
-    print("Telegram report sent successfully.")
+    print(
+        "Telegram report sent successfully."
+    )
 
 
 if __name__ == "__main__":
