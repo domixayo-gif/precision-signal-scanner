@@ -30,6 +30,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
 
+      - name: Validate Python syntax
+        run: python -m py_compile scanner.py
+
       - name: Run scanner
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
