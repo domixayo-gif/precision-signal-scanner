@@ -29,7 +29,17 @@
       "price": 102.93,
       "result": "PENDING",
       "result_time": null
+    },
+    {
+      "id": "DOT-191948",
+      "symbol": "DOT",
+      "signal": "CALL",
+      "score": 11,
+      "time": "2026-09-14T19:19:48.827466+00:00",
+      "price": 1.0227,
+      "result": "PENDING",
+      "result_time": null
     }
   ],
-  "offset": 840821681
+  "offset": 840821682
 }
