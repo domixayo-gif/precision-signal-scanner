@@ -3,26 +3,18 @@ import html
 import json
 import subprocess
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 
 import requests
 
 
-# ============================================================
-# CONFIG
-# ============================================================
-
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-TELEGRAM_CHAT_ID = str(os.environ["TELEGRAM_CHAT_ID"])
-
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+TOKEN = os.environ["TELEGRAM_TOKEN"]
+CHAT_ID = str(os.environ["TELEGRAM_CHAT_ID"])
 
 BASE_URL = "https://api.exchange.coinbase.com"
+TRACKER_FILE = "tracker.json"
 TIMEOUT = 20
 
-TRACKER_FILE = "tracker.json"
 
-# Pocket Option OTC assets
 ASSETS = {
     "BTC": "Bitcoin OTC",
     "ETH": "Ethereum OTC",
@@ -40,11 +32,7 @@ ASSETS = {
 }
 
 
-# ============================================================
-# HTTP
-# ============================================================
-
-def request_json(url, params=None):
+def api_get(url, params=None):
     response = requests.get(
         url,
         params=params,
@@ -54,19 +42,17 @@ def request_json(url, params=None):
         },
         timeout=TIMEOUT,
     )
-
     response.raise_for_status()
-
     return response.json()
 
 
 def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 
     response = requests.post(
         url,
         data={
-            "chat_id": TELEGRAM_CHAT_ID,
+            "chat_id": CHAT_ID,
             "text": message,
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
@@ -77,15 +63,11 @@ def send_telegram(message):
     response.raise_for_status()
 
 
-# ============================================================
-# TRACKER
-# ============================================================
-
 def default_tracker():
     return {
-        "telegram_update_offset": 0,
-
-        "legacy_baseline": {
+        "offset": 0,
+        "signals": [],
+        "baseline": {
             "signals": 100,
             "wins": 58,
             "losses": 42,
@@ -102,8 +84,6 @@ def default_tracker():
             "best_asset": "LINK OTC",
             "worst_asset": "ETH OTC",
         },
-
-        "signals": []
     }
 
 
@@ -119,16 +99,12 @@ def load_tracker():
         ) as file:
             data = json.load(file)
 
-        if "signals" not in data:
-            data["signals"] = []
-
-        if "telegram_update_offset" not in data:
-            data["telegram_update_offset"] = 0
-
-        if "legacy_baseline" not in data:
-            data["legacy_baseline"] = default_tracker()[
-                "legacy_baseline"
-            ]
+        data.setdefault("offset", 0)
+        data.setdefault("signals", [])
+        data.setdefault(
+            "baseline",
+            default_tracker()["baseline"],
+        )
 
         return data
 
@@ -148,10 +124,6 @@ def save_tracker(tracker):
             indent=2,
         )
 
-
-# ============================================================
-# INDICATORS
-# ============================================================
 
 def ema(values, period):
     if len(values) < period:
@@ -178,7 +150,6 @@ def rsi(values, period=14):
 
     for i in range(1, len(values)):
         change = values[i] - values[i - 1]
-
         gains.append(max(change, 0))
         losses.append(max(-change, 0))
 
@@ -199,42 +170,56 @@ def rsi(values, period=14):
     if average_loss == 0:
         return 100.0
 
-    rs = average_gain / average_loss
+    relative_strength = (
+        average_gain / average_loss
+    )
 
-    return 100 - (100 / (1 + rs))
+    return 100 - (
+        100 / (1 + relative_strength)
+    )
 
 
 def macd(values):
     if len(values) < 60:
-        raise RuntimeError("Not enough candles for MACD")
+        raise RuntimeError(
+            "Not enough candles for MACD"
+        )
 
     macd_values = []
 
     for i in range(26, len(values) + 1):
-        fast = ema(values[:i], 12)
-        slow = ema(values[:i], 26)
+        fast = ema(
+            values[:i],
+            12,
+        )
+
+        slow = ema(
+            values[:i],
+            26,
+        )
 
         macd_values.append(
             fast - slow
         )
 
-    line = macd_values[-1]
-    signal = ema(macd_values, 9)
+    signal = ema(
+        macd_values,
+        9,
+    )
 
     if signal is None:
-        raise RuntimeError("Not enough MACD data")
+        raise RuntimeError(
+            "Not enough MACD data"
+        )
 
+    line = macd_values[-1]
     histogram = line - signal
 
     return line, signal, histogram
 
 
-# ============================================================
-# MARKET DATA
-# ============================================================
-
 def get_products():
-    data = request_json(
+    data = api_get(
         f"{BASE_URL}/products"
     )
 
@@ -244,24 +229,32 @@ def get_products():
         if product.get("status") != "online":
             continue
 
-        base = product.get("base_currency")
-        quote = product.get("quote_currency")
+        base = product.get(
+            "base_currency"
+        )
+
+        quote = product.get(
+            "quote_currency"
+        )
 
         if (
             base in ASSETS
             and quote in ("USD", "USDC")
         ):
-            if base not in products:
-                products[base] = product["id"]
+            products.setdefault(
+                base,
+                product["id"],
+            )
 
     return products
 
 
 def get_closes(product_id, granularity):
-    data = request_json(
-        f"{BASE_URL}/products/{product_id}/candles",
+    data = api_get(
+        f"{BASE_URL}/products/"
+        f"{product_id}/candles",
         {
-            "granularity": granularity
+            "granularity": granularity,
         },
     )
 
@@ -272,7 +265,7 @@ def get_closes(product_id, granularity):
 
     if len(data) < 60:
         raise RuntimeError(
-            f"Only {len(data)} candles received"
+            "Insufficient candles"
         )
 
     data.sort(
@@ -284,7 +277,7 @@ def get_closes(product_id, granularity):
         for candle in data
     ]
 
-    # Remove newest candle because it may
+    # Ignore newest candle because it may
     # still be forming.
     if len(closes) > 60:
         closes = closes[:-1]
@@ -292,342 +285,291 @@ def get_closes(product_id, granularity):
     return closes[-200:]
 
 
-# ============================================================
-# V2 ANALYSIS
-# ============================================================
-
 def analyze(symbol, product_id):
-    five = get_closes(
+    five_min = get_closes(
         product_id,
         300,
     )
 
-    one = get_closes(
+    one_min = get_closes(
         product_id,
         60,
     )
 
-    if len(five) < 60:
-        raise RuntimeError(
-            "Not enough 5M candles"
-        )
+    price_5m = five_min[-1]
+    price_1m = one_min[-1]
 
-    if len(one) < 60:
-        raise RuntimeError(
-            "Not enough 1M candles"
-        )
+    previous_1m = one_min[-2]
 
-    # -------------------------------
-    # 5 MINUTE TREND
-    # -------------------------------
-
-    price5 = five[-1]
-
-    ema20_5 = ema(
-        five,
+    ema20_5m = ema(
+        five_min,
         20,
     )
 
-    ema50_5 = ema(
-        five,
+    ema50_5m = ema(
+        five_min,
         50,
     )
 
-    ema20_5_previous = ema(
-        five[:-3],
+    previous_ema20_5m = ema(
+        five_min[:-3],
         20,
     )
 
-    rsi5 = rsi(five)
-
-    macd5_line, macd5_signal, macd5_hist = macd(
-        five
+    rsi_5m = rsi(
+        five_min
     )
 
-    # -------------------------------
-    # 1 MINUTE ENTRY
-    # -------------------------------
+    _, _, macd_hist_5m = macd(
+        five_min
+    )
 
-    price1 = one[-1]
-    previous1 = one[-2]
-
-    ema9_1 = ema(
-        one,
+    ema9_1m = ema(
+        one_min,
         9,
     )
 
-    ema21_1 = ema(
-        one,
+    ema21_1m = ema(
+        one_min,
         21,
     )
 
-    rsi1 = rsi(one)
-
-    macd1_line, macd1_signal, macd1_hist = macd(
-        one
+    rsi_1m = rsi(
+        one_min
     )
 
-    bull = 0
-    bear = 0
+    _, _, macd_hist_1m = macd(
+        one_min
+    )
 
-    reasons_bull = []
-    reasons_bear = []
+    # The requested checks total 12 if every
+    # condition receives its own point.
+    # To keep the system genuinely 11/11,
+    # the 1M price/EMA9/EMA21 conditions are
+    # treated as ONE combined trend-alignment point.
+    bullish_5m = [
+        price_5m > ema20_5m,
+        ema20_5m > ema50_5m,
+        ema20_5m > previous_ema20_5m,
+        50 <= rsi_5m <= 68,
+        macd_hist_5m > 0,
+    ]
 
-    # ========================================================
-    # 5M CONDITIONS
-    # ========================================================
+    bearish_5m = [
+        price_5m < ema20_5m,
+        ema20_5m < ema50_5m,
+        ema20_5m < previous_ema20_5m,
+        32 <= rsi_5m <= 50,
+        macd_hist_5m < 0,
+    ]
 
-    # 1. Price vs EMA20
-    if price5 > ema20_5:
-        bull += 2
-        reasons_bull.append(
-            "5M price above EMA20"
-        )
-    elif price5 < ema20_5:
-        bear += 2
-        reasons_bear.append(
-            "5M price below EMA20"
-        )
+    bullish_1m_alignment = (
+        price_1m > ema9_1m
+        and ema9_1m > ema21_1m
+    )
 
-    # 2. EMA20 vs EMA50
-    if ema20_5 > ema50_5:
-        bull += 2
-        reasons_bull.append(
-            "5M EMA20 above EMA50"
-        )
-    elif ema20_5 < ema50_5:
-        bear += 2
-        reasons_bear.append(
-            "5M EMA20 below EMA50"
-        )
+    bearish_1m_alignment = (
+        price_1m < ema9_1m
+        and ema9_1m < ema21_1m
+    )
 
-    # 3. EMA20 slope
-    if ema20_5 > ema20_5_previous:
-        bull += 1
-        reasons_bull.append(
-            "5M trend rising"
-        )
-    elif ema20_5 < ema20_5_previous:
-        bear += 1
-        reasons_bear.append(
-            "5M trend falling"
-        )
+    bullish_score = sum(
+        [
+            2 if bullish_5m[0] else 0,
+            2 if bullish_5m[1] else 0,
+            1 if bullish_5m[2] else 0,
+            1 if bullish_5m[3] else 0,
+            1 if bullish_5m[4] else 0,
+            1 if bullish_1m_alignment else 0,
+            1 if macd_hist_1m > 0 else 0,
+            1 if 52 <= rsi_1m <= 68 else 0,
+            1 if price_1m > previous_1m else 0,
+        ]
+    )
 
-    # 4. 5M RSI
-    if 50 <= rsi5 <= 68:
-        bull += 1
-        reasons_bull.append(
-            "5M RSI bullish zone"
-        )
-    elif 32 <= rsi5 < 50:
-        bear += 1
-        reasons_bear.append(
-            "5M RSI bearish zone"
-        )
+    bearish_score = sum(
+        [
+            2 if bearish_5m[0] else 0,
+            2 if bearish_5m[1] else 0,
+            1 if bearish_5m[2] else 0,
+            1 if bearish_5m[3] else 0,
+            1 if bearish_5m[4] else 0,
+            1 if bearish_1m_alignment else 0,
+            1 if macd_hist_1m < 0 else 0,
+            1 if 32 <= rsi_1m <= 48 else 0,
+            1 if price_1m < previous_1m else 0,
+        ]
+    )
 
-    # 5. 5M MACD
-    if macd5_hist > 0:
-        bull += 1
-        reasons_bull.append(
-            "5M MACD positive"
-        )
-    elif macd5_hist < 0:
-        bear += 1
-        reasons_bear.append(
-            "5M MACD negative"
-        )
-
-    # ========================================================
-    # 1M CONDITIONS
-    # ========================================================
-
-    # 6. Price vs EMA9
-    if price1 > ema9_1:
-        bull += 1
-        reasons_bull.append(
-            "1M price above EMA9"
-        )
-    elif price1 < ema9_1:
-        bear += 1
-        reasons_bear.append(
-            "1M price below EMA9"
-        )
-
-    # 7. EMA9 vs EMA21
-    if ema9_1 > ema21_1:
-        bull += 1
-        reasons_bull.append(
-            "1M EMA9 above EMA21"
-        )
-    elif ema9_1 < ema21_1:
-        bear += 1
-        reasons_bear.append(
-            "1M EMA9 below EMA21"
-        )
-
-    # 8. 1M MACD
-    if macd1_hist > 0:
-        bull += 1
-        reasons_bull.append(
-            "1M MACD positive"
-        )
-    elif macd1_hist < 0:
-        bear += 1
-        reasons_bear.append(
-            "1M MACD negative"
-        )
-
-    # 9. 1M RSI
-    if 52 <= rsi1 <= 68:
-        bull += 1
-        reasons_bull.append(
-            "1M RSI confirms CALL"
-        )
-    elif 32 <= rsi1 <= 48:
-        bear += 1
-        reasons_bear.append(
-            "1M RSI confirms PUT"
-        )
-
-    # 10. 1M momentum
-    if price1 > previous1:
-        bull += 1
-        reasons_bull.append(
-            "1M momentum up"
-        )
-    elif price1 < previous1:
-        bear += 1
-        reasons_bear.append(
-            "1M momentum down"
-        )
-
-    # 11. Avoid extreme RSI entries
-    call_allowed = rsi1 < 70 and rsi5 < 70
-    put_allowed = rsi1 > 30 and rsi5 > 30
-
-    signal = "⚪ NO TRADE"
+    signal = "NO TRADE"
     score = max(
-        bull,
-        bear,
+        bullish_score,
+        bearish_score,
     )
-    reasons = []
 
-    # Strict V2 entry
     if (
-        bull >= 10
-        and bull > bear
-        and call_allowed
+        bullish_score >= 10
+        and bullish_score > bearish_score
+        and rsi_5m < 70
+        and rsi_1m < 70
+        and bullish_1m_alignment
     ):
-        signal = "🟢 CALL"
-        score = bull
-        reasons = reasons_bull
+        signal = "CALL"
 
     elif (
-        bear >= 10
-        and bear > bull
-        and put_allowed
+        bearish_score >= 10
+        and bearish_score > bullish_score
+        and rsi_5m > 30
+        and rsi_1m > 30
+        and bearish_1m_alignment
     ):
-        signal = "🔴 PUT"
-        score = bear
-        reasons = reasons_bear
+        signal = "PUT"
 
     return {
         "symbol": symbol,
-        "price": price5,
-
-        "rsi5": rsi5,
-        "rsi1": rsi1,
-
-        "ema20": ema20_5,
-        "ema50": ema50_5,
-
-        "macd5": macd5_hist,
-        "macd1": macd1_hist,
-
-        "bull": bull,
-        "bear": bear,
-
+        "price": price_5m,
+        "rsi5": rsi_5m,
+        "rsi1": rsi_1m,
+        "bull": bullish_score,
+        "bear": bearish_score,
         "score": score,
         "signal": signal,
-
-        "reasons": reasons,
     }
 
 
-# ============================================================
-# SIGNAL ID
-# ============================================================
-
-def make_signal_id(symbol):
-    now = datetime.now(timezone.utc)
-
+def make_signal_id(symbol, now):
     return (
         f"{symbol}-"
-        f"{now.strftime('%d%H%M')}-"
-        f"{now.strftime('%S')}"
+        f"{now.strftime('%y%m%d%H%M%S')}"
     )
 
 
-# ============================================================
-# TELEGRAM RESULT COMMANDS
-# ============================================================
+def completed_signals(tracker):
+    return [
+        signal
+        for signal in tracker["signals"]
+        if signal.get("result")
+        in ("WIN", "LOSS")
+    ]
 
-def get_telegram_updates(tracker):
-    offset = tracker.get(
-        "telegram_update_offset",
-        0,
+
+def calculate_rate(items):
+    if not items:
+        return None
+
+    wins = sum(
+        item["result"] == "WIN"
+        for item in items
     )
 
+    return wins / len(items) * 100
+
+
+def record_command(tracker, text):
+    parts = text.split()
+
+    if len(parts) != 2:
+        return False
+
+    command = parts[0].lower()
+
+    if command not in (
+        "/win",
+        "/loss",
+    ):
+        return False
+
+    signal_id = parts[1]
+
+    result = (
+        "WIN"
+        if command == "/win"
+        else "LOSS"
+    )
+
+    for signal in tracker["signals"]:
+        if signal["id"] != signal_id:
+            continue
+
+        if signal["result"] != "PENDING":
+            send_telegram(
+                f"⚠️ <b>"
+                f"{html.escape(signal_id)}"
+                f"</b> is already "
+                f"<b>{signal['result']}</b>."
+            )
+            return True
+
+        signal["result"] = result
+
+        signal["result_time"] = (
+            datetime.now(
+                timezone.utc
+            ).isoformat()
+        )
+
+        send_telegram(
+            "✅ <b>RESULT RECORDED</b>\n\n"
+            f"Signal: <code>"
+            f"{html.escape(signal_id)}"
+            f"</code>\n"
+            f"Result: <b>{result}</b>"
+        )
+
+        return True
+
+    send_telegram(
+        "⚠️ Signal not found:\n"
+        f"<code>{html.escape(signal_id)}</code>"
+    )
+
+    return True
+
+
+def process_telegram_updates(tracker):
     try:
-        data = request_json(
+        data = api_get(
             f"https://api.telegram.org/"
-            f"bot{TELEGRAM_TOKEN}/getUpdates",
+            f"bot{TOKEN}/getUpdates",
             {
-                "offset": offset + 1,
-                "timeout": 5,
+                "offset": (
+                    tracker["offset"] + 1
+                ),
+                "timeout": 3,
             },
         )
 
     except Exception as error:
         print(
-            f"Telegram update error: {error}"
+            "Telegram update error:",
+            error,
         )
         return
 
-    if not data.get("ok"):
-        return
-
-    updates = data.get(
+    for update in data.get(
         "result",
         [],
-    )
-
-    for update in updates:
-        update_id = update.get(
+    ):
+        tracker["offset"] = update[
             "update_id"
-        )
-
-        if update_id is not None:
-            tracker[
-                "telegram_update_offset"
-            ] = update_id
+        ]
 
         message = update.get(
             "message",
             {},
         )
 
-        chat = message.get(
-            "chat",
-            {},
-        )
-
         chat_id = str(
-            chat.get("id", "")
+            message.get(
+                "chat",
+                {},
+            ).get(
+                "id",
+                "",
+            )
         )
 
-        # Only accept commands from the configured chat.
-        if chat_id != TELEGRAM_CHAT_ID:
+        if chat_id != CHAT_ID:
             continue
 
         text = str(
@@ -640,236 +582,18 @@ def get_telegram_updates(tracker):
         if not text:
             continue
 
-        lower = text.lower()
-
-        # ------------------------------------------
-        # /win SIGNAL-ID
-        # ------------------------------------------
-
-        if lower.startswith("/win "):
-            signal_id = text[5:].strip()
-
-            record_result(
-                tracker,
-                signal_id,
-                "WIN",
-            )
-
-        # ------------------------------------------
-        # /loss SIGNAL-ID
-        # ------------------------------------------
-
-        elif lower.startswith("/loss "):
-            signal_id = text[6:].strip()
-
-            record_result(
-                tracker,
-                signal_id,
-                "LOSS",
-            )
-
-        # ------------------------------------------
-        # /stats
-        # ------------------------------------------
-
-        elif lower == "/stats":
+        if text.lower() == "/stats":
             send_telegram(
                 build_dashboard(
                     tracker
                 )
             )
 
-
-def record_result(
-    tracker,
-    signal_id,
-    result,
-):
-    found = False
-
-    for signal in tracker["signals"]:
-
-        if signal.get("id") != signal_id:
-            continue
-
-        if signal.get("result") != "PENDING":
-            continue
-
-        signal["result"] = result
-
-        signal["result_time"] = (
-            datetime.now(
-                timezone.utc
-            ).isoformat()
-        )
-
-        found = True
-
-        break
-
-    if found:
-        save_tracker(tracker)
-
-        send_telegram(
-            f"✅ <b>RESULT RECORDED</b>\n\n"
-            f"Signal: "
-            f"<code>{html.escape(signal_id)}</code>\n"
-            f"Result: <b>{result}</b>\n\n"
-            f"Tracker updated."
-        )
-
-        print(
-            f"Recorded {result}: "
-            f"{signal_id}"
-        )
-
-    else:
-        send_telegram(
-            f"⚠️ Signal not found or already settled:\n"
-            f"<code>{html.escape(signal_id)}</code>"
-        )
-
-
-# ============================================================
-# PERFORMANCE
-# ============================================================
-
-def completed_signals(tracker):
-    return [
-        s
-        for s in tracker["signals"]
-        if s.get("result")
-        in ("WIN", "LOSS")
-    ]
-
-
-def calculate_stats(tracker):
-    signals = completed_signals(
-        tracker
-    )
-
-    wins = sum(
-        1
-        for s in signals
-        if s["result"] == "WIN"
-    )
-
-    losses = sum(
-        1
-        for s in signals
-        if s["result"] == "LOSS"
-    )
-
-    total = wins + losses
-
-    return {
-        "signals": total,
-        "wins": wins,
-        "losses": losses,
-        "rate": (
-            wins / total * 100
-            if total
-            else 0
-        ),
-    }
-
-
-def category_stats(
-    signals,
-    field,
-):
-    output = {}
-
-    values = sorted(
-        set(
-            s.get(field)
-            for s in signals
-            if s.get(field) is not None
-        )
-    )
-
-    for value in values:
-
-        selected = [
-            s
-            for s in signals
-            if s.get(field) == value
-            and s.get("result")
-            in ("WIN", "LOSS")
-        ]
-
-        wins = sum(
-            1
-            for s in selected
-            if s["result"] == "WIN"
-        )
-
-        losses = sum(
-            1
-            for s in selected
-            if s["result"] == "LOSS"
-        )
-
-        total = wins + losses
-
-        if total:
-            output[value] = {
-                "wins": wins,
-                "losses": losses,
-                "rate": wins / total * 100,
-                "total": total,
-            }
-
-    return output
-
-
-def hour_stats(signals):
-    output = {}
-
-    for signal in signals:
-
-        if signal.get("result") not in (
-            "WIN",
-            "LOSS",
-        ):
-            continue
-
-        try:
-            hour = datetime.fromisoformat(
-                signal["time"]
-            ).hour
-
-        except Exception:
-            continue
-
-        key = f"{hour:02d}:00"
-
-        if key not in output:
-            output[key] = {
-                "wins": 0,
-                "losses": 0,
-            }
-
-        if signal["result"] == "WIN":
-            output[key]["wins"] += 1
         else:
-            output[key]["losses"] += 1
-
-    for key in output:
-        total = (
-            output[key]["wins"]
-            + output[key]["losses"]
-        )
-
-        output[key]["total"] = total
-
-        output[key]["rate"] = (
-            output[key]["wins"]
-            / total
-            * 100
-        )
-
-    return output
+            record_command(
+                tracker,
+                text,
+            )
 
 
 def build_dashboard(tracker):
@@ -877,132 +601,374 @@ def build_dashboard(tracker):
         tracker
     )
 
-    overall = calculate_stats(
-        tracker
+    wins = sum(
+        signal["result"] == "WIN"
+        for signal in signals
     )
 
-    call = [
-        s
-        for s in signals
-        if s["signal"] == "CALL"
+    losses = len(signals) - wins
+
+    calls = [
+        signal
+        for signal in signals
+        if signal["signal"] == "CALL"
     ]
 
-    put = [
-        s
-        for s in signals
-        if s["signal"] == "PUT"
+    puts = [
+        signal
+        for signal in signals
+        if signal["signal"] == "PUT"
     ]
 
-    call_wins = sum(
-        1
-        for s in call
-        if s["result"] == "WIN"
-    )
+    score_groups = {}
 
-    put_wins = sum(
-        1
-        for s in put
-        if s["result"] == "WIN"
-    )
+    for score in (
+        8,
+        9,
+        10,
+        11,
+    ):
+        score_groups[score] = [
+            signal
+            for signal in signals
+            if signal["score"] == score
+        ]
 
-    call_rate = (
-        call_wins / len(call) * 100
-        if call
-        else 0
-    )
+    asset_groups = {}
 
-    put_rate = (
-        put_wins / len(put) * 100
-        if put
-        else 0
-    )
+    for signal in signals:
+        asset_groups.setdefault(
+            signal["symbol"],
+            [],
+        ).append(signal)
 
-    scores = category_stats(
-        signals,
-        "score",
-    )
+    hour_groups = {}
 
-    assets = category_stats(
-        signals,
-        "symbol",
-    )
+    for signal in signals:
+        try:
+            hour = datetime.fromisoformat(
+                signal["time"]
+            ).hour
+        except Exception:
+            continue
 
-    hours = hour_stats(
-        signals
-    )
+        hour_groups.setdefault(
+            hour,
+            [],
+        ).append(signal)
+
+    eligible_assets = [
+        (name, items)
+        for name, items
+        in asset_groups.items()
+        if len(items) >= 3
+    ]
+
+    eligible_hours = [
+        (hour, items)
+        for hour, items
+        in hour_groups.items()
+        if len(items) >= 3
+    ]
 
     best_asset = None
     worst_asset = None
     best_hour = None
+    worst_hour = None
 
-    if assets:
-        eligible = [
-            (k, v)
-            for k, v in assets.items()
-            if v["total"] >= 3
-        ]
+    if eligible_assets:
+        best_asset = max(
+            eligible_assets,
+            key=lambda item: calculate_rate(
+                item[1]
+            ),
+        )
 
-        if eligible:
-            best_asset = max(
-                eligible,
-                key=lambda x: x[1]["rate"]
-            )
+        worst_asset = min(
+            eligible_assets,
+            key=lambda item: calculate_rate(
+                item[1]
+            ),
+        )
 
-            worst_asset = min(
-                eligible,
-                key=lambda x: x[1]["rate"]
-            )
+    if eligible_hours:
+        best_hour = max(
+            eligible_hours,
+            key=lambda item: calculate_rate(
+                item[1]
+            ),
+        )
 
-    if hours:
-        eligible_hours = [
-            (k, v)
-            for k, v in hours.items()
-            if v["total"] >= 3
-        ]
-
-        if eligible_hours:
-            best_hour = max(
-                eligible_hours,
-                key=lambda x: x[1]["rate"]
-            )
+        worst_hour = min(
+            eligible_hours,
+            key=lambda item: calculate_rate(
+                item[1]
+            ),
+        )
 
     pending = sum(
-        1
-        for s in tracker["signals"]
-        if s.get("result") == "PENDING"
+        signal.get("result") == "PENDING"
+        for signal in tracker["signals"]
     )
 
-    legacy = tracker[
-        "legacy_baseline"
-    ]
+    baseline = tracker["baseline"]
 
-    total_experiment = (
-        legacy["signals"]
-        + overall["signals"]
+    combined_total = (
+        baseline["signals"]
+        + len(signals)
     )
 
-    total_wins = (
-        legacy["wins"]
-        + overall["wins"]
+    combined_wins = (
+        baseline["wins"]
+        + wins
     )
 
-    total_losses = (
-        legacy["losses"]
-        + overall["losses"]
+    combined_losses = (
+        baseline["losses"]
+        + losses
     )
 
-    total_rate = (
-        total_wins
-        / total_experiment
+    combined_rate = (
+        combined_wins
+        / combined_total
         * 100
-        if total_experiment
+        if combined_total
         else 0
     )
 
-    message = (
-        "🧠 <b>PRECISION SCANNER V2</b>\n\n"
+    lines = [
+        "🧠 <b>PRECISION SCANNER V2</b>",
+        "",
+        "📊 <b>NEW V2 TRACKER</b>",
+        f"Signals: <b>{len(signals)}</b>",
+        f"Wins: <b>{wins}</b>",
+        f"Losses: <b>{losses}</b>",
+        f"Win rate: "
+        f"<b>{calculate_rate(signals) or 0:.1f}%</b>",
+        f"Pending: <b>{pending}</b>",
+        "",
+        "📞 <b>CALL</b>",
+        f"{sum(s['result'] == 'WIN' for s in calls)}W / "
+        f"{sum(s['result'] == 'LOSS' for s in calls)}L = "
+        f"<b>{calculate_rate(calls) or 0:.1f}%</b>",
+        "",
+        "📉 <b>PUT</b>",
+        f"{sum(s['result'] == 'WIN' for s in puts)}W / "
+        f"{sum(s['result'] == 'LOSS' for s in puts)}L = "
+        f"<b>{calculate_rate(puts) or 0:.1f}%</b>",
+        "",
+        "━━━━━━━━━━━━━━━━━━",
+        "🏆 <b>SCORE PERFORMANCE</b>",
+    ]
 
-        "📊 <b>NEW TRACKER</b>\n"
-        f"Signals: <b>{overall['signals']}</b>\n"
-        f"Wins: <b>{overall['wins']}</b>\n"
-        f"Losses: <b>{ov
+    for score in (
+        11,
+        10,
+        9,
+        8,
+    ):
+        items = score_groups[score]
+
+        if items:
+            lines.append(
+                f"{score}/11 → "
+                f"<b>{calculate_rate(items):.1f}%</b> "
+                f"({len(items)} trades)"
+            )
+        else:
+            lines.append(
+                f"{score}/11 → no data"
+            )
+
+    lines.extend(
+        [
+            "",
+            "━━━━━━━━━━━━━━━━━━",
+            "🏆 <b>ASSET PERFORMANCE</b>",
+        ]
+    )
+
+    if asset_groups:
+        ranked_assets = sorted(
+            asset_groups.items(),
+            key=lambda item: calculate_rate(
+                item[1]
+            ),
+            reverse=True,
+        )
+
+        for symbol, items in ranked_assets:
+            lines.append(
+                f"{symbol} OTC → "
+                f"<b>{calculate_rate(items):.1f}%</b> "
+                f"({len(items)})"
+            )
+    else:
+        lines.append(
+            "No completed trades yet."
+        )
+
+    if best_asset:
+        lines.append(
+            f"\n🥇 Best asset: "
+            f"<b>{best_asset[0]} OTC</b> "
+            f"({calculate_rate(best_asset[1]):.1f}%)"
+        )
+    else:
+        lines.append(
+            "\n🥇 Best asset: need 3 trades"
+        )
+
+    if worst_asset:
+        lines.append(
+            f"⚠️ Worst asset: "
+            f"<b>{worst_asset[0]} OTC</b> "
+            f"({calculate_rate(worst_asset[1]):.1f}%)"
+        )
+    else:
+        lines.append(
+            "⚠️ Worst asset: need 3 trades"
+        )
+
+    lines.extend(
+        [
+            "",
+            "━━━━━━━━━━━━━━━━━━",
+            "⏰ <b>TIME PERFORMANCE</b>",
+        ]
+    )
+
+    if eligible_hours:
+        ranked_hours = sorted(
+            eligible_hours,
+            key=lambda item: calculate_rate(
+                item[1]
+            ),
+            reverse=True,
+        )
+
+        for hour, items in ranked_hours:
+            lines.append(
+                f"{hour:02d}:00 UTC → "
+                f"<b>{calculate_rate(items):.1f}%</b> "
+                f"({len(items)} trades)"
+            )
+
+        lines.append(
+            f"\n🥇 Best period: "
+            f"<b>{best_hour[0]:02d}:00 UTC</b>"
+        )
+
+        lines.append(
+            f"⚠️ Worst period: "
+            f"<b>{worst_hour[0]:02d}:00 UTC</b>"
+        )
+    else:
+        lines.append(
+            "Need at least 3 trades "
+            "in a period."
+        )
+
+    lines.extend(
+        [
+            "",
+            "━━━━━━━━━━━━━━━━━━",
+            "📚 <b>100-TRADE BASELINE</b>",
+            f"Historical: "
+            f"<b>{baseline['wins']}W / "
+            f"{baseline['losses']}L = 58%</b>",
+            "CALL: 62%",
+            "PUT: 54%",
+            "8/11: 48%",
+            "9/11: 55%",
+            "10/11: 63%",
+            "11/11: 68%",
+            "Best: LINK OTC",
+            "Worst: ETH OTC",
+            "",
+            "📈 <b>COMBINED EXPERIMENT</b>",
+            f"Signals: <b>{combined_total}</b>",
+            f"Wins: <b>{combined_wins}</b>",
+            f"Losses: <b>{combined_losses}</b>",
+            f"Win rate: "
+            f"<b>{combined_rate:.1f}%</b>",
+            "",
+            "━━━━━━━━━━━━━━━━━━",
+            "📌 <b>COMMANDS</b>",
+            "<code>/win SIGNAL-ID</code>",
+            "<code>/loss SIGNAL-ID</code>",
+            "<code>/stats</code>",
+            "",
+            "⚠️ Demo testing only. "
+            "No guarantee of profit.",
+        ]
+    )
+
+    return "\n".join(lines)
+
+
+def build_report(
+    results,
+    errors,
+    tracker,
+):
+    now = datetime.now(
+        timezone.utc
+    )
+
+    trades = [
+        result
+        for result in results
+        if result["signal"] != "NO TRADE"
+    ]
+
+    trades.sort(
+        key=lambda result: result["score"],
+        reverse=True,
+    )
+
+    lines = [
+        "🚨 <b>PRECISION SCANNER V2</b>",
+        "",
+        f"⏰ {now.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        "📡 Coinbase proxy data",
+        "📊 Primary: 5M trend",
+        "⚡ Confirmation: 1M",
+        "⌛ Expiry: <b>5 MINUTES</b>",
+        "🎯 Minimum signal: <b>10/11</b>",
+        "⚠️ Coinbase is a proxy for Pocket Option OTC.",
+        "━━━━━━━━━━━━━━━━━━",
+        "",
+    ]
+
+    if not trades:
+        lines.extend(
+            [
+                "⚪ <b>NO QUALIFIED SIGNAL</b>",
+                "",
+                "The V2 filter rejected "
+                "the current conditions.",
+            ]
+        )
+
+    else:
+        lines.extend(
+            [
+                "🔥 <b>QUALIFIED SIGNALS</b>",
+                "",
+            ]
+        )
+
+        for rank, result in enumerate(
+            trades[:5],
+            start=1,
+        ):
+            signal_id = make_signal_id(
+                result["symbol"],
+                now,
+            )
+
+            # Prevent duplicate IDs from being stored.
+            existing_ids = {
+                signal["id"]
+         
