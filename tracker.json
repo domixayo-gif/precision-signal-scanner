@@ -19,7 +19,17 @@
       "price": 53.877,
       "result": "PENDING",
       "result_time": null
+    },
+    {
+      "id": "SOL-172444",
+      "symbol": "SOL",
+      "signal": "CALL",
+      "score": 11,
+      "time": "2026-09-14T17:24:44.310862+00:00",
+      "price": 102.93,
+      "result": "PENDING",
+      "result_time": null
     }
   ],
-  "offset": 840821680
+  "offset": 840821681
 }
