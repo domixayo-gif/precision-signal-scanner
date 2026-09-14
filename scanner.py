@@ -3,415 +3,217 @@ import html
 import requests
 from datetime import datetime, timezone
 
-# ============================================================
-# CONFIG
-# ============================================================
+TOKEN = os.environ["TELEGRAM_TOKEN"]
+CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-
-SYMBOLS = {
+PAIRS = {
     "BTC": "BTC-USD",
     "ETH": "ETH-USD",
     "SOL": "SOL-USD",
 }
 
-COINBASE_URL = "https://api.exchange.coinbase.com/products"
-
-GRANULARITY = 300       # 5 minutes
-CANDLE_LIMIT = 200
-
+BASE = "https://api.exchange.coinbase.com/products"
 TIMEOUT = 20
 
 
-# ============================================================
-# TELEGRAM
-# ============================================================
-
-def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
+def telegram(text):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    data = {
+        "chat_id": CHAT_ID,
+        "text": text,
         "parse_mode": "HTML",
-        "disable_web_page_preview": True,
     }
 
-    response = requests.post(
-        url,
-        data=payload,
-        timeout=TIMEOUT,
-    )
+    r = requests.post(url, data=data, timeout=TIMEOUT)
+    r.raise_for_status()
 
-    if response.status_code != 200:
-        raise RuntimeError(
-            f"Telegram HTTP {response.status_code}: "
-            f"{response.text[:500]}"
-        )
-
-    result = response.json()
-
+    result = r.json()
     if not result.get("ok"):
-        raise RuntimeError(
-            f"Telegram API error: {result}"
-        )
-
-    return result
+        raise RuntimeError(result)
 
 
-# ============================================================
-# COINBASE MARKET DATA
-# ============================================================
-
-def get_candles(product_id):
-    url = f"{COINBASE_URL}/{product_id}/candles"
-
-    params = {
-        "granularity": GRANULARITY,
-    }
+def candles(pair):
+    url = f"{BASE}/{pair}/candles"
+    params = {"granularity": 300}
 
     headers = {
         "Accept": "application/json",
         "User-Agent": "precision-signal-scanner/1.0",
     }
 
-    response = requests.get(
+    r = requests.get(
         url,
         params=params,
         headers=headers,
         timeout=TIMEOUT,
     )
+    r.raise_for_status()
 
-    if response.status_code != 200:
-        raise RuntimeError(
-            f"Coinbase API returned HTTP "
-            f"{response.status_code}: "
-            f"{response.text[:300]}"
-        )
-
-    data = response.json()
-
-    if not isinstance(data, list):
-        raise RuntimeError(
-            f"Unexpected Coinbase response: {data}"
-        )
+    data = r.json()
 
     if len(data) < 60:
         raise RuntimeError(
-            f"Not enough candles returned: {len(data)}"
+            f"Only {len(data)} candles returned"
         )
 
-    # Coinbase normally returns newest first.
-    # Convert to oldest -> newest.
-    data = sorted(
-        data,
-        key=lambda candle: candle[0]
-    )
+    data.sort(key=lambda x: x[0])
 
-    candles = []
+    return [float(x[4]) for x in data[-200:]]
 
-    for candle in data[-CANDLE_LIMIT:]:
-        candles.append({
-            "timestamp": int(candle[0]),
-            "low": float(candle[1]),
-            "high": float(candle[2]),
-            "open": float(candle[3]),
-            "close": float(candle[4]),
-            "volume": float(candle[5]),
-        })
-
-    return candles
-
-
-# ============================================================
-# EMA
-# ============================================================
 
 def ema(values, period):
     if len(values) < period:
         return None
 
-    multiplier = 2 / (period + 1)
-
+    k = 2 / (period + 1)
     value = sum(values[:period]) / period
 
     for price in values[period:]:
-        value = (
-            (price - value) * multiplier
-            + value
-        )
+        value = price * k + value * (1 - k)
 
     return value
 
 
-# ============================================================
-# RSI
-# ============================================================
-
-def calculate_rsi(values, period=14):
-    if len(values) <= period:
-        return None
-
+def rsi(values, period=14):
     gains = []
     losses = []
 
     for i in range(1, len(values)):
         change = values[i] - values[i - 1]
-
         gains.append(max(change, 0))
         losses.append(max(-change, 0))
 
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
+    gain = sum(gains[:period]) / period
+    loss = sum(losses[:period]) / period
 
     for i in range(period, len(gains)):
-        avg_gain = (
-            (avg_gain * (period - 1))
-            + gains[i]
-        ) / period
+        gain = ((gain * 13) + gains[i]) / 14
+        loss = ((loss * 13) + losses[i]) / 14
 
-        avg_loss = (
-            (avg_loss * (period - 1))
-            + losses[i]
-        ) / period
+    if loss == 0:
+        return 100
 
-    if avg_loss == 0:
-        return 100.0
-
-    rs = avg_gain / avg_loss
-
-    return 100 - (100 / (1 + rs))
+    return 100 - (100 / (1 + gain / loss))
 
 
-# ============================================================
-# MACD
-# ============================================================
-
-def calculate_macd(values):
-    """
-    Standard MACD:
-    Fast EMA  = 12
-    Slow EMA  = 26
-    Signal    = 9
-    """
-
-    if len(values) < 35:
-        return None, None, None
-
-    macd_series = []
+def macd(values):
+    series = []
 
     for i in range(26, len(values) + 1):
-        subset = values[:i]
+        fast = ema(values[:i], 12)
+        slow = ema(values[:i], 26)
+        series.append(fast - slow)
 
-        fast = ema(subset, 12)
-        slow = ema(subset, 26)
-
-        if fast is not None and slow is not None:
-            macd_series.append(
-                fast - slow
-            )
-
-    if len(macd_series) < 9:
-        return None, None, None
-
-    macd_line = macd_series[-1]
-
-    signal_line = ema(
-        macd_series,
-        9
-    )
-
-    if signal_line is None:
-        return None, None, None
-
-    histogram = (
-        macd_line - signal_line
-    )
-
-    return (
-        macd_line,
-        signal_line,
-        histogram
-    )
+    line = series[-1]
+    signal = ema(series, 9)
+    return line, signal, line - signal
 
 
-# ============================================================
-# ANALYSIS
-# ============================================================
+def analyze(name, pair):
+    prices = candles(pair)
 
-def analyze(name, product_id):
+    price = prices[-1]
+    e20 = ema(prices, 20)
+    e50 = ema(prices, 50)
+    r = rsi(prices)
+    m, s, hist = macd(prices)
 
-    candles = get_candles(product_id)
-
-    closes = [
-        candle["close"]
-        for candle in candles
-    ]
-
-    price = closes[-1]
-
-    ema20 = ema(closes, 20)
-    ema50 = ema(closes, 50)
-
-    rsi = calculate_rsi(
-        closes,
-        14
-    )
-
-    (
-        macd_line,
-        macd_signal,
-        macd_hist
-    ) = calculate_macd(closes)
-
-    if (
-        ema20 is None
-        or ema50 is None
-        or rsi is None
-        or macd_line is None
-        or macd_signal is None
-        or macd_hist is None
-    ):
-        raise RuntimeError(
-            "Indicators could not be calculated"
-        )
-
-    bullish = 0
-    bearish = 0
-
+    bull = 0
+    bear = 0
     reasons = []
 
-    # --------------------------------------------------------
-    # PRICE VS EMA20
-    # --------------------------------------------------------
-
-    if price > ema20:
-        bullish += 1
-        reasons.append(
-            "Price above EMA20"
-        )
+    if price > e20:
+        bull += 1
+        reasons.append("Price above EMA20")
     else:
-        bearish += 1
-        reasons.append(
-            "Price below EMA20"
-        )
+        bear += 1
+        reasons.append("Price below EMA20")
 
-    # --------------------------------------------------------
-    # EMA20 VS EMA50
-    # --------------------------------------------------------
-
-    if ema20 > ema50:
-        bullish += 2
-        reasons.append(
-            "EMA20 above EMA50"
-        )
+    if e20 > e50:
+        bull += 2
+        reasons.append("EMA20 above EMA50")
     else:
-        bearish += 2
-        reasons.append(
-            "EMA20 below EMA50"
-        )
+        bear += 2
+        reasons.append("EMA20 below EMA50")
 
-    # --------------------------------------------------------
-    # RSI
-    # --------------------------------------------------------
-
-    if rsi >= 70:
-        bearish += 2
-        reasons.append(
-            "RSI overbought"
-        )
-
-    elif rsi <= 30:
-        bullish += 2
-        reasons.append(
-            "RSI oversold"
-        )
-
-    elif rsi >= 50:
-        bullish += 1
-        reasons.append(
-            "RSI bullish"
-        )
-
+    if r >= 70:
+        bear += 2
+        reasons.append("RSI overbought")
+    elif r <= 30:
+        bull += 2
+        reasons.append("RSI oversold")
+    elif r >= 50:
+        bull += 1
+        reasons.append("RSI bullish")
     else:
-        bearish += 1
-        reasons.append(
-            "RSI bearish"
-        )
+        bear += 1
+        reasons.append("RSI bearish")
 
-    # --------------------------------------------------------
-    # MACD
-    # --------------------------------------------------------
-
-    if macd_hist > 0:
-        bullish += 2
-        reasons.append(
-            "MACD bullish"
-        )
+    if hist > 0:
+        bull += 2
+        reasons.append("MACD bullish")
     else:
-        bearish += 2
-        reasons.append(
-            "MACD bearish"
-        )
+        bear += 2
+        reasons.append("MACD bearish")
 
-    # --------------------------------------------------------
-    # FINAL SIGNAL
-    # --------------------------------------------------------
-
-    if bullish >= 5 and bullish > bearish:
+    if bull >= 5 and bull > bear:
         signal = "🟢 CALL"
-
-    elif bearish >= 5 and bearish > bullish:
+    elif bear >= 5 and bear > bull:
         signal = "🔴 PUT"
-
     else:
         signal = "⚪ NO TRADE"
 
     return {
         "name": name,
-        "product": product_id,
         "price": price,
-        "ema20": ema20,
-        "ema50": ema50,
-        "rsi": rsi,
-        "macd": macd_line,
-        "macd_signal": macd_signal,
-        "macd_hist": macd_hist,
-        "bullish": bullish,
-        "bearish": bearish,
-        "signal": signal,
+        "e20": e20,
+        "e50": e50,
+        "rsi": r,
+        "macd": m,
+        "signal": s,
+        "hist": hist,
+        "bull": bull,
+        "bear": bear,
+        "trade": signal,
         "reasons": reasons,
-        "candles": len(candles),
     }
 
 
-# ============================================================
-# PRICE FORMAT
-# ============================================================
-
-def format_price(price):
-
-    if price >= 1000:
-        return f"{price:,.2f}"
-
-    if price >= 1:
-        return f"{price:,.4f}"
-
-    return f"{price:.6f}"
+def price(value):
+    if value >= 1000:
+        return f"{value:,.2f}"
+    if value >= 1:
+        return f"{value:,.4f}"
+    return f"{value:.6f}"
 
 
-# ============================================================
-# TELEGRAM REPORT
-# ============================================================
+def main():
+    print("Starting Precision Signal Scanner...")
 
-def build_report(results, errors):
+    results = []
+    errors = []
 
-    now = datetime.now(
-        timezone.utc
-    ).strftime(
-        "%Y-%m-%d %H:%M:%S UTC"
-    )
+    for name, pair in PAIRS.items():
+        print(f"Analyzing {pair}...")
+
+        try:
+            result = analyze(name, pair)
+            results.append(result)
+
+            print(
+                f"{pair}: {result['trade']} "
+                f"Price={result['price']}"
+            )
+
+        except Exception as e:
+            errors.append(f"{pair}: {e}")
+            print(f"{pair}: ERROR - {e}")
+
+    if not results:
+        raise RuntimeError("No market analysis completed")
+
+    now = datetime.now(timezone.utc)
+    now = now.strftime("%Y-%m-%d %H:%M:%S UTC")
 
     message = (
         "📊 <b>PRECISION SIGNAL SCANNER</b>\n"
@@ -421,6 +223,38 @@ def build_report(results, errors):
         "━━━━━━━━━━━━━━━━━━\n\n"
     )
 
-    for result in results:
+    for x in results:
+        reasons = html.escape(", ".join(x["reasons"]))
 
-       
+        message += (
+            f"<b>━━ {x['name']}/USD ━━</b>\n"
+            f"💰 Price: <b>{price(x['price'])}</b>\n"
+            f"📈 EMA20: {price(x['e20'])}\n"
+            f"📊 EMA50: {price(x['e50'])}\n"
+            f"〽️ RSI14: <b>{x['rsi']:.2f}</b>\n"
+            f"📉 MACD: {x['macd']:.6f}\n"
+            f"📊 Histogram: {x['hist']:.6f}\n"
+            f"🟢 Bullish: {x['bull']}\n"
+            f"🔴 Bearish: {x['bear']}\n"
+            f"🎯 <b>{x['trade']}</b>\n"
+            f"📝 {reasons}\n\n"
+        )
+
+    if errors:
+        message += "⚠️ <b>ERRORS</b>\n"
+        for error in errors:
+            message += f"• {html.escape(error)}\n"
+
+    message += (
+        "\n━━━━━━━━━━━━━━━━━━\n"
+        "⚠️ <i>Technical analysis only. "
+        "Not financial advice.</i>"
+    )
+
+    print("Sending Telegram report...")
+    telegram(message)
+    print("Telegram report sent successfully.")
+
+
+if __name__ == "__main__":
+    main()
