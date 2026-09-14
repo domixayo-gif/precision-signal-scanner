@@ -1,4 +1,25 @@
 {
-  "signals": [],
-  "offset": 840821679
+  "signals": [
+    {
+      "id": "LINK-154645",
+      "symbol": "LINK",
+      "signal": "CALL",
+      "score": 11,
+      "time": "2026-09-14T15:46:45.269294+00:00",
+      "price": 11.427,
+      "result": "PENDING",
+      "result_time": null
+    },
+    {
+      "id": "LTC-154645",
+      "symbol": "LTC",
+      "signal": "CALL",
+      "score": 11,
+      "time": "2026-09-14T15:46:45.269294+00:00",
+      "price": 53.877,
+      "result": "PENDING",
+      "result_time": null
+    }
+  ],
+  "offset": 840821680
 }
