@@ -59,6 +59,26 @@
       "price": 0.09669,
       "result": "PENDING",
       "result_time": null
+    },
+    {
+      "id": "BTC-230149",
+      "symbol": "BTC",
+      "signal": "PUT",
+      "score": 11,
+      "time": "2026-09-14T23:01:49.118897+00:00",
+      "price": 78541.29,
+      "result": "PENDING",
+      "result_time": null
+    },
+    {
+      "id": "SOL-230149",
+      "symbol": "SOL",
+      "signal": "PUT",
+      "score": 11,
+      "time": "2026-09-14T23:01:49.118897+00:00",
+      "price": 102.87,
+      "result": "PENDING",
+      "result_time": null
     }
   ],
   "offset": 840821682
