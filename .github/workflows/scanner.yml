@@ -2,33 +2,29 @@ name: Precision Signal Scanner
 
 on:
   schedule:
-    - cron: '*/5 * * * *'  # Run every 5 minutes
-  workflow_dispatch:  # Allow manual trigger
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
 
 jobs:
   scan:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
-      
+        uses: actions/checkout@v7
+
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v7
         with:
-          python-version: '3.9'
-      
+          python-version: "3.12"
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests pandas python-binance
-      
+          pip install requests
+
       - name: Run scanner
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python scanner.py
-      
-      - name: Log results
-        if: always()
-        run: echo "Scanner execution completed"
