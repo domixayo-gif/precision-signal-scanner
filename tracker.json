@@ -1,0 +1,25 @@
+{
+  "signals": [
+    {
+      "id": "LTC-131117",
+      "symbol": "LTC",
+      "signal": "PUT",
+      "score": 11,
+      "time": "2026-09-14T13:11:17.120120+00:00",
+      "price": 53.454,
+      "result": "PENDING",
+      "result_time": null
+    },
+    {
+      "id": "SOL-131117",
+      "symbol": "SOL",
+      "signal": "PUT",
+      "score": 10,
+      "time": "2026-09-14T13:11:17.120120+00:00",
+      "price": 100.96,
+      "result": "PENDING",
+      "result_time": null
+    }
+  ],
+  "offset": 840821671
+}
