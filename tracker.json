@@ -49,6 +49,16 @@
       "price": 0.09718,
       "result": "PENDING",
       "result_time": null
+    },
+    {
+      "id": "POL-224307",
+      "symbol": "POL",
+      "signal": "PUT",
+      "score": 11,
+      "time": "2026-09-14T22:43:07.141814+00:00",
+      "price": 0.09669,
+      "result": "PENDING",
+      "result_time": null
     }
   ],
   "offset": 840821682
