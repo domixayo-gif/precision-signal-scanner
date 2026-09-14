@@ -1,25 +1,41 @@
-{
-  "signals": [
-    {
-      "id": "LTC-131117",
-      "symbol": "LTC",
-      "signal": "PUT",
-      "score": 11,
-      "time": "2026-09-14T13:11:17.120120+00:00",
-      "price": 53.454,
-      "result": "PENDING",
-      "result_time": null
-    },
-    {
-      "id": "SOL-131117",
-      "symbol": "SOL",
-      "signal": "PUT",
-      "score": 10,
-      "time": "2026-09-14T13:11:17.120120+00:00",
-      "price": 100.96,
-      "result": "PENDING",
-      "result_time": null
-    }
-  ],
-  "offset": 840821671
-}
+name: Precision Signal Scanner
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: precision-signal-scanner
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Validate Python syntax
+        run: python -m py_compile scanner.py
+
+      - name: Run scanner
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scanner.py
