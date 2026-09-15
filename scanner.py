@@ -1,201 +1,312 @@
 import os
 import json
+import html
 import time
+import subprocess
 from datetime import datetime, timezone
 
 import requests
 
-
 # ============================================================
-# V3 PRECISION SIGNAL SCANNER
+# PRECISION SIGNAL SCANNER V3.1
 # 5M trend + 1M entry confirmation
 # Reference expiry: 10 minutes
 #
 # IMPORTANT:
-# - This scanner analyzes Coinbase spot data as a market-data proxy.
-# - It does NOT connect to or execute trades on Pocket Option.
-# - A score is setup quality, NOT a probability of winning.
+# - Coinbase spot data is used only as a market-data proxy.
+# - This script does NOT connect to or execute Pocket Option trades.
+# - Score = setup quality, NOT probability of winning.
+# - Use demo/forward testing before risking money.
 # ============================================================
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = str(os.environ.get("TELEGRAM_CHAT_ID", ""))
 
 TRACKER_FILE = "tracker.json"
-
 COINBASE_BASE = "https://api.exchange.coinbase.com"
 
-# Keep the current asset universe from the existing scanner.
-# These are Coinbase spot symbols, NOT Pocket Option OTC prices.
-ASSETS = [
-    "BTC-USD",
-    "ETH-USD",
-    "SOL-USD",
-    "BNB-USD",
-    "ADA-USD",
-    "TRX-USD",
-    "LINK-USD",
-    "TON-USD",
-    "AVAX-USD",
-    "DOGE-USD",
-    "DOT-USD",
-    "LTC-USD",
-    "POL-USD",
+ASSET_BASES = [
+    "BTC", "ETH", "SOL", "BNB", "ADA", "TRX", "LINK",
+    "TON", "AVAX", "DOGE", "DOT", "LTC", "POL"
 ]
 
-TIMEFRAME_MAIN = 300   # 5 minutes
-TIMEFRAME_ENTRY = 60   # 1 minute
-
+MAIN_SECONDS = 300
+ENTRY_SECONDS = 60
 MIN_SCORE = 80
-MAX_SCORE = 100
-
-REQUEST_TIMEOUT = 15
+REQUEST_TIMEOUT = 20
 MAX_TRACKER_ITEMS = 500
 
 
 # ============================================================
-# BASIC HELPERS
+# GENERAL HELPERS
 # ============================================================
 
-def utc_now():
-    return datetime.now(timezone.utc).isoformat()
+def now_utc():
+    return datetime.now(timezone.utc)
 
 
-def safe_float(value, default=0.0):
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
+def iso_now():
+    return now_utc().isoformat()
 
 
-def clamp(value, low, high):
-    return max(low, min(high, value))
+def tg(method, data=None):
+    if not TELEGRAM_TOKEN:
+        return None
+
+    url = "https://api.telegram.org/bot" + TELEGRAM_TOKEN + "/" + method
+    response = requests.post(
+        url,
+        data=data or {},
+        timeout=REQUEST_TIMEOUT
+    )
+    response.raise_for_status()
+    payload = response.json()
+
+    if not payload.get("ok"):
+        raise RuntimeError(str(payload))
+
+    return payload.get("result")
 
 
-def send_telegram(message):
+def send_message(text):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram secrets are missing. Signal was not sent.")
+        print("Telegram secrets missing; message not sent.")
         return False
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
     try:
-        response = requests.post(
-            url,
-            data={
+        for start in range(0, len(text), 3900):
+            tg("sendMessage", {
                 "chat_id": TELEGRAM_CHAT_ID,
-                "text": message,
-            },
-            timeout=REQUEST_TIMEOUT,
-        )
-        response.raise_for_status()
+                "text": text[start:start + 3900],
+                "parse_mode": "HTML",
+                "disable_web_page_preview": "true"
+            })
         return True
-    except requests.RequestException as exc:
-        print(f"Telegram error: {exc}")
+    except Exception as exc:
+        print("Telegram send error:", exc)
         return False
+
+
+def api_get(url, params=None):
+    response = requests.get(
+        url,
+        params=params,
+        timeout=REQUEST_TIMEOUT,
+        headers={"User-Agent": "precision-signal-scanner/3.1"}
+    )
+    response.raise_for_status()
+    return response.json()
 
 
 # ============================================================
 # TRACKER
+# Keeps compatibility with the existing:
+# {"signals": [...], "offset": ...}
 # ============================================================
 
 def load_tracker():
     if not os.path.exists(TRACKER_FILE):
-        return []
+        return {"signals": [], "offset": 0}
 
     try:
         with open(TRACKER_FILE, "r", encoding="utf-8") as file:
             data = json.load(file)
 
-        if isinstance(data, list):
+        # Existing scanner format.
+        if isinstance(data, dict):
+            data.setdefault("signals", [])
+            data.setdefault("offset", 0)
+            if not isinstance(data["signals"], list):
+                data["signals"] = []
             return data
 
-        return []
-    except (OSError, json.JSONDecodeError) as exc:
-        print(f"Could not read tracker.json: {exc}")
-        return []
+        # Also accept a plain list if an older V3 file created one.
+        if isinstance(data, list):
+            return {"signals": data, "offset": 0}
+
+    except Exception as exc:
+        print("Tracker read error:", exc)
+
+    return {"signals": [], "offset": 0}
 
 
 def save_tracker(data):
-    # Keep the file from growing forever.
-    data = data[-MAX_TRACKER_ITEMS:]
+    signals = data.get("signals", [])
+    data["signals"] = signals[-MAX_TRACKER_ITEMS:]
 
     with open(TRACKER_FILE, "w", encoding="utf-8") as file:
         json.dump(data, file, indent=2)
 
 
-def signal_already_recorded(tracker, asset, signal, candle_time):
-    """
-    Prevent duplicate alerts for the same asset/direction/candle.
-    """
-    for item in reversed(tracker):
-        if (
-            item.get("asset") == asset
-            and item.get("signal") == signal
-            and item.get("candle_time") == candle_time
-        ):
-            return True
+# ============================================================
+# TELEGRAM COMMANDS
+# ============================================================
 
-    return False
+def help_text():
+    return (
+        "🤖 <b>PRECISION SCANNER V3.1</b>\n\n"
+        "5M trend + 1M entry confirmation\n"
+        "Reference expiry: <b>10 MINUTES</b>\n\n"
+        "<b>Commands</b>\n"
+        "/start - show help\n"
+        "/win SIGNAL-ID - record WIN\n"
+        "/loss SIGNAL-ID - record LOSS\n"
+        "/stats - performance report\n\n"
+        "⚠️ DEMO/TESTING ONLY.\n"
+        "Coinbase is a market-data proxy and may differ from OTC pricing."
+    )
 
 
-def record_signal(tracker, signal_data):
-    tracker.append(signal_data)
-    save_tracker(tracker)
+def process_commands(data):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return False
+
+    changed = False
+
+    try:
+        updates = tg("getUpdates", {
+            "offset": int(data.get("offset", 0)) + 1,
+            "limit": 100,
+            "timeout": 1
+        }) or []
+    except Exception as exc:
+        print("Telegram command error:", exc)
+        return False
+
+    for update in updates:
+        data["offset"] = update.get("update_id", data.get("offset", 0))
+
+        message = update.get("message", {})
+        chat_id = str(message.get("chat", {}).get("id", ""))
+
+        if chat_id != TELEGRAM_CHAT_ID:
+            continue
+
+        text = str(message.get("text", "")).strip()
+        parts = text.split()
+
+        if not parts:
+            continue
+
+        command = parts[0].split("@")[0].lower()
+
+        if command == "/start":
+            send_message(help_text())
+            continue
+
+        if command == "/stats":
+            send_message(stats_text(data))
+            continue
+
+        if command in ("/win", "/loss"):
+            if len(parts) != 2:
+                send_message(
+                    "⚠️ Use <code>" +
+                    command +
+                    " SIGNAL-ID</code>"
+                )
+                continue
+
+            wanted = parts[1]
+            found = None
+
+            for item in data["signals"]:
+                if item.get("id") == wanted:
+                    found = item
+                    break
+
+            if found is None:
+                send_message(
+                    "❌ Signal not found: <code>" +
+                    html.escape(wanted) +
+                    "</code>"
+                )
+                continue
+
+            if found.get("result", "PENDING") != "PENDING":
+                send_message(
+                    "⚠️ <code>" +
+                    html.escape(wanted) +
+                    "</code> is already <b>" +
+                    html.escape(str(found.get("result"))) +
+                    "</b>."
+                )
+                continue
+
+            result = "WIN" if command == "/win" else "LOSS"
+            found["result"] = result
+            found["result_time"] = iso_now()
+            changed = True
+
+            send_message(
+                "✅ <b>RESULT RECORDED</b>\n"
+                "Signal: <code>" + html.escape(wanted) + "</code>\n"
+                "Result: <b>" + result + "</b>"
+            )
+            continue
+
+        if command.startswith("/"):
+            send_message("❓ Unknown command.\n\n" + help_text())
+
+    if changed:
+        save_tracker(data)
+
+    return changed
 
 
 # ============================================================
 # MARKET DATA
 # ============================================================
 
-def get_candles(product_id, granularity, limit=200):
-    """
-    Coinbase Exchange candles:
-    [time, low, high, open, close, volume]
-    """
-    url = f"{COINBASE_BASE}/products/{product_id}/candles"
+def get_markets():
+    raw = api_get(COINBASE_BASE + "/products")
+    found = {}
 
-    try:
-        response = requests.get(
-            url,
-            params={"granularity": granularity},
-            timeout=REQUEST_TIMEOUT,
-            headers={"User-Agent": "precision-signal-scanner/3.0"},
-        )
-        response.raise_for_status()
-        raw = response.json()
+    for item in raw:
+        if item.get("status") != "online":
+            continue
 
-        candles = []
+        base = item.get("base_currency")
+        quote = item.get("quote_currency")
 
-        for row in raw:
-            if len(row) < 6:
-                continue
+        if base in ASSET_BASES and quote in ("USD", "USDC"):
+            if base not in found:
+                found[base] = item.get("id")
 
-            candles.append(
-                {
-                    "time": int(row[0]),
-                    "low": safe_float(row[1]),
-                    "high": safe_float(row[2]),
-                    "open": safe_float(row[3]),
-                    "close": safe_float(row[4]),
-                    "volume": safe_float(row[5]),
-                }
-            )
+    return found
 
-        candles.sort(key=lambda x: x["time"])
 
-        # Remove an incomplete final candle where possible.
-        current_ts = int(time.time())
-        candles = [
-            candle
-            for candle in candles
-            if candle["time"] + granularity <= current_ts
-        ]
+def get_candles(product_id, granularity, limit=220):
+    raw = api_get(
+        COINBASE_BASE + "/products/" + product_id + "/candles",
+        {"granularity": granularity}
+    )
 
-        return candles[-limit:]
+    candles = []
 
-    except (requests.RequestException, ValueError) as exc:
-        print(f"{product_id} data error ({granularity}s): {exc}")
-        return []
+    for row in raw:
+        if not isinstance(row, list) or len(row) < 6:
+            continue
+
+        candles.append({
+            "time": int(row[0]),
+            "low": float(row[1]),
+            "high": float(row[2]),
+            "open": float(row[3]),
+            "close": float(row[4]),
+            "volume": float(row[5])
+        })
+
+    candles.sort(key=lambda x: x["time"])
+
+    # Use completed candles only.
+    current = int(time.time())
+    candles = [
+        c for c in candles
+        if c["time"] + granularity <= current
+    ]
+
+    return candles[-limit:]
 
 
 # ============================================================
@@ -207,17 +318,17 @@ def ema(values, period):
         return [None] * len(values)
 
     result = [None] * len(values)
+    multiplier = 2.0 / (period + 1.0)
 
-    multiplier = 2 / (period + 1)
     seed = sum(values[:period]) / period
     result[period - 1] = seed
-
     previous = seed
 
     for i in range(period, len(values)):
-        current = (values[i] - previous) * multiplier + previous
-        result[i] = current
-        previous = current
+        previous = (
+            values[i] - previous
+        ) * multiplier + previous
+        result[i] = previous
 
     return result
 
@@ -239,18 +350,22 @@ def rsi(values, period=14):
     avg_gain = sum(gains[1:period + 1]) / period
     avg_loss = sum(losses[1:period + 1]) / period
 
-    def calc_rsi(gain, loss):
+    def calc(gain, loss):
         if loss == 0:
             return 100.0
         rs = gain / loss
-        return 100.0 - (100.0 / (1.0 + rs))
+        return 100.0 - 100.0 / (1.0 + rs)
 
-    result[period] = calc_rsi(avg_gain, avg_loss)
+    result[period] = calc(avg_gain, avg_loss)
 
     for i in range(period + 1, len(values)):
-        avg_gain = ((avg_gain * (period - 1)) + gains[i]) / period
-        avg_loss = ((avg_loss * (period - 1)) + losses[i]) / period
-        result[i] = calc_rsi(avg_gain, avg_loss)
+        avg_gain = (
+            avg_gain * (period - 1) + gains[i]
+        ) / period
+        avg_loss = (
+            avg_loss * (period - 1) + losses[i]
+        ) / period
+        result[i] = calc(avg_gain, avg_loss)
 
     return result
 
@@ -268,34 +383,32 @@ def true_ranges(candles):
         tr[i] = max(
             candle["high"] - candle["low"],
             abs(candle["high"] - previous_close),
-            abs(candle["low"] - previous_close),
+            abs(candle["low"] - previous_close)
         )
 
     return tr
 
 
 def atr(candles, period=14):
-    trs = true_ranges(candles)
+    tr = true_ranges(candles)
     result = [None] * len(candles)
 
     if len(candles) <= period:
         return result
 
-    value = sum(trs[1:period + 1]) / period
+    value = sum(tr[1:period + 1]) / period
     result[period] = value
 
     for i in range(period + 1, len(candles)):
-        value = ((value * (period - 1)) + trs[i]) / period
+        value = (
+            value * (period - 1) + tr[i]
+        ) / period
         result[i] = value
 
     return result
 
 
 def adx_dmi(candles, period=14):
-    """
-    Wilder-style ADX / DMI calculation.
-    Returns +DI, -DI and ADX arrays.
-    """
     n = len(candles)
 
     plus_dm = [0.0] * n
@@ -303,14 +416,14 @@ def adx_dmi(candles, period=14):
     tr = true_ranges(candles)
 
     for i in range(1, n):
-        up_move = candles[i]["high"] - candles[i - 1]["high"]
-        down_move = candles[i - 1]["low"] - candles[i]["low"]
+        up = candles[i]["high"] - candles[i - 1]["high"]
+        down = candles[i - 1]["low"] - candles[i]["low"]
 
-        if up_move > down_move and up_move > 0:
-            plus_dm[i] = up_move
+        if up > down and up > 0:
+            plus_dm[i] = up
 
-        if down_move > up_move and down_move > 0:
-            minus_dm[i] = down_move
+        if down > up and down > 0:
+            minus_dm[i] = down
 
     plus_di = [None] * n
     minus_di = [None] * n
@@ -319,7 +432,6 @@ def adx_dmi(candles, period=14):
     if n <= period * 2:
         return plus_di, minus_di, adx
 
-    # Initial Wilder sums.
     tr_sum = sum(tr[1:period + 1])
     plus_sum = sum(plus_dm[1:period + 1])
     minus_sum = sum(minus_dm[1:period + 1])
@@ -328,79 +440,77 @@ def adx_dmi(candles, period=14):
 
     for i in range(period, n):
         if i > period:
-            tr_sum = tr_sum - (tr_sum / period) + tr[i]
-            plus_sum = plus_sum - (plus_sum / period) + plus_dm[i]
-            minus_sum = minus_sum - (minus_sum / period) + minus_dm[i]
+            tr_sum = tr_sum - tr_sum / period + tr[i]
+            plus_sum = (
+                plus_sum - plus_sum / period + plus_dm[i]
+            )
+            minus_sum = (
+                minus_sum - minus_sum / period + minus_dm[i]
+            )
 
         if tr_sum == 0:
-            plus = 0.0
-            minus = 0.0
+            pdi = 0.0
+            mdi = 0.0
         else:
-            plus = 100.0 * plus_sum / tr_sum
-            minus = 100.0 * minus_sum / tr_sum
+            pdi = 100.0 * plus_sum / tr_sum
+            mdi = 100.0 * minus_sum / tr_sum
 
-        plus_di[i] = plus
-        minus_di[i] = minus
+        plus_di[i] = pdi
+        minus_di[i] = mdi
 
-        denominator = plus + minus
-
-        if denominator == 0:
-            dx = 0.0
-        else:
-            dx = 100.0 * abs(plus - minus) / denominator
+        denominator = pdi + mdi
+        dx = (
+            0.0
+            if denominator == 0
+            else 100.0 * abs(pdi - mdi) / denominator
+        )
 
         dx_values.append(dx)
 
-        # Need 'period' DX values for the initial ADX.
         if len(dx_values) == period:
             adx[i] = sum(dx_values) / period
-
-        elif len(dx_values) > period:
-            previous_adx = adx[i - 1]
-
-            if previous_adx is not None:
-                adx[i] = (
-                    (previous_adx * (period - 1)) + dx
-                ) / period
+        elif len(dx_values) > period and adx[i - 1] is not None:
+            adx[i] = (
+                adx[i - 1] * (period - 1) + dx
+            ) / period
 
     return plus_di, minus_di, adx
 
 
-def macd(values, fast_period=12, slow_period=26, signal_period=9):
-    fast = ema(values, fast_period)
-    slow = ema(values, slow_period)
+def macd(values, fast=12, slow=26, signal=9):
+    fast_ema = ema(values, fast)
+    slow_ema = ema(values, slow)
 
     line = [None] * len(values)
 
     for i in range(len(values)):
-        if fast[i] is not None and slow[i] is not None:
-            line[i] = fast[i] - slow[i]
+        if fast_ema[i] is not None and slow_ema[i] is not None:
+            line[i] = fast_ema[i] - slow_ema[i]
 
-    valid_macd = [x for x in line if x is not None]
-    signal_valid = ema(valid_macd, signal_period)
+    valid = [x for x in line if x is not None]
+    signal_valid = ema(valid, signal)
 
-    signal = [None] * len(values)
-
-    start = len(values) - len(valid_macd)
+    signal_line = [None] * len(values)
+    start = len(values) - len(valid)
 
     for j, value in enumerate(signal_valid):
         if value is not None:
-            signal[start + j] = value
+            signal_line[start + j] = value
 
     histogram = [None] * len(values)
 
     for i in range(len(values)):
-        if line[i] is not None and signal[i] is not None:
-            histogram[i] = line[i] - signal[i]
+        if line[i] is not None and signal_line[i] is not None:
+            histogram[i] = line[i] - signal_line[i]
 
-    return line, signal, histogram
+    return line, signal_line, histogram
 
 
 # ============================================================
-# PRICE ACTION / MARKET STRUCTURE
+# PRICE ACTION / STRUCTURE
 # ============================================================
 
-def candle_direction(candle):
+def direction(candle):
     if candle["close"] > candle["open"]:
         return "BULL"
     if candle["close"] < candle["open"]:
@@ -408,98 +518,83 @@ def candle_direction(candle):
     return "DOJI"
 
 
-def candle_body_ratio(candle):
-    full_range = candle["high"] - candle["low"]
-
-    if full_range <= 0:
+def body_ratio(candle):
+    full = candle["high"] - candle["low"]
+    if full <= 0:
         return 0.0
-
-    return abs(candle["close"] - candle["open"]) / full_range
+    return abs(candle["close"] - candle["open"]) / full
 
 
 def bullish_confirmation(candles):
-    """
-    Entry confirmation on the latest closed 1M candle.
-
-    Strong bullish candle OR bullish engulfing OR a higher close
-    after a short pullback.
-    """
-    if len(candles) < 5:
+    if len(candles) < 3:
         return False
 
     current = candles[-1]
     previous = candles[-2]
-    two_back = candles[-3]
 
-    strong_body = (
-        candle_direction(current) == "BULL"
-        and candle_body_ratio(current) >= 0.55
+    strong = (
+        direction(current) == "BULL"
+        and body_ratio(current) >= 0.55
         and current["close"] > previous["close"]
     )
 
-    bullish_engulfing = (
-        candle_direction(previous) == "BEAR"
-        and candle_direction(current) == "BULL"
+    engulfing = (
+        direction(previous) == "BEAR"
+        and direction(current) == "BULL"
         and current["open"] <= previous["close"]
         and current["close"] >= previous["open"]
     )
 
-    pullback_reclaim = (
-        previous["low"] <= two_back["low"]
-        and current["close"] > previous["high"]
+    reclaim = (
+        current["close"] > previous["high"]
+        and previous["low"] <= candles[-3]["low"]
     )
 
-    return strong_body or bullish_engulfing or pullback_reclaim
+    return strong or engulfing or reclaim
 
 
 def bearish_confirmation(candles):
-    if len(candles) < 5:
+    if len(candles) < 3:
         return False
 
     current = candles[-1]
     previous = candles[-2]
-    two_back = candles[-3]
 
-    strong_body = (
-        candle_direction(current) == "BEAR"
-        and candle_body_ratio(current) >= 0.55
+    strong = (
+        direction(current) == "BEAR"
+        and body_ratio(current) >= 0.55
         and current["close"] < previous["close"]
     )
 
-    bearish_engulfing = (
-        candle_direction(previous) == "BULL"
-        and candle_direction(current) == "BEAR"
+    engulfing = (
+        direction(previous) == "BULL"
+        and direction(current) == "BEAR"
         and current["open"] >= previous["close"]
         and current["close"] <= previous["open"]
     )
 
-    pullback_reclaim = (
-        previous["high"] >= two_back["high"]
-        and current["close"] < previous["low"]
+    reclaim = (
+        current["close"] < previous["low"]
+        and previous["high"] >= candles[-3]["high"]
     )
 
-    return strong_body or bearish_engulfing or pullback_reclaim
+    return strong or engulfing or reclaim
 
 
-def market_structure(candles, lookback=20):
-    """
-    Simple structure test using halves of the recent window.
-    It avoids pretending to identify every swing point perfectly.
-    """
+def structure(candles, lookback=20):
     if len(candles) < lookback:
         return "NEUTRAL"
 
     recent = candles[-lookback:]
+    half = lookback // 2
 
-    midpoint = lookback // 2
-    first = recent[:midpoint]
-    second = recent[midpoint:]
+    first = recent[:half]
+    second = recent[half:]
 
-    first_high = max(c["high"] for c in first)
-    second_high = max(c["high"] for c in second)
-
-    first_low = min(c["low"] for c in first)
-    second_low = min(c["low"] for c in second)
+    first_high = max(x["high"] for x in first)
+    second_high = max(x["high"] for x in second)
+    first_low = min(x["low"] for x in first)
+    second_low = min(x["low"] for x in second)
 
     if second_high > first_high and second_low > first_low:
         return "BULL"
@@ -510,261 +605,188 @@ def market_structure(candles, lookback=20):
     return "NEUTRAL"
 
 
-def recent_levels(candles, lookback=30):
+def levels(candles, lookback=30):
     if len(candles) < lookback + 1:
         return None, None
 
-    # Exclude the latest candle so the level represents prior structure.
     window = candles[-(lookback + 1):-1]
-
-    resistance = max(c["high"] for c in window)
-    support = min(c["low"] for c in window)
+    support = min(x["low"] for x in window)
+    resistance = max(x["high"] for x in window)
 
     return support, resistance
 
 
 # ============================================================
 # SCORING
+# Maximum = 100 points
 # ============================================================
 
-def analyze_asset(asset):
-    candles_5m = get_candles(asset, TIMEFRAME_MAIN, 220)
-    candles_1m = get_candles(asset, TIMEFRAME_ENTRY, 220)
+def analyze_asset(symbol, product_id):
+    candles5 = get_candles(product_id, MAIN_SECONDS)
+    candles1 = get_candles(product_id, ENTRY_SECONDS)
 
-    if len(candles_5m) < 100 or len(candles_1m) < 100:
+    if len(candles5) < 100 or len(candles1) < 100:
         return {
             "signal": "NO TRADE",
             "score": 0,
-            "reason": "Insufficient market data",
+            "reason": "Insufficient data"
         }
 
-    close_5 = [c["close"] for c in candles_5m]
-    close_1 = [c["close"] for c in candles_1m]
+    close5 = [x["close"] for x in candles5]
+    close1 = [x["close"] for x in candles1]
 
-    ema20_5 = ema(close_5, 20)
-    ema50_5 = ema(close_5, 50)
-    rsi_5 = rsi(close_5, 14)
-    macd_5, macd_signal_5, macd_hist_5 = macd(close_5)
-    atr_5 = atr(candles_5m, 14)
-    plus_di_5, minus_di_5, adx_5 = adx_dmi(candles_5m, 14)
+    e20 = ema(close5, 20)
+    e50 = ema(close5, 50)
+    rsi5 = rsi(close5)
+    _, _, hist5 = macd(close5)
+    atr5 = atr(candles5)
+    pdi, mdi, adx = adx_dmi(candles5)
 
-    ema9_1 = ema(close_1, 9)
-    ema21_1 = ema(close_1, 21)
-    rsi_1 = rsi(close_1, 14)
-    macd_1, macd_signal_1, macd_hist_1 = macd(close_1)
+    e9 = ema(close1, 9)
+    e21 = ema(close1, 21)
+    rsi1 = rsi(close1)
+    _, _, hist1 = macd(close1)
 
-    i5 = len(candles_5m) - 1
-    i1 = len(candles_1m) - 1
+    i5 = len(candles5) - 1
+    i1 = len(candles1) - 1
 
     required = [
-        ema20_5[i5],
-        ema50_5[i5],
-        rsi_5[i5],
-        macd_hist_5[i5],
-        atr_5[i5],
-        plus_di_5[i5],
-        minus_di_5[i5],
-        adx_5[i5],
-        ema9_1[i1],
-        ema21_1[i1],
-        rsi_1[i1],
-        macd_hist_1[i1],
+        e20[i5], e50[i5], rsi5[i5], hist5[i5],
+        atr5[i5], pdi[i5], mdi[i5], adx[i5],
+        e9[i1], e21[i1], rsi1[i1], hist1[i1]
     ]
 
-    if any(value is None for value in required):
+    if any(x is None for x in required):
         return {
             "signal": "NO TRADE",
             "score": 0,
-            "reason": "Indicators not ready",
+            "reason": "Indicators not ready"
         }
 
-    price = close_5[i5]
-    price_1m = close_1[i1]
+    price = close5[i5]
+    price1 = close1[i1]
 
-    e20 = ema20_5[i5]
-    e50 = ema50_5[i5]
-    rsi5 = rsi_5[i5]
-    hist5 = macd_hist_5[i5]
-    atr5 = atr_5[i5]
-    pdi = plus_di_5[i5]
-    mdi = minus_di_5[i5]
-    adx = adx_5[i5]
+    ema20 = e20[i5]
+    ema50 = e50[i5]
+    r5 = rsi5[i5]
+    h5 = hist5[i5]
+    a5 = atr5[i5]
+    plus = pdi[i5]
+    minus = mdi[i5]
+    adx_now = adx[i5]
 
-    e9 = ema9_1[i1]
-    e21 = ema21_1[i1]
-    rsi1 = rsi_1[i1]
-    hist1 = macd_hist_1[i1]
+    ema9 = e9[i1]
+    ema21 = e21[i1]
+    r1 = rsi1[i1]
+    h1 = hist1[i1]
 
-    previous_e20 = ema20_5[i5 - 3]
-    previous_e50 = ema50_5[i5 - 3]
-    previous_rsi5 = rsi_5[i5 - 1]
-    previous_adx = adx_5[i5 - 1] if adx_5[i5 - 1] is not None else adx
+    prev_ema20 = e20[i5 - 3]
+    prev_ema50 = e50[i5 - 3]
+    prev_rsi5 = rsi5[i5 - 1]
 
-    structure = market_structure(candles_5m, 20)
-    support, resistance = recent_levels(candles_5m, 30)
+    market_structure = structure(candles5)
+    support, resistance = levels(candles5)
 
     if support is None or resistance is None:
         return {
             "signal": "NO TRADE",
             "score": 0,
-            "reason": "Support/resistance unavailable",
+            "reason": "Levels unavailable"
         }
 
-    # --------------------------------------------------------
-    # TREND CONDITIONS
-    # --------------------------------------------------------
+    # ---------------- TREND ----------------
+    bull_trend = price > ema20 > ema50
+    bear_trend = price < ema20 < ema50
 
-    bull_trend = price > e20 > e50
-    bear_trend = price < e20 < e50
-
-    ema20_rising = e20 > previous_e20
-    ema20_falling = e20 < previous_e20
-
-    ema50_rising = e50 > previous_e50
-    ema50_falling = e50 < previous_e50
-
-    bull_momentum = hist5 > 0
-    bear_momentum = hist5 < 0
-
-    bull_dmi = pdi > mdi
-    bear_dmi = mdi > pdi
-
-    strong_trend = adx >= 20
-    very_strong_trend = adx >= 25
-
-    bull_structure = structure == "BULL"
-    bear_structure = structure == "BEAR"
-
-    # --------------------------------------------------------
-    # ENTRY CONDITIONS
-    # --------------------------------------------------------
-
-    bull_1m_trend = price_1m > e9 > e21
-    bear_1m_trend = price_1m < e9 < e21
-
-    bull_1m_momentum = hist1 > 0
-    bear_1m_momentum = hist1 < 0
-
-    bull_rsi = 50 < rsi5 < 70 and rsi5 >= previous_rsi5
-    bear_rsi = 30 < rsi5 < 50 and rsi5 <= previous_rsi5
-
-    bull_entry_rsi = 50 <= rsi1 < 75
-    bear_entry_rsi = 25 < rsi1 <= 50
-
-    bull_candle = bullish_confirmation(candles_1m)
-    bear_candle = bearish_confirmation(candles_1m)
-
-    # --------------------------------------------------------
-    # PULLBACK / ENTRY TIMING
-    # --------------------------------------------------------
-
-    recent_1m = candles_1m[-6:]
-
-    pulled_back_to_ema_bull = any(
-        c["low"] <= e9 * 1.0015
-        for c in recent_1m[:-1]
+    bull_ema_slope = (
+        ema20 > prev_ema20 and ema50 > prev_ema50
+    )
+    bear_ema_slope = (
+        ema20 < prev_ema20 and ema50 < prev_ema50
     )
 
-    pulled_back_to_ema_bear = any(
-        c["high"] >= e9 * 0.9985
-        for c in recent_1m[:-1]
+    bull_structure = market_structure == "BULL"
+    bear_structure = market_structure == "BEAR"
+
+    bull_dmi = plus > minus
+    bear_dmi = minus > plus
+    strong_trend = adx_now >= 20
+
+    bull_momentum = h5 > 0
+    bear_momentum = h5 < 0
+
+    bull_rsi = 53 <= r5 < 70 and r5 >= prev_rsi5
+    bear_rsi = 30 < r5 <= 47 and r5 <= prev_rsi5
+
+    # ---------------- 1M ENTRY ----------------
+    bull_entry_trend = price1 > ema9 > ema21
+    bear_entry_trend = price1 < ema9 < ema21
+
+    bull_entry_momentum = h1 > 0
+    bear_entry_momentum = h1 < 0
+
+    bull_entry_rsi = 50 <= r1 < 75
+    bear_entry_rsi = 25 < r1 <= 50
+
+    bull_candle = bullish_confirmation(candles1)
+    bear_candle = bearish_confirmation(candles1)
+
+    recent = candles1[-6:]
+
+    bull_pullback = any(
+        c["low"] <= ema9 * 1.0015
+        for c in recent[:-1]
     )
 
-    # A pullback is preferred, but a clean continuation candle
-    # is still allowed if price is not extended.
-    pullback_bull = pulled_back_to_ema_bull or bull_candle
-    pullback_bear = pulled_back_to_ema_bear or bear_candle
-
-    # --------------------------------------------------------
-    # ANTI-CHASE / EXTENSION FILTER
-    # --------------------------------------------------------
-
-    extension_atr = abs(price - e20) / atr5 if atr5 > 0 else 999
-
-    not_overextended = extension_atr <= 1.8
-
-    # --------------------------------------------------------
-    # SUPPORT / RESISTANCE "ROOM TO MOVE" FILTER
-    # --------------------------------------------------------
-
-    range_size = max(resistance - support, atr5)
-
-    room_to_resistance = (
-        resistance - price
-        if resistance > price
-        else 0
+    bear_pullback = any(
+        c["high"] >= ema9 * 0.9985
+        for c in recent[:-1]
     )
 
-    room_to_support = (
-        price - support
-        if support < price
-        else 0
-    )
+    # ---------------- ANTI-CHASE ----------------
+    extension = abs(price - ema20) / a5 if a5 > 0 else 999
+    not_overextended = extension <= 1.8
 
-    # Require at least roughly 0.35 ATR of room in the direction
-    # of the expected move, unless the structure level is very far.
-    bull_room = room_to_resistance >= atr5 * 0.35
-    bear_room = room_to_support >= atr5 * 0.35
+    room_up = max(resistance - price, 0)
+    room_down = max(price - support, 0)
 
-    # If the market range is tiny relative to ATR, treat it as poor.
-    healthy_range = range_size >= atr5 * 1.5
+    bull_room = room_up >= a5 * 0.35
+    bear_room = room_down >= a5 * 0.35
 
-    # --------------------------------------------------------
-    # CHOP FILTER
-    # --------------------------------------------------------
+    healthy_range = (resistance - support) >= a5 * 1.5
 
-    ema_gap = abs(e20 - e50) / atr5 if atr5 > 0 else 0
+    ema_gap = abs(ema20 - ema50) / a5 if a5 > 0 else 0
+    not_flat = ema_gap >= 0.15
 
-    not_too_flat = ema_gap >= 0.15
-
-    # Avoid the RSI middle zone where direction is often unclear.
-    rsi_not_choppy_bull = rsi5 >= 53
-    rsi_not_choppy_bear = rsi5 <= 47
-
-    # --------------------------------------------------------
-    # WEIGHTED QUALITY SCORE
-    # --------------------------------------------------------
-
+    # ---------------- SCORE ----------------
     bull_score = 0
     bear_score = 0
-
     bull_reasons = []
     bear_reasons = []
 
-    # 25 points: main trend
+    # 25: trend
     if bull_trend:
         bull_score += 15
-        bull_reasons.append("5M EMA trend bullish")
-
-    if ema20_rising and ema50_rising:
+        bull_reasons.append("5M trend bullish")
+    if bull_ema_slope:
         bull_score += 10
         bull_reasons.append("5M EMAs rising")
 
     if bear_trend:
         bear_score += 15
-        bear_reasons.append("5M EMA trend bearish")
-
-    if ema20_falling and ema50_falling:
+        bear_reasons.append("5M trend bearish")
+    if bear_ema_slope:
         bear_score += 10
         bear_reasons.append("5M EMAs falling")
 
-    # 15 points: market structure
+    # 15: structure
     if bull_structure:
         bull_score += 15
-        bull_reasons.append("Higher-high/higher-low structure")
-
+        bull_reasons.append("Bullish structure")
     if bear_structure:
         bear_score += 15
-        bear_reasons.append("Lower-high/lower-low structure")
+        bear_reasons.append("Bearish structure")
 
-    # 15 points: DMI/ADX
+    # 15: DMI/ADX
     if bull_dmi:
-        bull_score += 8
-        bull_reasons.append("+DI above -DI")
-
-    if bear_dmi:
-        bear_score += 8
-        bear_reasons.append("-DI above +DI")
-
-    if strong_trend:
- 
+        bull_sco
