@@ -199,8 +199,6 @@ def process_commands(data):
         if command == "/stats":
             send_message(stats_text(data))
             continue
-            send_message(stats_text(data))
-            continue
 
         if command in ("/win", "/loss"):
             if len(parts) != 2:
