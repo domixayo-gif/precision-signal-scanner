@@ -119,6 +119,16 @@
       "price": 52.516,
       "result": "PENDING",
       "result_time": null
+    },
+    {
+      "id": "TON-104129",
+      "symbol": "TON",
+      "signal": "PUT",
+      "score": 11,
+      "time": "2026-09-15T10:41:29.378626+00:00",
+      "price": 1.3398,
+      "result": "PENDING",
+      "result_time": null
     }
   ],
   "offset": 840821682
