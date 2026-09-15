@@ -89,6 +89,16 @@
       "price": 720.32,
       "result": "PENDING",
       "result_time": null
+    },
+    {
+      "id": "POL-071424",
+      "symbol": "POL",
+      "signal": "PUT",
+      "score": 11,
+      "time": "2026-09-15T07:14:24.547588+00:00",
+      "price": 0.09588,
+      "result": "PENDING",
+      "result_time": null
     }
   ],
   "offset": 840821682
