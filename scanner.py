@@ -194,7 +194,11 @@ def process_commands(data):
 
         if command == "/start":
             send_message(help_text())
-            continue        if command == "/stats":
+                        continue
+
+        if command == "/stats":
+            send_message(stats_text(data))
+            continue
             send_message(stats_text(data))
             continue
 
