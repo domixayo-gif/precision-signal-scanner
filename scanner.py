@@ -1191,6 +1191,30 @@ def commit_tracker():
             side + ": " +
             str(sum(x.get("result") == "WIN" for x in group)) +
             "W / " +
+        x.get("result") == "LOSS"
+        for x in done
+    )
+
+    lines = [
+        "📊 <b>PRECISION SCANNER V3.1</b>",
+        "",
+        "Completed: " + str(len(done)),
+        "Wins: " + str(wins),
+        "Losses: " + str(losses),
+        "Win rate: %.1f%%" % winrate(done),
+        "Pending: " + str(pending),
+        ""
+    ]
+
+    for side in ("CALL", "PUT"):
+        group = [
+            x for x in done
+            if x.get("signal") == side
+        ]
+        lines.append(
+            side + ": " +
+            str(sum(x.get("result") == "WIN" for x in group)) +
+            "W / " +
             str(sum(x.get("result") == "LOSS" for x in group)) +
             "L = %.1f%%" % winrate(group)
         )
