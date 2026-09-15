@@ -149,9 +149,8 @@ def get_candles(product_id, granularity, limit=220):
     candles = []
     for row in raw:
         if not isinstance(row, list) or len(row) < 6:
-            continue
-        candles.append({'time': int(row[0]), 'low': float(row[1]), 'high': float(row[2]), 'open': float(row[3]), 'close': float(row[4]), 'volume': float(row[5])})
-    candles.sort(key=lambda x: x['time'])    current = int(time.time())
+            continue    candles.sort(key=lambda x: x['time'])
+    current = int(time.time())
     candles = [c for c in candles if c['time'] + granularity <= current]
     return candles[-limit:]
 
