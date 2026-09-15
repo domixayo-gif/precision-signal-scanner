@@ -116,10 +116,8 @@ def load_tracker():
         if isinstance(data, dict):
             data.setdefault("signals", [])
             data.setdefault("offset", 0)
-
             if not isinstance(data["signals"], list):
                 data["signals"] = []
-
             return data
 
         # Also accept a plain list if an older V3 file created one.
@@ -194,7 +192,7 @@ def process_commands(data):
 
         if command == "/start":
             send_message(help_text())
-                        continue
+            continue
 
         if command == "/stats":
             send_message(stats_text(data))
@@ -326,7 +324,8 @@ def ema(values, period):
     result[period - 1] = seed
     previous = seed
 
-    for i in range(period, len(values)):        previous = (
+    for i in range(period, len(values)):
+        previous = (
             values[i] - previous
         ) * multiplier + previous
         result[i] = previous
@@ -454,7 +453,9 @@ def adx_dmi(candles, period=14):
             mdi = 0.0
         else:
             pdi = 100.0 * plus_sum / tr_sum
-            mdi = 100.0 * minus_sum / tr_sum        plus_di[i] = pdi
+            mdi = 100.0 * minus_sum / tr_sum
+
+        plus_di[i] = pdi
         minus_di[i] = mdi
 
         denominator = pdi + mdi
@@ -580,7 +581,11 @@ def bearish_confirmation(candles):
     return strong or engulfing or reclaim
 
 
-def structure(candles    recent = candles[-lookback:]
+def structure(candles, lookback=20):
+    if len(candles) < lookback:
+        return "NEUTRAL"
+
+    recent = candles[-lookback:]
     half = lookback // 2
 
     first = recent[:half]
@@ -708,7 +713,9 @@ def analyze_asset(symbol, product_id):
     strong_trend = adx_now >= 20
 
     bull_momentum = h5 > 0
-    bear_momentum = h5 < 0    bull_rsi = 53 <= r5 < 70 and r5 >= prev_rsi5
+    bear_momentum = h5 < 0
+
+    bull_rsi = 53 <= r5 < 70 and r5 >= prev_rsi5
     bear_rsi = 30 < r5 <= 47 and r5 <= prev_rsi5
 
     # ---------------- 1M ENTRY ----------------
@@ -747,108 +754,99 @@ def analyze_asset(symbol, product_id):
     bear_room = room_down >= a5 * 0.35
 
     healthy_range = (resistance - support) >= a5 * 1.5
+
+    ema_gap = abs(ema20 - ema50) / a5 if a5 > 0 else 0
+    not_flat = ema_gap >= 0.15
+
+    # ---------------- SCORE ----------------
+    bull_score = 0
+    bear_score = 0
+    bull_reasons = []
+    bear_reasons = []
+
+    # 25: trend
+    if bull_trend:
+        bull_score += 15
+        bull_reasons.append("5M trend bullish")
+    if bull_ema_slope:
+        bull_score += 10
+        bull_reasons.append("5M EMAs rising")
+
+    if bear_trend:
+        bear_score += 15
+        bear_reasons.append("5M trend bearish")
+    if bear_ema_slope:
+        bear_score += 10
+        bear_reasons.append("5M EMAs falling")
+
+    # 15: structure
+    if bull_structure:
+        bull_score += 15
+        bull_reasons.append("Bullish structure")
+    if bear_structure:
+        bear_score += 15
+        bear_reasons.append("Bearish structure")
+
+    # 15: DMI/ADX
+    if bull_dmi:
+        bull_sco        bull_score += 8
+        bull_reasons.append("+DI > -DI")
+    if bear_dmi:
+        bear_score += 8
+        bear_reasons.append("-DI > +DI")
+    if strong_trend:
+        if bull_dmi:
+            bull_score += 7
+        if bear_dmi:
+            bear_score += 7
+
+    # 10: 5M momentum
+    if bull_momentum:
+        bull_score += 10
+        bull_reasons.append("5M MACD positive")
+    if bear_momentum:
+        bear_score += 10
+        bear_reasons.append("5M MACD negative")
+
+    # 10: RSI
+    if bull_rsi:
+        bull_score += 10
+        bull_reasons.append("5M RSI bullish")
+    if bear_rsi:
+        bear_score += 10
+        bear_reasons.append("5M RSI bearish")
+
+    # 10: 1M entry trend
+    if bull_entry_trend:
+        bull_score += 6
+        bull_reasons.append("1M EMA alignment")
+    if bear_entry_trend:
+        bear_score += 6
+        bear_reasons.append("1M EMA alignment")
+
+    if bull_entry_momentum:
+        bull_score += 4
+    if bear_entry_momentum:
+        bear_score += 4
+
+    # 10: entry confirmation
+    if bull_candle:
+        bull_score += 6
+        bull_reasons.append("Bullish candle confirmation")
+    if bear_candle:
+        bear_score += 6
+        bear_reasons.append("Bearish candle confirmation")
+
+    if bull_entry_rsi:
+        bull_score += 4
+    if bear_entry_rsi:
+        bear_score += 4
+
+    # 5: timing / room
     if bull_pullback and bull_room and not_overextended:
         bull_score += 5
         bull_reasons.append("Pullback + room + no chase")
 
-    if bear_pullback and bear_room and not_overextended:
-        bear_score += 5
-        bear_reasons.append("Pullback + room + no chase")
-
-    # ---------------- FINAL FILTERS ----------------
-    bull_ready = all([
-        bull_trend,
-        bull_ema_slope,
-        bull_structure,
-        bull_dmi,
-        strong_trend,
-        bull_momentum,
-        bull_rsi,
-        bull_entry_trend,
-        bull_entry_momentum,
-        bull_entry_rsi,
-        bull_candle,
-        bull_pullback,
-        bull_room,
-        healthy_range,
-        not_flat,
-        not_overextended
-    ])
-
-    bear_ready = all([
-        bear_trend,
-        bear_ema_slope,
-        bear_structure,
-        bear_dmi,
-        strong_trend,
-        bear_momentum,
-        bear_rsi,
-        bear_entry_trend,
-        bear_entry_momentum,
-        bear_entry_rsi,
-        bear_candle,
-        bear_pullback,
-        bear_room,
-        healthy_range,
-        not_flat,
-        not_overextended
-    ])
-
-    signal = "NO TRADE"
-    score = max(bull_score, bear_score)
-    reasons = []
-
-    if (
-        bull_ready
-        and bull_score >= MIN_SCORE
-        and bull_score > bear_score
-    ):
-        signal = "CALL"
-        score = bull_score
-        reasons = bull_reasons
-
-    elif (
-        bear_ready
-        and bear_score >= MIN_SCORE
-        and bear_score > bull_score
-    ):
-        signal = "PUT"
-        score = bear_score
-        reasons = bear_reasons
-
-    if signal == "NO TRADE":
-        if bull_score >= bear
-    ema_gap = abs(ema20 - ema50) / a5 if adef build_report(results, errors, data):
-    stamp = now_utc()
-
-    qualified = [
-        x for x in results
-        if x["signal"] != "NO TRADE"
-    ]
-
-    qualified.sort(
-        key=lambda x: x["score"],
-        reverse=True
-    )
-
-    lines = [
-        "🧠 <b>PRECISION SCANNER V3.1</b>",
-        "",
-        "Scan: " + stamp.strftime("%Y-%m-%d %H:%M:%S UTC"),
-        "Data: Coinbase spot proxy",
-        "Trend: <b>5M</b>",
-        "Entry: <b>1M</b>",
-        "Reference expiry: <b>10 MINUTES</b>",
-        "Minimum setup score: <b>80/100</b>",
-        ""
-    ]
-
-    if not qualified:
-        lines += [
-            "⚪ <b>NO TRADE</b>",
-            "No asset passed all precision filters."
-        ]
-    else:
     if bear_pullback and bear_room and not_overextended:
         bear_score += 5
         bear_reasons.append("Pullback + room + no chase")
@@ -929,8 +927,7 @@ def analyze_asset(symbol, product_id):
         "reason": (
             "Qualified setup"
             if signal != "NO TRADE"
-            else "Filters not fully aligned"
-        )
+            else "Filters not fully aligned"        )
     }
 
 
@@ -1056,7 +1053,7 @@ def build_report(results, errors, data):
             "⚠️ <b>MARKET/DATA WARNINGS</b>"
         ]
         for error in errors[:8]:
-            lines.append("• " + html.escape(error))
+            lines.append("• " + html.escape(error))        lines.append("• " + html.escape(error))
 
     lines += [
         "",
@@ -1108,6 +1105,77 @@ def stats_text(data):
         "",
         "Completed: " + str(len(done)),
         "Wins: " + str(wins),
+        "Losses: " + str(losses),
+        "Win rate: %.1f%%" % winrate(done),
+        "Pending: " + str(pending),
+        ""
+    ]
+
+    for side in ("CALL", "PUT"):
+        group = [
+            x for x in done
+            if x.get("signal") == side
+        ]
+        lines.append(
+            side + ": " +
+            str(sum(x.get("result") == "WIN" for x in group)) +
+            "W / " +
+            str(sum(x.get("result") == "LOSS" for x in group)) +
+            "L = %.1f%%" % winrate(group)
+        )
+
+    lines += [
+        "",
+        "⚠️ Score is setup quality, not win probability.",
+        "Use forward testing before scaling."
+    ]
+
+    return "\n".join(lines)
+
+
+# ============================================================
+# GITHUB TRACKER COMMIT
+# ============================================================
+
+def commit_tracker():
+    try:
+        subprocess.run(
+            ["git", "config", "user.name", "github-actions[bot]"],
+            check=True
+        )
+        subprocess.run(
+            [
+                "git", "config", "user.email",
+                "41898282+github-actions[bot]@users.noreply.github.com"
+            ],
+            check=True
+        )
+        subprocess.run(
+            ["git", "add", TRACKER_FILE],
+            check=True
+        )
+
+        check = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"]
+        )
+
+        if check.returncode == 0:
+            print("No tracker changes to commit.")
+            return
+
+        subprocess.run(
+            ["git", "commit", "-m", "Update scanner tracker"],
+            check=True
+        )
+        subprocess.run(
+            ["git", "push"],
+            check=True
+        )
+        print("Tracker pushed.")
+
+    except Exception as exc:
+        # A tracker push failure should not hide a successful scan.
+        print("Tracker git update failed:", exc)        "Wins: " + str(wins),
         "Losses: " + str(losses),
         "Win rate: %.1f%%" % winrate(done),
         "Pending: " + str(pending),
