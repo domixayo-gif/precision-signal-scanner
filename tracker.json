@@ -109,6 +109,16 @@
       "price": 100.81,
       "result": "PENDING",
       "result_time": null
+    },
+    {
+      "id": "LTC-084335",
+      "symbol": "LTC",
+      "signal": "PUT",
+      "score": 11,
+      "time": "2026-09-15T08:43:35.578565+00:00",
+      "price": 52.516,
+      "result": "PENDING",
+      "result_time": null
     }
   ],
   "offset": 840821682
