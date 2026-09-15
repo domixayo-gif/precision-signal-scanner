@@ -129,6 +129,16 @@
       "price": 1.3398,
       "result": "PENDING",
       "result_time": null
+    },
+    {
+      "id": "SOL-113036",
+      "symbol": "SOL",
+      "signal": "PUT",
+      "score": 11,
+      "time": "2026-09-15T11:30:36.958179+00:00",
+      "price": 100.65,
+      "result": "PENDING",
+      "result_time": null
     }
   ],
   "offset": 840821682
