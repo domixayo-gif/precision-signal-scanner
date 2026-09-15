@@ -789,4 +789,5 @@ def analyze_asset(symbol, product_id):
 
     # 15: DMI/ADX
     if bull_dmi:
-        bull_sco
+        bull_scoif __name__ == "__main__":
+    main()
