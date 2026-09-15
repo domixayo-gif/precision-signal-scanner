@@ -847,6 +847,167 @@ def analyze_asset(symbol, product_id):
             "No asset passed all precision filters."
         ]
     else:
+    if bear_pullback and bear_room and not_overextended:
+        bear_score += 5
+        bear_reasons.append("Pullback + room + no chase")
+
+    bull_score = min(100, bull_score)
+    bear_score = min(100, bear_score)
+
+    # ---------------- HARD SAFETY FILTER ----------------
+    bull_ready = all([
+        bull_trend,
+        bull_ema_slope,
+        bull_structure,
+        bull_dmi,
+        strong_trend,
+        bull_momentum,
+        bull_rsi,
+        bull_entry_trend,
+        bull_entry_momentum,
+        bull_entry_rsi,
+        bull_candle,
+        bull_pullback,
+        bull_room,
+        healthy_range,
+        not_flat,
+        not_overextended
+    ])
+
+    bear_ready = all([
+        bear_trend,
+        bear_ema_slope,
+        bear_structure,
+        bear_dmi,
+        strong_trend,
+        bear_momentum,
+        bear_rsi,
+        bear_entry_trend,
+        bear_entry_momentum,
+        bear_entry_rsi,
+        bear_candle,
+        bear_pullback,
+        bear_room,
+        healthy_range,
+        not_flat,
+        not_overextended
+    ])
+
+    signal = "NO TRADE"
+    score = max(bull_score, bear_score)
+    reasons = []
+
+    if bull_ready and bull_score >= MIN_SCORE and bull_score > bear_score:
+        signal = "CALL"
+        score = bull_score
+        reasons = bull_reasons
+
+    elif bear_ready and bear_score >= MIN_SCORE and bear_score > bull_score:
+        signal = "PUT"
+        score = bear_score
+        reasons = bear_reasons
+
+    if signal == "NO TRADE":
+        if bull_score >= bear_score:
+            reasons = bull_reasons
+        else:
+            reasons = bear_reasons
+
+    return {
+        "symbol": symbol,
+        "signal": signal,
+        "score": int(score),
+        "price": price,
+        "rsi5": r5,
+        "rsi1": r1,
+        "adx": adx_now,
+        "structure": market_structure,
+        "extension_atr": extension,
+        "reasons": reasons,
+        "reason": (
+            "Qualified setup"
+            if signal != "NO TRADE"
+            else "Filters not fully aligned"
+        )
+    }
+
+
+# ============================================================
+# REPORT + TRACKING
+# ============================================================
+
+def make_signal_id(symbol, signal, stamp):
+    return symbol + "-" + signal + "-" + stamp.strftime("%H%M%S")
+
+
+def add_new_signal(data, result, stamp):
+    if result["signal"] == "NO TRADE":
+        return None
+
+    signal_id = make_signal_id(
+        result["symbol"],
+        result["signal"],
+        stamp
+    )
+
+    for item in data["signals"]:
+        if item.get("id") == signal_id:
+            return None
+
+    record = {
+        "id": signal_id,
+        "symbol": result["symbol"],
+        "asset": result["symbol"],
+        "signal": result["signal"],
+        "score": result["score"],
+        "time": stamp.isoformat(),
+        "candle_time": stamp.isoformat(),
+        "price": result["price"],
+        "rsi5": result["rsi5"],
+        "rsi1": result["rsi1"],
+        "adx": result["adx"],
+        "structure": result["structure"],
+        "result": "PENDING",
+        "result_time": None
+    }
+
+    data["signals"].append(record)
+    data["signals"] = data["signals"][-MAX_TRACKER_ITEMS:]
+
+    return signal_id
+
+
+def build_report(results, errors, data):
+    stamp = now_utc()
+
+    qualified = [
+        x for x in results
+        if x["signal"] != "NO TRADE"
+    ]
+
+    qualified.sort(
+        key=lambda x: x["score"],
+        reverse=True
+    )
+
+    lines = [
+        "🧠 <b>PRECISION SCANNER V3.1</b>",
+        "",
+        "Scan: " + stamp.strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "Data: Coinbase spot proxy",
+        "Trend: <b>5M</b>",
+        "Entry: <b>1M</b>",
+        "Reference expiry: <b>10 MINUTES</b>",
+        "Minimum setup score: <b>80/100</b>",
+        ""
+    ]
+
+    if not qualified:
+        lines += [
+            "⚪ <b>NO TRADE</b>",
+            "No asset passed all precision filters."
+        ]
+    else:
         lines.append(
             "🔥 <b>QUALIFIED SIGNALS</b>"
         )
@@ -872,7 +1033,209 @@ def analyze_asset(symbol, product_id):
                 "5M RSI: %.1f" % result["rsi5"],
                 "1M RSI: %.1f" % result["rsi1"],
                 "ADX: %.1f" % result["adx"],
-                "Price: %.8f" % result        data
+                "Price: %.8f" % result["price"],
+                "Signal ID: <code>" +
+                html.escape(signal_id) +
+                "</code>",
+                "Reference expiry: <b>10 MINUTES</b>"
+            ]
+
+            if result["reasons"]:
+                lines.append(
+                    "Why: " +
+                    html.escape(
+                        ", ".join(result["reasons"][:5])
+                    )
+                )
+
+    if errors:
+        lines += [
+            "",
+            "⚠️ <b>MARKET/DATA WARNINGS</b>"
+        ]
+        for error in errors[:8]:
+            lines.append("• " + html.escape(error))
+
+    lines += [
+        "",
+        "Commands: /win ID | /loss ID | /stats",
+        "",
+        "⚠️ DEMO/TESTING ONLY.",
+        "Coinbase proxy may differ from Pocket Option OTC pricing."
+    ]
+
+    return "\n".join(lines)
+
+
+def completed_signals(data):
+    return [
+        x for x in data["signals"]
+        if x.get("result") in ("WIN", "LOSS")
+    ]
+
+
+def winrate(items):
+    if not items:
+        return 0.0
+
+    wins = sum(
+        x.get("result") == "WIN"
+        for x in items
+    )
+    return wins * 100.0 / len(items)
+
+
+def stats_text(data):
+    done = completed_signals(data)
+    pending = sum(
+        x.get("result") == "PENDING"
+        for x in data["signals"]
+    )
+
+    wins = sum(
+        x.get("result") == "WIN"
+        for x in done
+    )
+    losses = sum(
+        x.get("result") == "LOSS"
+        for x in done
+    )
+
+    lines = [
+        "📊 <b>PRECISION SCANNER V3.1</b>",
+        "",
+        "Completed: " + str(len(done)),
+        "Wins: " + str(wins),
+        "Losses: " + str(losses),
+        "Win rate: %.1f%%" % winrate(done),
+        "Pending: " + str(pending),
+        ""
+    ]
+
+    for side in ("CALL", "PUT"):
+        group = [
+            x for x in done
+            if x.get("signal") == side
+        ]
+        lines.append(
+            side + ": " +
+            str(sum(x.get("result") == "WIN" for x in group)) +
+            "W / " +
+            str(sum(x.get("result") == "LOSS" for x in group)) +
+            "L = %.1f%%" % winrate(group)
+        )
+
+    lines += [
+        "",
+        "⚠️ Score is setup quality, not win probability.",
+        "Use forward testing before scaling."
+    ]
+
+    return "\n".join(lines)
+
+
+# ============================================================
+# GITHUB TRACKER COMMIT
+# ============================================================
+
+def commit_tracker():
+    try:
+        subprocess.run(
+            ["git", "config", "user.name", "github-actions[bot]"],
+            check=True
+        )
+        subprocess.run(
+            [
+                "git", "config", "user.email",
+                "41898282+github-actions[bot]@users.noreply.github.com"
+            ],
+            check=True
+        )
+        subprocess.run(
+            ["git", "add", TRACKER_FILE],
+            check=True
+        )
+
+        check = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"]
+        )
+
+        if check.returncode == 0:
+            print("No tracker changes to commit.")
+            return
+
+        subprocess.run(
+            ["git", "commit", "-m", "Update scanner tracker"],
+            check=True
+        )
+        subprocess.run(
+            ["git", "push"],
+            check=True
+        )
+        print("Tracker pushed.")
+
+    except Exception as exc:
+        # A tracker push failure should not hide a successful scan.
+        print("Tracker git update failed:", exc)
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+    print("Starting Precision Signal Scanner V3.1")
+
+    data = load_tracker()
+
+    print("Processing Telegram commands...")
+    process_commands(data)
+
+    print("Loading Coinbase markets...")
+    markets = get_markets()
+
+    results = []
+    errors = []
+
+    for symbol in ASSET_BASES:
+        product = markets.get(symbol)
+
+        if not product:
+            errors.append(
+                symbol + ": Coinbase market unavailable"
+            )
+            continue
+
+        print("Analyzing " + symbol + " (" + product + ")")
+
+        try:
+            result = analyze_asset(symbol, product)
+            results.append(result)
+
+            print(
+                symbol + ": " +
+                result["signal"] + " " +
+                str(result["score"]) + "/100"
+            )
+
+        except Exception as exc:
+            errors.append(
+                symbol + ": " + str(exc)
+            )
+            print(
+                symbol + ": ERROR " +
+                str(exc)
+            )
+
+    if not results:
+        raise RuntimeError(
+            "All Coinbase markets failed."
+        )
+
+    message = build_report(
+        results,
+        errors,
+        data
     )
 
     save_tracker(data)
