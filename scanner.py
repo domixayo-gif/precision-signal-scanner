@@ -789,5 +789,16 @@ def analyze_asset(symbol, product_id):
 
     # 15: DMI/ADX
     if bull_dmi:
-        bull_scoif __name__ == "__main__":
+        bull_scosave_tracker(data)
+
+    print("Sending Telegram report...")
+    send_message(message)
+
+    print("Updating GitHub tracker...")
+    commit_tracker()
+
+    print("Scanner complete.")
+
+
+if __name__ == "__main__":
     main()
