@@ -1,27 +1,31 @@
 """
 ===========================================================
-PRECISION SCANNER V3.5
+PRECISION SCANNER V3.6
+STRICT 5M + 1M SIGNAL FRAMEWORK
+
 Normal Forex + Separate OTC Framework
 5M Trend + 1M Entry
-5-Minute Expiry
+5-Minute Reference Expiry
 5-Minute Per-Asset Signal Lock
 Telegram Alerts
-Signal Tracking
-===========================================================
+Persistent Signal Tracking
+Immediate Manual /scan
 
 IMPORTANT:
-- NORMAL market data: Bybit public market-data API.
-- OTC market data: separate adapter. No fake OTC data is generated.
+- This scanner does NOT guarantee profitability.
+- 75-80% is a testing target, not a guaranteed result.
+- Weak/conflicting setups are rejected as NO TRADE.
+- OTC remains disabled until a legitimate OTC candle feed
+  is connected.
 - This program DOES NOT execute Pocket Option trades.
-- It only produces/records analysis signals.
+- Score is a setup-quality score, NOT a win probability.
+===========================================================
 """
 
 import os
 import json
 import time
-import math
 import html
-import hashlib
 from datetime import datetime, timezone
 
 import requests
@@ -31,18 +35,26 @@ import requests
 # CONFIGURATION
 # =========================================================
 
-VERSION = "V3.5"
+VERSION = "V3.6"
 
-# Telegram
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID = str(os.environ.get("TELEGRAM_CHAT_ID", ""))
+TELEGRAM_TOKEN = os.environ.get(
+    "TELEGRAM_TOKEN",
+    ""
+)
 
-# Tracking
+TELEGRAM_CHAT_ID = str(
+    os.environ.get(
+        "TELEGRAM_CHAT_ID",
+        ""
+    )
+)
+
 TRACKER_FILE = "tracker.json"
 
-# ---------------------------------------------------------
+
+# =========================================================
 # MARKET MODES
-# ---------------------------------------------------------
+# =========================================================
 
 NORMAL_MODE = "NORMAL"
 OTC_MODE = "OTC"
@@ -52,42 +64,26 @@ ENABLED_MODES = [
     OTC_MODE,
 ]
 
-# ---------------------------------------------------------
+
+# =========================================================
 # NORMAL MARKET - BYBIT
-# ---------------------------------------------------------
+# =========================================================
 
 BYBIT_BASE = "https://api.bybit.com"
 
-# Current Bybit FX perpetual symbols
 NORMAL_SYMBOLS = {
     "EURUSD": "EURUSDUSDT",
     "GBPUSD": "GBPUSDUSDT",
     "USDJPY": "USDJPYUSDT",
 }
 
-# Optional additional instruments if supported by your account
-# Keep disabled until verified.
-# "XAUUSD": "XAUUSDUSDT",
-
 BYBIT_CATEGORY = "linear"
 
-# ---------------------------------------------------------
-# OTC
-# ---------------------------------------------------------
 
-# IMPORTANT:
-# Do NOT put a random Pocket Option endpoint here.
-#
-# OTC data must come from a legitimate candle source that
-# actually represents the OTC instrument.
-#
-# When an OTC feed is available, implement:
-#
-#     get_otc_candles(symbol, interval)
-#
-# and return the same candle structure used by
-# get_bybit_candles().
-#
+# =========================================================
+# OTC
+# =========================================================
+
 OTC_ENABLED = False
 
 OTC_SYMBOLS = {
@@ -96,86 +92,110 @@ OTC_SYMBOLS = {
     "USDJPY_OTC": "USD/JPY OTC",
 }
 
-# ---------------------------------------------------------
+
+# =========================================================
 # STRATEGY
-# ---------------------------------------------------------
+# =========================================================
 
 MAIN_TIMEFRAME = "5"
 ENTRY_TIMEFRAME = "1"
 
 REFERENCE_EXPIRY_MINUTES = 5
 
-MIN_SCORE = 80
-BORDERLINE_SCORE = 75
 
-# The important new V3.5 rule:
-SIGNAL_LOCK_SECONDS = REFERENCE_EXPIRY_MINUTES * 60
+# =========================================================
+# V3.6 STRICT FILTERS
+# =========================================================
 
-# Scanner cycle
+MIN_SCORE = 85
+BORDERLINE_SCORE = 80
+
+MIN_DOMINANCE = 3
+
+MIN_ADX = 18
+STRONG_ADX = 22
+
+MIN_ROOM_SCORE = 3
+MIN_EXTENSION_SCORE = 3
+
+MIN_CANDLE_STRENGTH = 0.50
+
+CALL_RSI_MIN = 43
+CALL_RSI_MAX = 68
+
+PUT_RSI_MIN = 32
+PUT_RSI_MAX = 57
+
+SIGNAL_LOCK_SECONDS = (
+    REFERENCE_EXPIRY_MINUTES * 60
+)
+
 SCAN_INTERVAL_SECONDS = 60
 
 REQUEST_TIMEOUT = 20
 MAX_RETRIES = 3
 
-# Data
 CANDLE_LIMIT = 220
 
-# Telegram
 TELEGRAM_MESSAGE_LIMIT = 3900
 
-# Heartbeat
 HEARTBEAT_EVERY_SCANS = 15
 
-# Tracker limits
 MAX_TRACKER_ITEMS = 1000
 
 
 # =========================================================
-# HTTP SESSION
+# HTTP
 # =========================================================
 
 session = requests.Session()
 
 session.headers.update({
-    "User-Agent": "PrecisionScanner/3.5",
+    "User-Agent": "PrecisionScanner/3.6",
     "Accept": "application/json",
 })
 
 
 # =========================================================
-# TIME HELPERS
+# TIME
 # =========================================================
 
 def now_ts():
     return int(time.time())
 
 
-def utc_now():
-    return datetime.now(timezone.utc)
-
-
 def format_utc(ts):
+
     if not ts:
         return "N/A"
 
     return datetime.fromtimestamp(
         int(ts),
         tz=timezone.utc
-    ).strftime("%Y-%m-%d %H:%M:%S UTC")
+    ).strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
 
 
 def candle_id(ts):
+
     return datetime.fromtimestamp(
         int(ts),
         tz=timezone.utc
-    ).strftime("%H%M%S")
+    ).strftime(
+        "%H%M%S"
+    )
 
 
 # =========================================================
 # TELEGRAM
 # =========================================================
 
-def telegram_request(method, payload=None):
+def telegram_request(
+    method,
+    payload=None
+):
+
     if not TELEGRAM_TOKEN:
         return None
 
@@ -185,6 +205,7 @@ def telegram_request(method, payload=None):
     )
 
     try:
+
         response = session.post(
             url,
             json=payload or {},
@@ -196,15 +217,32 @@ def telegram_request(method, payload=None):
         return response.json()
 
     except Exception as exc:
-        print("Telegram error:", exc)
+
+        print(
+            "Telegram error:",
+            exc
+        )
+
         return None
 
 
 def send_telegram(message):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("\n--- TELEGRAM DISABLED ---")
+
+    if (
+        not TELEGRAM_TOKEN
+        or not TELEGRAM_CHAT_ID
+    ):
+
+        print(
+            "\n--- TELEGRAM DISABLED ---"
+        )
+
         print(message)
-        print("-------------------------\n")
+
+        print(
+            "-------------------------\n"
+        )
+
         return False
 
     chunks = [
@@ -230,7 +268,11 @@ def send_telegram(message):
             }
         )
 
-        if not result or not result.get("ok"):
+        if (
+            not result
+            or not result.get("ok")
+        ):
+
             success = False
 
     return success
@@ -241,8 +283,10 @@ def send_telegram(message):
 # =========================================================
 
 def default_tracker():
+
     return {
         "signals": [],
+
         "offset": 0,
 
         "meta": {
@@ -250,23 +294,21 @@ def default_tracker():
             "last_signal": None,
             "last_heartbeat": None,
 
-            # New V3.5 persistent locks
-            #
-            # Example:
-            # {
-            #     "NORMAL:EURUSD": 1760000000,
-            #     "OTC:EURUSD_OTC": 1760000300
-            # }
             "signal_locks": {},
 
             "alerted_keys": [],
+
+            "delivery_failed_keys": [],
         }
     }
 
 
 def load_tracker():
 
-    if not os.path.exists(TRACKER_FILE):
+    if not os.path.exists(
+        TRACKER_FILE
+    ):
+
         return default_tracker()
 
     try:
@@ -280,19 +322,22 @@ def load_tracker():
             data = json.load(f)
 
         if isinstance(data, list):
+
             result = default_tracker()
+
             result["signals"] = data
+
             return result
 
         result = default_tracker()
 
         if isinstance(data, dict):
 
-            result.update({
-                k: v
-                for k, v in data.items()
-                if k in result
-            })
+            for key in result:
+
+                if key in data:
+
+                    result[key] = data[key]
 
             if isinstance(
                 data.get("meta"),
@@ -317,20 +362,34 @@ def load_tracker():
 
 def save_tracker(data):
 
-    data["signals"] = data.get(
-        "signals",
-        []
-    )[-MAX_TRACKER_ITEMS:]
+    data["signals"] = (
+        data.get(
+            "signals",
+            []
+        )
+        [-MAX_TRACKER_ITEMS:]
+    )
 
     meta = data.setdefault(
         "meta",
         {}
     )
 
-    meta["alerted_keys"] = meta.get(
-        "alerted_keys",
-        []
-    )[-MAX_TRACKER_ITEMS:]
+    meta["alerted_keys"] = (
+        meta.get(
+            "alerted_keys",
+            []
+        )
+        [-MAX_TRACKER_ITEMS:]
+    )
+
+    meta["delivery_failed_keys"] = (
+        meta.get(
+            "delivery_failed_keys",
+            []
+        )
+        [-MAX_TRACKER_ITEMS:]
+    )
 
     tmp = TRACKER_FILE + ".tmp"
 
@@ -354,7 +413,7 @@ def save_tracker(data):
 
 
 # =========================================================
-# GENERIC HTTP GET
+# HTTP
 # =========================================================
 
 def http_get_json(
@@ -384,6 +443,7 @@ def http_get_json(
                 )
 
                 time.sleep(wait)
+
                 continue
 
             response.raise_for_status()
@@ -397,16 +457,22 @@ def http_get_json(
                 f"{attempt + 1}: {exc}"
             )
 
-            if attempt < MAX_RETRIES - 1:
+            if (
+                attempt
+                < MAX_RETRIES - 1
+            ):
+
                 time.sleep(
-                    1.5 * (attempt + 1)
+                    1.5 * (
+                        attempt + 1
+                    )
                 )
 
     return None
 
 
 # =========================================================
-# BYBIT NORMAL MARKET
+# BYBIT
 # =========================================================
 
 def get_bybit_candles(
@@ -430,10 +496,12 @@ def get_bybit_candles(
         return []
 
     if data.get("retCode") != 0:
+
         print(
             "Bybit error:",
             data
         )
+
         return []
 
     rows = (
@@ -447,10 +515,6 @@ def get_bybit_candles(
     for row in rows:
 
         try:
-
-            # Bybit format:
-            # [startTime, open, high, low,
-            #  close, volume, turnover]
 
             ts = int(
                 int(row[0]) / 1000
@@ -466,13 +530,13 @@ def get_bybit_candles(
             })
 
         except Exception:
+
             continue
 
     candles.sort(
         key=lambda x: x["time"]
     )
 
-    # Remove currently forming candle.
     current = now_ts()
 
     seconds = (
@@ -484,7 +548,11 @@ def get_bybit_candles(
     candles = [
         c
         for c in candles
-        if c["time"] + seconds <= current
+        if (
+            c["time"]
+            + seconds
+            <= current
+        )
     ]
 
     return candles
@@ -498,62 +566,23 @@ def get_otc_candles(
     symbol,
     interval
 ):
-    """
-    OTC DATA ADAPTER
-
-    This intentionally returns [].
-
-    Why?
-
-    Pocket Option's OTC prices should not be
-    substituted with ordinary EUR/USD prices.
-
-    When you have a legitimate OTC candle feed,
-    replace this function with an adapter that
-    returns:
-
-    [
-        {
-            "time": 1234567890,
-            "open": 1.1234,
-            "high": 1.1240,
-            "low": 1.1228,
-            "close": 1.1238,
-            "volume": 0
-        }
-    ]
-
-    The rest of V3.5 can then use it automatically.
-    """
 
     if not OTC_ENABLED:
+
         return []
 
     # -----------------------------------------------------
-    # PLACEHOLDER
+    # IMPORTANT:
+    # A legitimate OTC candle source must be connected here.
+    #
+    # Do NOT substitute normal forex/Bybit candles for OTC.
     # -----------------------------------------------------
-    #
-    # DO NOT invent an endpoint here.
-    #
-    # Example structure once a legitimate provider
-    # is selected:
-    #
-    # response = http_get_json(
-    #     OTC_PROVIDER_URL,
-    #     {
-    #         "symbol": symbol,
-    #         "interval": interval
-    #     }
-    # )
-    #
-    # Parse response into the candle format above.
-    #
 
     return []
 
 
 # =========================================================
-# UNIFIED DATA ROUTER
+# DATA ROUTER
 # =========================================================
 
 def get_candles(
@@ -564,11 +593,14 @@ def get_candles(
 
     if mode == NORMAL_MODE:
 
-        bybit_symbol = NORMAL_SYMBOLS.get(
-            symbol
+        bybit_symbol = (
+            NORMAL_SYMBOLS.get(
+                symbol
+            )
         )
 
         if not bybit_symbol:
+
             return []
 
         return get_bybit_candles(
@@ -590,22 +622,35 @@ def get_candles(
 # INDICATORS
 # =========================================================
 
-def ema(values, period):
+def ema(
+    values,
+    period
+):
 
     if len(values) < period:
-        return [None] * len(values)
 
-    result = [None] * len(values)
+        return [
+            None
+            for _ in values
+        ]
 
-    multiplier = 2 / (
-        period + 1
+    result = [
+        None
+        for _ in values
+    ]
+
+    multiplier = (
+        2 / (period + 1)
     )
 
-    initial = sum(
-        values[:period]
-    ) / period
+    initial = (
+        sum(values[:period])
+        / period
+    )
 
-    result[period - 1] = initial
+    result[
+        period - 1
+    ] = initial
 
     previous = initial
 
@@ -615,21 +660,31 @@ def ema(values, period):
     ):
 
         current = (
-            values[i] * multiplier
-            + previous * (1 - multiplier)
+            values[i]
+            * multiplier
+            + previous
+            * (1 - multiplier)
         )
 
         result[i] = current
+
         previous = current
 
     return result
 
 
-def rsi(values, period=14):
+def rsi(
+    values,
+    period=14
+):
 
-    result = [None] * len(values)
+    result = [
+        None
+        for _ in values
+    ]
 
     if len(values) <= period:
+
         return result
 
     gains = []
@@ -641,7 +696,8 @@ def rsi(values, period=14):
     ):
 
         change = (
-            values[i] - values[i - 1]
+            values[i]
+            - values[i - 1]
         )
 
         gains.append(
@@ -653,19 +709,29 @@ def rsi(values, period=14):
         )
 
     avg_gain = (
-        sum(gains[:period]) / period
+        sum(gains[:period])
+        / period
     )
 
     avg_loss = (
-        sum(losses[:period]) / period
+        sum(losses[:period])
+        / period
     )
 
     if avg_loss == 0:
+
         result[period] = 100
+
     else:
-        rs = avg_gain / avg_loss
+
+        rs = (
+            avg_gain
+            / avg_loss
+        )
+
         result[period] = (
-            100 - 100 / (1 + rs)
+            100
+            - 100 / (1 + rs)
         )
 
     for i in range(
@@ -677,25 +743,37 @@ def rsi(values, period=14):
         loss = losses[i - 1]
 
         avg_gain = (
-            (avg_gain * (period - 1) + gain)
+            (
+                avg_gain
+                * (period - 1)
+                + gain
+            )
             / period
         )
 
         avg_loss = (
-            (avg_loss * (period - 1) + loss)
+            (
+                avg_loss
+                * (period - 1)
+                + loss
+            )
             / period
         )
 
         if avg_loss == 0:
+
             result[i] = 100
+
         else:
 
             rs = (
-                avg_gain / avg_loss
+                avg_gain
+                / avg_loss
             )
 
             result[i] = (
-                100 - 100 / (1 + rs)
+                100
+                - 100 / (1 + rs)
             )
 
     return result
@@ -705,12 +783,15 @@ def true_range(candles):
 
     result = []
 
-    for i, c in enumerate(candles):
+    for i, candle in enumerate(
+        candles
+    ):
 
         if i == 0:
 
-            tr = (
-                c["high"] - c["low"]
+            value = (
+                candle["high"]
+                - candle["low"]
             )
 
         else:
@@ -719,39 +800,50 @@ def true_range(candles):
                 candles[i - 1]["close"]
             )
 
-            tr = max(
-                c["high"] - c["low"],
+            value = max(
+                candle["high"]
+                - candle["low"],
+
                 abs(
-                    c["high"]
+                    candle["high"]
                     - previous_close
                 ),
+
                 abs(
-                    c["low"]
+                    candle["low"]
                     - previous_close
                 )
             )
 
-        result.append(tr)
+        result.append(value)
 
     return result
 
 
-def atr(candles, period=14):
+def atr(
+    candles,
+    period=14
+):
 
     tr = true_range(candles)
 
-    result = [None] * len(
-        candles
-    )
+    result = [
+        None
+        for _ in candles
+    ]
 
     if len(tr) < period:
+
         return result
 
     value = (
-        sum(tr[:period]) / period
+        sum(tr[:period])
+        / period
     )
 
-    result[period - 1] = value
+    result[
+        period - 1
+    ] = value
 
     for i in range(
         period,
@@ -759,7 +851,10 @@ def atr(candles, period=14):
     ):
 
         value = (
-            (value * (period - 1))
+            (
+                value
+                * (period - 1)
+            )
             + tr[i]
         ) / period
 
@@ -770,10 +865,20 @@ def atr(candles, period=14):
 
 def macd(values):
 
-    ema12 = ema(values, 12)
-    ema26 = ema(values, 26)
+    ema12 = ema(
+        values,
+        12
+    )
 
-    line = [None] * len(values)
+    ema26 = ema(
+        values,
+        26
+    )
+
+    line = [
+        None
+        for _ in values
+    ]
 
     for i in range(
         len(values)
@@ -785,11 +890,13 @@ def macd(values):
         ):
 
             line[i] = (
-                ema12[i] - ema26[i]
+                ema12[i]
+                - ema26[i]
             )
 
     clean = [
-        x for x in line
+        x
+        for x in line
         if x is not None
     ]
 
@@ -798,7 +905,10 @@ def macd(values):
         9
     )
 
-    signal = [None] * len(values)
+    signal = [
+        None
+        for _ in values
+    ]
 
     start = (
         len(values)
@@ -813,7 +923,10 @@ def macd(values):
             start + i
         ] = value
 
-    histogram = [None] * len(values)
+    histogram = [
+        None
+        for _ in values
+    ]
 
     for i in range(
         len(values)
@@ -825,15 +938,26 @@ def macd(values):
         ):
 
             histogram[i] = (
-                line[i] - signal[i]
+                line[i]
+                - signal[i]
             )
 
-    return line, signal, histogram
+    return (
+        line,
+        signal,
+        histogram
+    )
 
 
-def adx(candles, period=14):
+def adx(
+    candles,
+    period=14
+):
 
-    if len(candles) < period + 2:
+    if len(candles) < (
+        period + 2
+    ):
+
         return (
             [None] * len(candles),
             [None] * len(candles),
@@ -841,7 +965,9 @@ def adx(candles, period=14):
         )
 
     tr = [0]
+
     plus_dm = [0]
+
     minus_dm = [0]
 
     for i in range(
@@ -864,15 +990,19 @@ def adx(candles, period=14):
 
         plus = (
             up_move
-            if up_move > down_move
-            and up_move > 0
+            if (
+                up_move > down_move
+                and up_move > 0
+            )
             else 0
         )
 
         minus = (
             down_move
-            if down_move > up_move
-            and down_move > 0
+            if (
+                down_move > up_move
+                and down_move > 0
+            )
             else 0
         )
 
@@ -880,10 +1010,12 @@ def adx(candles, period=14):
             max(
                 current["high"]
                 - current["low"],
+
                 abs(
                     current["high"]
                     - previous["close"]
                 ),
+
                 abs(
                     current["low"]
                     - previous["close"]
@@ -891,25 +1023,51 @@ def adx(candles, period=14):
             )
         )
 
-        plus_dm.append(plus)
-        minus_dm.append(minus)
+        plus_dm.append(
+            plus
+        )
 
-    adx_values = [None] * len(candles)
-    plus_di = [None] * len(candles)
-    minus_di = [None] * len(candles)
+        minus_dm.append(
+            minus
+        )
+
+    adx_values = [
+        None
+        for _ in candles
+    ]
+
+    plus_di = [
+        None
+        for _ in candles
+    ]
+
+    minus_di = [
+        None
+        for _ in candles
+    ]
 
     tr_avg = (
-        sum(tr[1:period + 1])
+        sum(
+            tr[1:period + 1]
+        )
         / period
     )
 
     plus_avg = (
-        sum(plus_dm[1:period + 1])
+        sum(
+            plus_dm[
+                1:period + 1
+            ]
+        )
         / period
     )
 
     minus_avg = (
-        sum(minus_dm[1:period + 1])
+        sum(
+            minus_dm[
+                1:period + 1
+            ]
+        )
         / period
     )
 
@@ -947,8 +1105,10 @@ def adx(candles, period=14):
             ) / period
 
         if tr_avg == 0:
+
             pdi = 0
             mdi = 0
+
         else:
 
             pdi = (
@@ -964,17 +1124,24 @@ def adx(candles, period=14):
             )
 
         plus_di[i] = pdi
+
         minus_di[i] = mdi
 
-        denominator = pdi + mdi
+        denominator = (
+            pdi + mdi
+        )
 
         if denominator == 0:
+
             dx = 0
+
         else:
 
             dx = (
                 100
-                * abs(pdi - mdi)
+                * abs(
+                    pdi - mdi
+                )
                 / denominator
             )
 
@@ -982,12 +1149,10 @@ def adx(candles, period=14):
 
         if len(dx_values) == period:
 
-            adx_value = (
+            adx_values[i] = (
                 sum(dx_values)
                 / period
             )
-
-            adx_values[i] = adx_value
 
         elif len(dx_values) > period:
 
@@ -1008,7 +1173,7 @@ def adx(candles, period=14):
     return (
         adx_values,
         plus_di,
-        minus_di,
+        minus_di
     )
 
 
@@ -1016,18 +1181,30 @@ def adx(candles, period=14):
 # PRICE ACTION
 # =========================================================
 
-def candle_direction(candle):
+def candle_direction(
+    candle
+):
 
-    if candle["close"] > candle["open"]:
+    if (
+        candle["close"]
+        > candle["open"]
+    ):
+
         return "BULLISH"
 
-    if candle["close"] < candle["open"]:
+    if (
+        candle["close"]
+        < candle["open"]
+    ):
+
         return "BEARISH"
 
     return "NEUTRAL"
 
 
-def candle_strength(candle):
+def candle_strength(
+    candle
+):
 
     rng = (
         candle["high"]
@@ -1035,6 +1212,7 @@ def candle_strength(candle):
     )
 
     if rng <= 0:
+
         return 0
 
     body = abs(
@@ -1045,12 +1223,16 @@ def candle_strength(candle):
     return body / rng
 
 
-def structure_direction(candles):
+def structure_direction(
+    candles
+):
 
     if len(candles) < 10:
+
         return "NEUTRAL"
 
     recent = candles[-5:]
+
     previous = candles[-10:-5]
 
     recent_high = max(
@@ -1091,7 +1273,7 @@ def structure_direction(candles):
 
 
 # =========================================================
-# SCORING
+# SCORING HELPERS
 # =========================================================
 
 def extension_score(
@@ -1103,7 +1285,9 @@ def extension_score(
     if (
         atr_value is None
         or atr_value <= 0
+        or ema20 is None
     ):
+
         return 0
 
     distance = abs(
@@ -1111,20 +1295,29 @@ def extension_score(
     )
 
     multiple = (
-        distance / atr_value
+        distance
+        / atr_value
     )
 
     if multiple <= 0.8:
+
         return 5
 
     if multiple <= 1.2:
+
         return 4
 
     if multiple <= 1.6:
+
         return 3
 
-    if multiple <= 2.2:
+    if multiple <= 2.0:
+
         return 2
+
+    if multiple <= 2.2:
+
+        return 1
 
     return 0
 
@@ -1140,6 +1333,7 @@ def room_score(
         atr_value is None
         or atr_value <= 0
     ):
+
         return 0
 
     lookback = candles[-30:]
@@ -1152,10 +1346,11 @@ def room_score(
         )
 
         room = (
-            resistance - price
+            resistance
+            - price
         )
 
-    else:
+    elif direction == "PUT":
 
         support = min(
             c["low"]
@@ -1163,30 +1358,40 @@ def room_score(
         )
 
         room = (
-            price - support
+            price
+            - support
         )
 
+    else:
+
+        return 0
+
     multiple = (
-        room / atr_value
+        room
+        / atr_value
     )
 
     if multiple >= 2:
+
         return 5
 
     if multiple >= 1.5:
+
         return 4
 
     if multiple >= 1:
+
         return 3
 
     if multiple >= 0.5:
+
         return 1
 
     return 0
 
 
 # =========================================================
-# ANALYSIS
+# STRICT V3.6 ANALYSIS
 # =========================================================
 
 def analyze_asset(
@@ -1212,6 +1417,7 @@ def analyze_asset(
     ):
 
         return {
+            "version": VERSION,
             "mode": mode,
             "symbol": symbol,
             "qualified": False,
@@ -1254,10 +1460,6 @@ def analyze_asset(
         main_close
     )
 
-    entry_rsi = rsi(
-        entry_close
-    )
-
     main_atr = atr(
         main
     )
@@ -1272,27 +1474,36 @@ def analyze_asset(
         macd_line,
         macd_signal,
         macd_hist
-    ) = macd(main_close)
+    ) = macd(
+        main_close
+    )
 
     i = len(main) - 1
+
     e = len(entry) - 1
 
     price = entry_close[e]
 
-    # -----------------------------------------------------
-    # MAIN TREND
-    # -----------------------------------------------------
+    # =====================================================
+    # 1. 5M MAJOR TREND
+    # =====================================================
 
     if (
-        price > main_ema50[i]
-        and main_ema20[i] > main_ema50[i]
+        main_ema20[i] is not None
+        and main_ema50[i] is not None
+        and price > main_ema50[i]
+        and main_ema20[i]
+        > main_ema50[i]
     ):
 
         major_trend = "BULLISH"
 
     elif (
-        price < main_ema50[i]
-        and main_ema20[i] < main_ema50[i]
+        main_ema20[i] is not None
+        and main_ema50[i] is not None
+        and price < main_ema50[i]
+        and main_ema20[i]
+        < main_ema50[i]
     ):
 
         major_trend = "BEARISH"
@@ -1301,59 +1512,74 @@ def analyze_asset(
 
         major_trend = "NEUTRAL"
 
-    # -----------------------------------------------------
-    # ENTRY TREND
-    # -----------------------------------------------------
+    # =====================================================
+    # 2. 1M ENTRY TREND
+    # =====================================================
 
     if (
         entry_ema9[e] is not None
         and entry_ema21[e] is not None
     ):
 
-        if entry_ema9[e] > entry_ema21[e]:
+        if (
+            entry_ema9[e]
+            > entry_ema21[e]
+        ):
+
             entry_trend = "BULLISH"
 
-        elif entry_ema9[e] < entry_ema21[e]:
+        elif (
+            entry_ema9[e]
+            < entry_ema21[e]
+        ):
+
             entry_trend = "BEARISH"
 
         else:
+
             entry_trend = "NEUTRAL"
 
     else:
 
         entry_trend = "NEUTRAL"
 
-    # -----------------------------------------------------
-    # STRUCTURE
-    # -----------------------------------------------------
+    # =====================================================
+    # 3. STRUCTURE
+    # =====================================================
 
     structure = structure_direction(
         main
     )
 
-    # -----------------------------------------------------
-    # DIRECTION VOTES
-    # -----------------------------------------------------
+    # =====================================================
+    # 4. DIRECTION VOTES
+    # =====================================================
 
     bullish_votes = 0
     bearish_votes = 0
 
     if major_trend == "BULLISH":
+
         bullish_votes += 1
 
     elif major_trend == "BEARISH":
+
         bearish_votes += 1
 
     if entry_trend == "BULLISH":
+
         bullish_votes += 1
 
     elif entry_trend == "BEARISH":
+
         bearish_votes += 1
 
     if structure == "BULLISH":
+
         bullish_votes += 1
 
     elif structure == "BEARISH":
+
         bearish_votes += 1
 
     if (
@@ -1361,18 +1587,28 @@ def analyze_asset(
         and minus_di[i] is not None
     ):
 
-        if plus_di[i] > minus_di[i]:
+        if (
+            plus_di[i]
+            > minus_di[i]
+        ):
+
             bullish_votes += 1
 
-        elif minus_di[i] > plus_di[i]:
+        elif (
+            minus_di[i]
+            > plus_di[i]
+        ):
+
             bearish_votes += 1
 
     if macd_hist[i] is not None:
 
         if macd_hist[i] > 0:
+
             bullish_votes += 1
 
         elif macd_hist[i] < 0:
+
             bearish_votes += 1
 
     latest_entry_candle = entry[-1]
@@ -1382,148 +1618,229 @@ def analyze_asset(
     )
 
     if candle_dir == "BULLISH":
+
         bullish_votes += 1
 
     elif candle_dir == "BEARISH":
+
         bearish_votes += 1
 
     if bullish_votes > bearish_votes:
-        signal = "CALL"
-    elif bearish_votes > bullish_votes:
-        signal = "PUT"
-    else:
-        signal = "NO TRADE"
 
-    # -----------------------------------------------------
-    # SCORE
-    # -----------------------------------------------------
+        raw_signal = "CALL"
+
+    elif bearish_votes > bullish_votes:
+
+        raw_signal = "PUT"
+
+    else:
+
+        raw_signal = "NO TRADE"
+
+    # =====================================================
+    # 5. SCORE
+    # =====================================================
 
     components = {}
 
-    # Trend / 20
+    # -----------------------------------------------------
+    # TREND / 20
+    # -----------------------------------------------------
+
     if (
-        signal == "CALL"
-        and major_trend == "BULLISH"
-    ) or (
-        signal == "PUT"
-        and major_trend == "BEARISH"
+        (
+            raw_signal == "CALL"
+            and major_trend == "BULLISH"
+        )
+        or
+        (
+            raw_signal == "PUT"
+            and major_trend == "BEARISH"
+        )
     ):
 
         components["Trend"] = 20
 
     elif major_trend != "NEUTRAL":
 
-        components["Trend"] = 10
+        components["Trend"] = 8
 
     else:
 
         components["Trend"] = 0
 
-    # Structure / 10
+    # -----------------------------------------------------
+    # STRUCTURE / 10
+    # -----------------------------------------------------
+
     if (
-        signal == "CALL"
-        and structure == "BULLISH"
-    ) or (
-        signal == "PUT"
-        and structure == "BEARISH"
+        (
+            raw_signal == "CALL"
+            and structure == "BULLISH"
+        )
+        or
+        (
+            raw_signal == "PUT"
+            and structure == "BEARISH"
+        )
     ):
 
         components["Structure"] = 10
 
     elif structure != "NEUTRAL":
 
-        components["Structure"] = 5
+        components["Structure"] = 4
 
     else:
 
         components["Structure"] = 0
 
-    # ADX / DMI / 10
+    # -----------------------------------------------------
+    # ADX + DMI / 10
+    # -----------------------------------------------------
+
     adx_value = adx_values[i]
 
     if adx_value is None:
 
         components["ADX/DMI"] = 0
 
-    elif adx_value >= 25:
+    else:
 
-        if (
-            signal == "CALL"
-            and plus_di[i] > minus_di[i]
-        ) or (
-            signal == "PUT"
-            and minus_di[i] > plus_di[i]
-        ):
+        dmi_aligned = (
+            (
+                raw_signal == "CALL"
+                and plus_di[i]
+                > minus_di[i]
+            )
+            or
+            (
+                raw_signal == "PUT"
+                and minus_di[i]
+                > plus_di[i]
+            )
+        )
 
-            components["ADX/DMI"] = 10
+        if adx_value >= STRONG_ADX:
+
+            components["ADX/DMI"] = (
+                10
+                if dmi_aligned
+                else 0
+            )
+
+        elif adx_value >= MIN_ADX:
+
+            components["ADX/DMI"] = (
+                8
+                if dmi_aligned
+                else 2
+            )
 
         else:
 
-            components["ADX/DMI"] = 4
+            components["ADX/DMI"] = 0
 
-    elif adx_value >= 20:
-
-        components["ADX/DMI"] = 7
-
-    elif adx_value >= 17:
-
-        components["ADX/DMI"] = 4
-
-    else:
-
-        components["ADX/DMI"] = 0
-
+    # -----------------------------------------------------
     # MACD / 10
+    # -----------------------------------------------------
+
     if macd_hist[i] is not None:
 
         macd_good = (
-            signal == "CALL"
-            and macd_hist[i] > 0
-        ) or (
-            signal == "PUT"
-            and macd_hist[i] < 0
+            (
+                raw_signal == "CALL"
+                and macd_hist[i] > 0
+            )
+            or
+            (
+                raw_signal == "PUT"
+                and macd_hist[i] < 0
+            )
         )
 
         components["MACD"] = (
-            10 if macd_good else 0
+            10
+            if macd_good
+            else 0
         )
 
     else:
 
         components["MACD"] = 0
 
+    # -----------------------------------------------------
     # RSI / 10
+    # -----------------------------------------------------
+
     rsi_value = main_rsi[i]
 
     if rsi_value is None:
 
         components["RSI"] = 0
 
-    elif signal == "CALL":
+    elif raw_signal == "CALL":
 
-        if 45 <= rsi_value <= 65:
+        if (
+            CALL_RSI_MIN
+            <= rsi_value
+            <= CALL_RSI_MAX
+        ):
+
             components["RSI"] = 10
-        elif 35 <= rsi_value <= 70:
-            components["RSI"] = 6
+
+        elif (
+            38
+            <= rsi_value
+            <= 72
+        ):
+
+            components["RSI"] = 5
+
         else:
-            components["RSI"] = 2
+
+            components["RSI"] = 0
+
+    elif raw_signal == "PUT":
+
+        if (
+            PUT_RSI_MIN
+            <= rsi_value
+            <= PUT_RSI_MAX
+        ):
+
+            components["RSI"] = 10
+
+        elif (
+            28
+            <= rsi_value
+            <= 62
+        ):
+
+            components["RSI"] = 5
+
+        else:
+
+            components["RSI"] = 0
 
     else:
 
-        if 35 <= rsi_value <= 55:
-            components["RSI"] = 10
-        elif 30 <= rsi_value <= 65:
-            components["RSI"] = 6
-        else:
-            components["RSI"] = 2
+        components["RSI"] = 0
 
-    # Entry / 15
+    # -----------------------------------------------------
+    # ENTRY / 15
+    # -----------------------------------------------------
+
     if (
-        signal == "CALL"
-        and entry_trend == "BULLISH"
-    ) or (
-        signal == "PUT"
-        and entry_trend == "BEARISH"
+        (
+            raw_signal == "CALL"
+            and entry_trend == "BULLISH"
+        )
+        or
+        (
+            raw_signal == "PUT"
+            and entry_trend == "BEARISH"
+        )
     ):
 
         components["Entry"] = 15
@@ -1532,12 +1849,15 @@ def analyze_asset(
 
         components["Entry"] = 0
 
-    # Pullback / 10
-    recent_entry = entry[-6:]
+    # -----------------------------------------------------
+    # PULLBACK / 10
+    # -----------------------------------------------------
+
+    recent_entry = entry[-7:]
 
     pullback_score = 0
 
-    if signal == "CALL":
+    if raw_signal == "CALL":
 
         had_pullback = any(
             c["close"] < c["open"]
@@ -1553,9 +1873,9 @@ def analyze_asset(
 
         elif candle_dir == "BULLISH":
 
-            pullback_score = 5
+            pullback_score = 4
 
-    elif signal == "PUT":
+    elif raw_signal == "PUT":
 
         had_pullback = any(
             c["close"] > c["open"]
@@ -1571,49 +1891,67 @@ def analyze_asset(
 
         elif candle_dir == "BEARISH":
 
-            pullback_score = 5
+            pullback_score = 4
 
-    components["Pullback"] = pullback_score
+    components["Pullback"] = (
+        pullback_score
+    )
 
-    # Candle / 5
+    # -----------------------------------------------------
+    # CONFIRMATION CANDLE / 5
+    # -----------------------------------------------------
+
     strength = candle_strength(
         latest_entry_candle
     )
 
-    if (
+    candle_aligned = (
         (
-            signal == "CALL"
+            raw_signal == "CALL"
             and candle_dir == "BULLISH"
         )
         or
         (
-            signal == "PUT"
+            raw_signal == "PUT"
             and candle_dir == "BEARISH"
         )
-    ):
+    )
+
+    if candle_aligned:
 
         if strength >= 0.65:
+
             components["Candle"] = 5
-        elif strength >= 0.45:
+
+        elif strength >= 0.50:
+
             components["Candle"] = 4
+
         else:
-            components["Candle"] = 2
+
+            components["Candle"] = 1
 
     else:
 
         components["Candle"] = 0
 
-    # Room / 5
+    # -----------------------------------------------------
+    # ROOM / 5
+    # -----------------------------------------------------
+
     room = room_score(
         price,
         main,
-        signal,
+        raw_signal,
         main_atr[i]
     )
 
     components["Room"] = room
 
-    # Extension / 5
+    # -----------------------------------------------------
+    # EXTENSION / 5
+    # -----------------------------------------------------
+
     ext = extension_score(
         price,
         main_atr[i],
@@ -1626,102 +1964,238 @@ def analyze_asset(
         components.values()
     )
 
-    # -----------------------------------------------------
-    # BLOCKERS
-    # -----------------------------------------------------
+    # =====================================================
+    # HARD BLOCKERS
+    # =====================================================
 
     blockers = []
 
+    # -----------------------------------------------------
+    # 5M TREND
+    # -----------------------------------------------------
+
     if (
-        major_trend != "NEUTRAL"
-        and (
-            (
-                signal == "CALL"
-                and major_trend != "BULLISH"
-            )
-            or
-            (
-                signal == "PUT"
-                and major_trend != "BEARISH"
-            )
-        )
+        raw_signal == "CALL"
+        and major_trend != "BULLISH"
     ):
 
         blockers.append(
-            "MAJOR TREND MISMATCH"
+            "5M TREND MISMATCH"
         )
 
-    if adx_value is not None:
+    if (
+        raw_signal == "PUT"
+        and major_trend != "BEARISH"
+    ):
 
-        if adx_value < 15:
+        blockers.append(
+            "5M TREND MISMATCH"
+        )
+
+    # -----------------------------------------------------
+    # 1M ENTRY
+    # -----------------------------------------------------
+
+    if (
+        raw_signal == "CALL"
+        and entry_trend != "BULLISH"
+    ):
+
+        blockers.append(
+            "1M ENTRY MISMATCH"
+        )
+
+    if (
+        raw_signal == "PUT"
+        and entry_trend != "BEARISH"
+    ):
+
+        blockers.append(
+            "1M ENTRY MISMATCH"
+        )
+
+    # -----------------------------------------------------
+    # STRUCTURE
+    # -----------------------------------------------------
+
+    if (
+        raw_signal == "CALL"
+        and structure != "BULLISH"
+    ):
+
+        blockers.append(
+            "STRUCTURE NOT BULLISH"
+        )
+
+    if (
+        raw_signal == "PUT"
+        and structure != "BEARISH"
+    ):
+
+        blockers.append(
+            "STRUCTURE NOT BEARISH"
+        )
+
+    # -----------------------------------------------------
+    # ADX
+    # -----------------------------------------------------
+
+    if (
+        adx_value is None
+        or adx_value < MIN_ADX
+    ):
+
+        blockers.append(
+            "ADX TOO LOW"
+        )
+
+    # -----------------------------------------------------
+    # DMI
+    # -----------------------------------------------------
+
+    if (
+        plus_di[i] is None
+        or minus_di[i] is None
+    ):
+
+        blockers.append(
+            "DMI UNAVAILABLE"
+        )
+
+    else:
+
+        if (
+            raw_signal == "CALL"
+            and plus_di[i]
+            <= minus_di[i]
+        ):
 
             blockers.append(
-                "ADX TOO LOW"
+                "DMI NOT BULLISH"
             )
 
         elif (
-            adx_value < 17
-            and main_ema50[i]
-            and main_ema20[i]
+            raw_signal == "PUT"
+            and minus_di[i]
+            <= plus_di[i]
         ):
 
-            gap = abs(
-                main_ema20[i]
-                - main_ema50[i]
-            ) / price * 100
+            blockers.append(
+                "DMI NOT BEARISH"
+            )
 
-            if gap < 0.10:
+    # -----------------------------------------------------
+    # MACD
+    # -----------------------------------------------------
 
-                blockers.append(
-                    "WEAK TREND"
-                )
+    if macd_hist[i] is None:
 
-    if room <= 1:
+        blockers.append(
+            "MACD UNAVAILABLE"
+        )
+
+    else:
+
+        if (
+            raw_signal == "CALL"
+            and macd_hist[i] <= 0
+        ):
+
+            blockers.append(
+                "MACD NOT BULLISH"
+            )
+
+        elif (
+            raw_signal == "PUT"
+            and macd_hist[i] >= 0
+        ):
+
+            blockers.append(
+                "MACD NOT BEARISH"
+            )
+
+    # -----------------------------------------------------
+    # RSI
+    # -----------------------------------------------------
+
+    if rsi_value is None:
+
+        blockers.append(
+            "RSI UNAVAILABLE"
+        )
+
+    elif raw_signal == "CALL":
+
+        if not (
+            CALL_RSI_MIN
+            <= rsi_value
+            <= CALL_RSI_MAX
+        ):
+
+            blockers.append(
+                "RSI OUTSIDE CALL ZONE"
+            )
+
+    elif raw_signal == "PUT":
+
+        if not (
+            PUT_RSI_MIN
+            <= rsi_value
+            <= PUT_RSI_MAX
+        ):
+
+            blockers.append(
+                "RSI OUTSIDE PUT ZONE"
+            )
+
+    # -----------------------------------------------------
+    # CONFIRMATION CANDLE
+    # -----------------------------------------------------
+
+    if not candle_aligned:
+
+        blockers.append(
+            "CONFIRMATION CANDLE MISMATCH"
+        )
+
+    elif strength < MIN_CANDLE_STRENGTH:
+
+        blockers.append(
+            "WEAK CONFIRMATION CANDLE"
+        )
+
+    # -----------------------------------------------------
+    # PULLBACK
+    # -----------------------------------------------------
+
+    if pullback_score < 10:
+
+        blockers.append(
+            "NO CLEAN PULLBACK"
+        )
+
+    # -----------------------------------------------------
+    # ROOM
+    # -----------------------------------------------------
+
+    if room < MIN_ROOM_SCORE:
 
         blockers.append(
             "INSUFFICIENT ROOM"
         )
 
-    # Extension blocker
-    if (
-        main_atr[i] is not None
-        and main_atr[i] > 0
-        and main_ema20[i] is not None
-    ):
+    # -----------------------------------------------------
+    # EXTENSION
+    # -----------------------------------------------------
 
-        extension_multiple = (
-            abs(price - main_ema20[i])
-            / main_atr[i]
-        )
-
-        if extension_multiple > 2.2:
-
-            blockers.append(
-                "EXTENDED > 2.2 ATR"
-            )
-
-    # Opposing structure
-    if (
-        structure != "NEUTRAL"
-        and (
-            (
-                signal == "CALL"
-                and structure == "BEARISH"
-            )
-            or
-            (
-                signal == "PUT"
-                and structure == "BULLISH"
-            )
-        )
-    ):
+    if ext < MIN_EXTENSION_SCORE:
 
         blockers.append(
-            "OPPOSING STRUCTURE"
+            "PRICE TOO EXTENDED"
         )
 
     # -----------------------------------------------------
-    # QUALIFICATION
+    # DOMINANCE
     # -----------------------------------------------------
 
     dominance = abs(
@@ -1729,22 +2203,38 @@ def analyze_asset(
         - bearish_votes
     )
 
+    if dominance < MIN_DOMINANCE:
+
+        blockers.append(
+            "WEAK DIRECTIONAL DOMINANCE"
+        )
+
+    # =====================================================
+    # QUALIFICATION
+    # =====================================================
+
     qualified = (
-        signal in ("CALL", "PUT")
+        raw_signal in (
+            "CALL",
+            "PUT"
+        )
         and score >= MIN_SCORE
-        and dominance >= 2
+        and dominance >= MIN_DOMINANCE
         and len(blockers) == 0
     )
 
     borderline = (
-        signal in ("CALL", "PUT")
-        and BORDERLINE_SCORE <= score < MIN_SCORE
+        raw_signal in (
+            "CALL",
+            "PUT"
+        )
+        and score >= BORDERLINE_SCORE
+        and score < MIN_SCORE
         and len(blockers) == 0
     )
 
-    # If not qualified, don't call it a trade signal.
     final_signal = (
-        signal
+        raw_signal
         if qualified
         else "NO TRADE"
     )
@@ -1752,6 +2242,7 @@ def analyze_asset(
     entry_time = entry[-1]["time"]
 
     signal_id = (
+        f"{mode}-"
         f"{symbol}-"
         f"{final_signal}-"
         f"{candle_id(entry_time)}"
@@ -1759,33 +2250,55 @@ def analyze_asset(
 
     return {
         "version": VERSION,
+
         "mode": mode,
+
         "symbol": symbol,
 
         "signal": final_signal,
 
-        "raw_direction": signal,
+        "raw_direction": raw_signal,
 
         "qualified": qualified,
+
         "borderline": borderline,
 
         "score": score,
+
         "minimum_score": MIN_SCORE,
 
         "bullish_votes": bullish_votes,
+
         "bearish_votes": bearish_votes,
+
         "dominance": dominance,
 
         "price": price,
 
         "major_trend": major_trend,
+
         "entry_trend": entry_trend,
+
         "structure": structure,
 
         "adx": adx_value,
+
         "rsi": rsi_value,
 
+        "plus_di": plus_di[i],
+
+        "minus_di": minus_di[i],
+
+        "macd_hist": macd_hist[i],
+
+        "candle_strength": strength,
+
+        "room_score": room,
+
+        "extension_score": ext,
+
         "components": components,
+
         "blockers": blockers,
 
         "entry_candle_time": entry_time,
@@ -1799,7 +2312,7 @@ def analyze_asset(
 
 
 # =========================================================
-# SIGNAL DEDUPLICATION
+# DEDUPLICATION
 # =========================================================
 
 def dedupe_key(result):
@@ -1809,7 +2322,9 @@ def dedupe_key(result):
         result["symbol"],
         result["signal"],
         str(
-            result["entry_candle_time"]
+            result[
+                "entry_candle_time"
+            ]
         )
     ])
 
@@ -1819,11 +2334,13 @@ def was_alerted(
     key
 ):
 
-    return key in tracker[
-        "meta"
-    ].get(
-        "alerted_keys",
-        []
+    return key in (
+        tracker[
+            "meta"
+        ].get(
+            "alerted_keys",
+            []
+        )
     )
 
 
@@ -1832,26 +2349,53 @@ def mark_alerted(
     key
 ):
 
-    arr = tracker[
-        "meta"
-    ].setdefault(
-        "alerted_keys",
-        []
+    arr = (
+        tracker[
+            "meta"
+        ].setdefault(
+            "alerted_keys",
+            []
+        )
     )
 
     if key not in arr:
 
         arr.append(key)
 
+    tracker[
+        "meta"
+    ]["alerted_keys"] = (
+        arr[-MAX_TRACKER_ITEMS:]
+    )
+
+
+def mark_delivery_failed(
+    tracker,
+    key
+):
+
+    arr = (
         tracker[
             "meta"
-        ]["alerted_keys"] = arr[
-            -MAX_TRACKER_ITEMS:
-        ]
+        ].setdefault(
+            "delivery_failed_keys",
+            []
+        )
+    )
+
+    if key not in arr:
+
+        arr.append(key)
+
+    tracker[
+        "meta"
+    ]["delivery_failed_keys"] = (
+        arr[-MAX_TRACKER_ITEMS:]
+    )
 
 
 # =========================================================
-# V3.5 SIGNAL LOCK
+# SIGNAL LOCK
 # =========================================================
 
 def asset_lock_key(
@@ -1859,7 +2403,9 @@ def asset_lock_key(
     symbol
 ):
 
-    return f"{mode}:{symbol}"
+    return (
+        f"{mode}:{symbol}"
+    )
 
 
 def get_lock_until(
@@ -1868,11 +2414,13 @@ def get_lock_until(
     symbol
 ):
 
-    locks = tracker[
-        "meta"
-    ].setdefault(
-        "signal_locks",
-        {}
+    locks = (
+        tracker[
+            "meta"
+        ].setdefault(
+            "signal_locks",
+            {}
+        )
     )
 
     return int(
@@ -1894,7 +2442,8 @@ def is_locked(
 
     return (
         now_ts()
-        < get_lock_until(
+        <
+        get_lock_until(
             tracker,
             mode,
             symbol
@@ -1906,20 +2455,24 @@ def set_signal_lock(
     tracker,
     mode,
     symbol,
-    signal_time
+    start_time=None
 ):
 
-    locks = tracker[
-        "meta"
-    ].setdefault(
-        "signal_locks",
-        {}
+    locks = (
+        tracker[
+            "meta"
+        ].setdefault(
+            "signal_locks",
+            {}
+        )
     )
 
-    # Lock begins from the signal candle time.
-    # It lasts exactly 5 minutes.
+    if start_time is None:
+
+        start_time = now_ts()
+
     lock_until = (
-        int(signal_time)
+        int(start_time)
         + SIGNAL_LOCK_SECONDS
     )
 
@@ -1934,13 +2487,37 @@ def set_signal_lock(
 
 
 # =========================================================
-# TRACK SIGNAL
+# SIGNAL TRACKING
 # =========================================================
+
+def signal_already_recorded(
+    tracker,
+    signal_id
+):
+
+    for signal in tracker.get(
+        "signals",
+        []
+    ):
+
+        if (
+            signal.get(
+                "signal_id"
+            )
+            == signal_id
+        ):
+
+            return True
+
+    return False
+
 
 def add_signal(
     tracker,
     result
 ):
+
+    created_at = now_ts()
 
     record = {
         **result,
@@ -1949,10 +2526,14 @@ def add_signal(
 
         "alert_sent": False,
 
-        "created_at": now_ts(),
+        "created_at": created_at,
 
         "expiry_minutes":
             REFERENCE_EXPIRY_MINUTES,
+
+        "expiry_at":
+            created_at
+            + SIGNAL_LOCK_SECONDS,
     }
 
     tracker[
@@ -1963,7 +2544,7 @@ def add_signal(
 
 
 # =========================================================
-# ALERT MESSAGE
+# ALERT
 # =========================================================
 
 def build_signal_alert(
@@ -1979,13 +2560,15 @@ def build_signal_alert(
         else "🔴"
     )
 
-    components = result[
-        "components"
-    ]
+    components = (
+        result["components"]
+    )
 
     reasons = []
 
-    for name, value in components.items():
+    for name, value in (
+        components.items()
+    ):
 
         if value > 0:
 
@@ -1993,8 +2576,8 @@ def build_signal_alert(
                 f"{name}: {value}"
             )
 
-    reasons_text = "\n".join(
-        reasons
+    reasons_text = (
+        "\n".join(reasons)
     )
 
     return f"""
@@ -2015,22 +2598,38 @@ def build_signal_alert(
 <b>Structure:</b> {result["structure"]}
 
 <b>ADX:</b> {result["adx"]:.2f}
+<b>+DI:</b> {result["plus_di"]:.2f}
+<b>-DI:</b> {result["minus_di"]:.2f}
+
 <b>RSI:</b> {result["rsi"]:.2f}
+
+<b>Candle strength:</b>
+{result["candle_strength"]:.2f}
+
+<b>Room:</b>
+{result["room_score"]}/5
+
+<b>Extension:</b>
+{result["extension_score"]}/5
+
+<b>Direction votes:</b>
+🟢 {result["bullish_votes"]}
+🔴 {result["bearish_votes"]}
 
 <b>Score breakdown:</b>
 {reasons_text}
 
 <b>Signal ID:</b>
-<code>{result["signal_id"]}</code>
+<code>{html.escape(result["signal_id"])}</code>
 
 <b>Signal candle:</b>
 {format_utc(result["entry_candle_time"])}
 
-<b>🔒 New V3.5 lock:</b>
-No new alert for this asset until:
+<b>🔒 Asset lock:</b>
 {format_utc(lock_until)}
 
-This is an analysis signal, not an automatic trade.
+Analysis signal only.
+No automatic trade execution.
 """
 
 
@@ -2051,19 +2650,32 @@ def build_heartbeat(
     pending = sum(
         1
         for s in signals
-        if s.get("result") == "PENDING"
+        if s.get("result")
+        == "PENDING"
     )
 
     wins = sum(
         1
         for s in signals
-        if s.get("result") == "WIN"
+        if s.get("result")
+        == "WIN"
     )
 
     losses = sum(
         1
         for s in signals
-        if s.get("result") == "LOSS"
+        if s.get("result")
+        == "LOSS"
+    )
+
+    total = wins + losses
+
+    rate = (
+        wins
+        / total
+        * 100
+        if total
+        else 0
     )
 
     return f"""
@@ -2071,26 +2683,40 @@ def build_heartbeat(
 
 <b>Status:</b> RUNNING
 
-<b>Scan:</b> {scan_number}
+<b>Scan:</b>
+{scan_number}
 
-<b>Normal market:</b>
-{len(NORMAL_SYMBOLS)} assets configured
+<b>Minimum score:</b>
+{MIN_SCORE}/100
 
-<b>OTC framework:</b>
-{"ENABLED" if OTC_ENABLED else "WAITING FOR OTC FEED"}
+<b>Testing target:</b>
+75-80% recorded win rate
 
-<b>Tracked:</b> {len(signals)}
+<b>Normal assets:</b>
+{len(NORMAL_SYMBOLS)}
 
-<b>Pending:</b> {pending}
-<b>Wins:</b> {wins}
-<b>Losses:</b> {losses}
+<b>OTC:</b>
+{"ENABLED" if OTC_ENABLED else "WAITING FOR LEGITIMATE FEED"}
 
-<b>Expiry:</b> {REFERENCE_EXPIRY_MINUTES} minutes
+<b>Tracked:</b>
+{len(signals)}
+
+<b>Pending:</b>
+{pending}
+
+<b>Wins:</b>
+{wins}
+
+<b>Losses:</b>
+{losses}
+
+<b>Recorded win rate:</b>
+{rate:.1f}%
 
 <b>Asset lock:</b>
 {SIGNAL_LOCK_SECONDS} seconds
 
-The scanner does not force signals.
+Weak setups are rejected.
 """
 
 
@@ -2119,7 +2745,8 @@ def process_commands(
     )
 
     if not response:
-        return False
+
+        return False, False
 
     updates = response.get(
         "result",
@@ -2127,6 +2754,8 @@ def process_commands(
     )
 
     changed = False
+
+    manual_scan_requested = False
 
     for update in updates:
 
@@ -2136,7 +2765,10 @@ def process_commands(
 
         if update_id is not None:
 
-            tracker["offset"] = update_id
+            tracker[
+                "offset"
+            ] = update_id
+
             changed = True
 
         message = update.get(
@@ -2144,6 +2776,7 @@ def process_commands(
         )
 
         if not message:
+
             continue
 
         text = (
@@ -2166,8 +2799,10 @@ def process_commands(
 
         if (
             TELEGRAM_CHAT_ID
-            and chat_id != TELEGRAM_CHAT_ID
+            and chat_id
+            != TELEGRAM_CHAT_ID
         ):
+
             continue
 
         if text == "/start":
@@ -2178,13 +2813,23 @@ def process_commands(
 
 Scanner is online.
 
+<b>Strategy:</b>
+Strict 5M + 1M confirmation
+
+<b>Minimum score:</b>
+{MIN_SCORE}/100
+
 Commands:
 
 /scan
 /stats
 /help
 
-Signals are tracked automatically.
+Results:
+
+/win SIGNAL_ID
+
+/loss SIGNAL_ID
 """
             )
 
@@ -2194,29 +2839,46 @@ Signals are tracked automatically.
                 """
 <b>Commands</b>
 
-/scan — request a scan
-/stats — tracker statistics
-/win SIGNAL-ID — record win
-/loss SIGNAL-ID — record loss
+/scan
+Run an immediate market scan.
+
+/stats
+Show recorded statistics.
+
+/win SIGNAL-ID
+Record a WIN.
+
+/loss SIGNAL-ID
+Record a LOSS.
 """
             )
 
         elif text == "/scan":
 
+            manual_scan_requested = True
+
+            changed = True
+
             send_telegram(
-                "🔎 Manual scan requested. "
-                "The next scan cycle will analyze the markets."
+                "🔎 <b>Manual scan started.</b>\n\n"
+                "Analyzing all enabled markets now..."
             )
 
         elif text == "/stats":
 
             send_telegram(
-                stats_text(tracker)
+                stats_text(
+                    tracker
+                )
             )
 
-        elif text.startswith("/win "):
+        elif text.startswith(
+            "/win "
+        ):
 
-            signal_id = text[5:].strip()
+            signal_id = (
+                text[5:].strip()
+            )
 
             if mark_result(
                 tracker,
@@ -2225,8 +2887,10 @@ Signals are tracked automatically.
             ):
 
                 send_telegram(
-                    f"✅ Recorded WIN: "
-                    f"<code>{html.escape(signal_id)}</code>"
+                    "✅ Recorded WIN: "
+                    f"<code>"
+                    f"{html.escape(signal_id)}"
+                    f"</code>"
                 )
 
                 changed = True
@@ -2234,12 +2898,17 @@ Signals are tracked automatically.
             else:
 
                 send_telegram(
-                    "Signal ID not found."
+                    "Signal ID not found "
+                    "or already settled."
                 )
 
-        elif text.startswith("/loss "):
+        elif text.startswith(
+            "/loss "
+        ):
 
-            signal_id = text[6:].strip()
+            signal_id = (
+                text[6:].strip()
+            )
 
             if mark_result(
                 tracker,
@@ -2248,8 +2917,10 @@ Signals are tracked automatically.
             ):
 
                 send_telegram(
-                    f"❌ Recorded LOSS: "
-                    f"<code>{html.escape(signal_id)}</code>"
+                    "❌ Recorded LOSS: "
+                    f"<code>"
+                    f"{html.escape(signal_id)}"
+                    f"</code>"
                 )
 
                 changed = True
@@ -2257,10 +2928,14 @@ Signals are tracked automatically.
             else:
 
                 send_telegram(
-                    "Signal ID not found."
+                    "Signal ID not found "
+                    "or already settled."
                 )
 
-    return changed
+    return (
+        changed,
+        manual_scan_requested
+    )
 
 
 # =========================================================
@@ -2281,12 +2956,30 @@ def mark_result(
     ):
 
         if (
-            signal.get("signal_id")
+            signal.get(
+                "signal_id"
+            )
             == signal_id
         ):
 
-            signal["result"] = result
-            signal["result_time"] = now_ts()
+            # Prevent accidental overwriting
+            # of an already settled result.
+            if signal.get(
+                "result"
+            ) in (
+                "WIN",
+                "LOSS"
+            ):
+
+                return False
+
+            signal[
+                "result"
+            ] = result
+
+            signal[
+                "result_time"
+            ] = now_ts()
 
             return True
 
@@ -2304,7 +2997,10 @@ def completed_signals(
             []
         )
         if s.get("result")
-        in ("WIN", "LOSS")
+        in (
+            "WIN",
+            "LOSS"
+        )
     ]
 
 
@@ -2312,8 +3008,10 @@ def stats_text(
     tracker
 ):
 
-    completed = completed_signals(
-        tracker
+    completed = (
+        completed_signals(
+            tracker
+        )
     )
 
     wins = sum(
@@ -2326,33 +3024,111 @@ def stats_text(
         for s in completed
     )
 
-    total = wins + losses
+    total = (
+        wins
+        + losses
+    )
 
     if total:
+
         rate = (
-            wins / total
-        ) * 100
+            wins
+            / total
+            * 100
+        )
+
     else:
+
         rate = 0
 
+    # -----------------------------------------------------
+    # CALL / PUT STATS
+    # -----------------------------------------------------
+
+    call_completed = [
+        s
+        for s in completed
+        if s.get(
+            "signal"
+        ) == "CALL"
+    ]
+
+    put_completed = [
+        s
+        for s in completed
+        if s.get(
+            "signal"
+        ) == "PUT"
+    ]
+
+    call_wins = sum(
+        s["result"] == "WIN"
+        for s in call_completed
+    )
+
+    put_wins = sum(
+        s["result"] == "WIN"
+        for s in put_completed
+    )
+
+    call_rate = (
+        call_wins
+        / len(call_completed)
+        * 100
+        if call_completed
+        else 0
+    )
+
+    put_rate = (
+        put_wins
+        / len(put_completed)
+        * 100
+        if put_completed
+        else 0
+    )
+
+    pending = sum(
+        s.get("result")
+        == "PENDING"
+        for s in tracker.get(
+            "signals",
+            []
+        )
+    )
+
     return f"""
-<b>📊 PRECISION SCANNER STATS</b>
+<b>📊 PRECISION SCANNER {VERSION}</b>
 
-Completed: {total}
+<b>Completed:</b>
+{total}
 
-Wins: {wins}
-Losses: {losses}
+<b>Wins:</b>
+{wins}
 
-Recorded win rate:
+<b>Losses:</b>
+{losses}
+
+<b>Recorded win rate:</b>
 {rate:.1f}%
 
-Pending:
-{len(tracker.get("signals", [])) - total}
+<b>CALL:</b>
+{len(call_completed)} completed
+{call_rate:.1f}% win rate
 
-<b>Important:</b>
-This percentage is based only on
-recorded results. It is not a prediction
-of future performance.
+<b>PUT:</b>
+{len(put_completed)} completed
+{put_rate:.1f}% win rate
+
+<b>Pending:</b>
+{pending}
+
+<b>Testing target:</b>
+75-80%
+
+The recorded percentage is calculated
+only from results actually entered.
+
+It does not predict future performance.
 """
 
 
@@ -2365,13 +3141,15 @@ def run_scan_cycle(
 ):
 
     qualified = []
+
     borderline = []
+
     rejected = []
 
     errors = []
 
     # -----------------------------------------------------
-    # NORMAL MARKET
+    # NORMAL
     # -----------------------------------------------------
 
     for symbol in NORMAL_SYMBOLS:
@@ -2403,36 +3181,38 @@ def run_scan_cycle(
             )
 
     # -----------------------------------------------------
-    # OTC MARKET
+    # OTC
     # -----------------------------------------------------
 
-    for symbol in OTC_SYMBOLS:
+    if OTC_ENABLED:
 
-        try:
+        for symbol in OTC_SYMBOLS:
 
-            result = analyze_asset(
-                OTC_MODE,
-                symbol
-            )
+            try:
 
-            process_result(
-                tracker,
-                result,
-                qualified,
-                borderline,
-                rejected
-            )
+                result = analyze_asset(
+                    OTC_MODE,
+                    symbol
+                )
 
-        except Exception as exc:
+                process_result(
+                    tracker,
+                    result,
+                    qualified,
+                    borderline,
+                    rejected
+                )
 
-            print(
-                f"OTC {symbol} error:",
-                exc
-            )
+            except Exception as exc:
 
-            errors.append(
-                f"OTC {symbol}"
-            )
+                print(
+                    f"OTC {symbol} error:",
+                    exc
+                )
+
+                errors.append(
+                    f"OTC {symbol}"
+                )
 
     tracker[
         "meta"
@@ -2447,7 +3227,7 @@ def run_scan_cycle(
 
 
 # =========================================================
-# PROCESS ANALYSIS RESULT
+# PROCESS RESULT
 # =========================================================
 
 def process_result(
@@ -2458,28 +3238,55 @@ def process_result(
     rejected
 ):
 
-    if result.get("borderline"):
+    if result.get(
+        "borderline"
+    ):
 
-        borderline.append(result)
-
-    elif not result.get("qualified"):
-
-        rejected.append(result)
+        borderline.append(
+            result
+        )
 
         return
 
-    # Only qualified signals reach this point.
-    qualified.append(result)
+    if not result.get(
+        "qualified"
+    ):
 
-    mode = result["mode"]
-    symbol = result["symbol"]
+        rejected.append(
+            result
+        )
+
+        return
+
+    qualified.append(
+        result
+    )
+
+    mode = result[
+        "mode"
+    ]
+
+    symbol = result[
+        "symbol"
+    ]
 
     key = dedupe_key(
         result
     )
 
     # -----------------------------------------------------
-    # NEVER SEND THE SAME CANDLE TWICE
+    # SAME SIGNAL ALREADY RECORDED
+    # -----------------------------------------------------
+
+    if signal_already_recorded(
+        tracker,
+        result["signal_id"]
+    ):
+
+        return
+
+    # -----------------------------------------------------
+    # SAME CANDLE ALREADY ALERTED
     # -----------------------------------------------------
 
     if was_alerted(
@@ -2490,7 +3297,7 @@ def process_result(
         return
 
     # -----------------------------------------------------
-    # V3.5 FIVE-MINUTE ASSET LOCK
+    # ASSET LOCK
     # -----------------------------------------------------
 
     if is_locked(
@@ -2499,22 +3306,26 @@ def process_result(
         symbol
     ):
 
-        lock_until = get_lock_until(
-            tracker,
-            mode,
-            symbol
+        lock_until = (
+            get_lock_until(
+                tracker,
+                mode,
+                symbol
+            )
         )
 
         print(
             f"LOCKED: "
-            f"{mode} {symbol} "
-            f"until {format_utc(lock_until)}"
+            f"{mode} "
+            f"{symbol} "
+            f"until "
+            f"{format_utc(lock_until)}"
         )
 
         return
 
     # -----------------------------------------------------
-    # RECORD NEW SIGNAL
+    # RECORD SIGNAL
     # -----------------------------------------------------
 
     record = add_signal(
@@ -2523,18 +3334,29 @@ def process_result(
     )
 
     # -----------------------------------------------------
-    # SET FIVE-MINUTE LOCK
+    # IMPORTANT:
+    # Lock begins when the signal is actually
+    # recorded, NOT at the beginning of the
+    # already completed candle.
     # -----------------------------------------------------
+
+    signal_created_at = (
+        record["created_at"]
+    )
 
     lock_until = set_signal_lock(
         tracker,
         mode,
         symbol,
-        result["entry_candle_time"]
+        signal_created_at
     )
 
+    record[
+        "lock_until"
+    ] = lock_until
+
     # -----------------------------------------------------
-    # SEND ALERT
+    # BUILD ALERT
     # -----------------------------------------------------
 
     message = build_signal_alert(
@@ -2550,12 +3372,21 @@ def process_result(
         "alert_sent"
     ] = sent
 
-    if sent:
+    record[
+        "alert_attempt_time"
+    ] = now_ts()
 
-        mark_alerted(
-            tracker,
-            key
-        )
+    # -----------------------------------------------------
+    # Mark this exact setup as handled regardless
+    # of Telegram delivery result.
+    # -----------------------------------------------------
+
+    mark_alerted(
+        tracker,
+        key
+    )
+
+    if sent:
 
         tracker[
             "meta"
@@ -2573,15 +3404,86 @@ def process_result(
 
     else:
 
+        mark_delivery_failed(
+            tracker,
+            key
+        )
+
         print(
-            f"Signal recorded but "
-            f"Telegram delivery failed: "
+            "Signal recorded but "
+            "Telegram delivery failed: "
             f"{result['signal_id']}"
         )
 
 
 # =========================================================
-# STARTUP
+# MANUAL SCAN SUMMARY
+# =========================================================
+
+def build_manual_scan_summary(
+    results
+):
+
+    qualified = results.get(
+        "qualified",
+        []
+    )
+
+    borderline = results.get(
+        "borderline",
+        []
+    )
+
+    rejected = results.get(
+        "rejected",
+        []
+    )
+
+    errors = results.get(
+        "errors",
+        []
+    )
+
+    if qualified:
+
+        qualified_lines = []
+
+        for result in qualified:
+
+            qualified_lines.append(
+                f"• {html.escape(result['symbol'])} "
+                f"<b>{result['signal']}</b> "
+                f"({result['score']}/100)"
+            )
+
+        qualified_text = "\n".join(
+            qualified_lines
+        )
+
+        return (
+            "⚡ <b>MANUAL SCAN COMPLETE</b>\n\n"
+            f"<b>Qualified:</b> {len(qualified)}\n"
+            f"{qualified_text}\n\n"
+            f"<b>Borderline:</b> {len(borderline)}\n"
+            f"<b>Rejected:</b> {len(rejected)}\n"
+            f"<b>Errors:</b> {len(errors)}\n\n"
+            "Qualified signals were sent separately.\n\n"
+            "Automatic scanning will continue."
+        )
+
+    return (
+        "🔎 <b>MANUAL SCAN COMPLETE</b>\n\n"
+        "❌ <b>No qualified signal right now.</b>\n\n"
+        f"<b>Borderline:</b> {len(borderline)}\n"
+        f"<b>Rejected:</b> {len(rejected)}\n"
+        f"<b>Errors:</b> {len(errors)}\n\n"
+        "The scanner will continue "
+        "automatic scanning."
+    )
+
+
+# =========================================================
+# STARTUP MESSAGE
 # =========================================================
 
 def startup_message():
@@ -2591,25 +3493,46 @@ def startup_message():
 
 Scanner engine started.
 
-<b>Normal:</b> Bybit FX market data
-
-<b>OTC:</b>
-Separate OTC data framework
-{"ACTIVE" if OTC_ENABLED else "NOT CONNECTED"}
-
 <b>Strategy:</b>
-5M trend + 1M confirmation
+Strict 5M Trend + 1M Entry
 
 <b>Minimum score:</b>
 {MIN_SCORE}/100
 
+<b>Minimum dominance:</b>
+{MIN_DOMINANCE}
+
+<b>Minimum ADX:</b>
+{MIN_ADX}
+
+<b>Minimum room:</b>
+{MIN_ROOM_SCORE}/5
+
+<b>Minimum extension:</b>
+{MIN_EXTENSION_SCORE}/5
+
 <b>Reference expiry:</b>
 {REFERENCE_EXPIRY_MINUTES} minutes
 
-<b>Signal lock:</b>
+<b>Asset lock:</b>
 {SIGNAL_LOCK_SECONDS} seconds
 
-No automatic Pocket Option trades are executed.
+<b>Testing target:</b>
+75-80% recorded win rate
+
+Weak/conflicting setups are rejected.
+
+OTC:
+{"ENABLED" if OTC_ENABLED else "DISABLED"}
+
+<b>/scan</b>
+Runs an immediate market scan.
+
+No automatic Pocket Option
+trades are executed.
+
+Score is a setup-quality score,
+not a win probability.
 """
 
 
@@ -2639,17 +3562,97 @@ def main():
             # TELEGRAM COMMANDS
             # -------------------------------------------------
 
-            changed = process_commands(
-                tracker
+            changed, manual_scan = (
+                process_commands(
+                    tracker
+                )
             )
 
             if changed:
+
                 save_tracker(
                     tracker
                 )
 
             # -------------------------------------------------
-            # SCAN
+            # IMMEDIATE MANUAL SCAN
+            # -------------------------------------------------
+
+            if manual_scan:
+
+                scan_number += 1
+
+                print(
+                    "\n"
+                    f"========== MANUAL SCAN "
+                    f"{scan_number} =========="
+                )
+
+                results = run_scan_cycle(
+                    tracker
+                )
+
+                save_tracker(
+                    tracker
+                )
+
+                send_telegram(
+                    build_manual_scan_summary(
+                        results
+                    )
+                )
+
+                print(
+                    "Manual scan complete."
+                )
+
+                print(
+                    "Qualified:",
+                    len(
+                        results[
+                            "qualified"
+                        ]
+                    )
+                )
+
+                print(
+                    "Borderline:",
+                    len(
+                        results[
+                            "borderline"
+                        ]
+                    )
+                )
+
+                print(
+                    "Rejected:",
+                    len(
+                        results[
+                            "rejected"
+                        ]
+                    )
+                )
+
+                print(
+                    "Errors:",
+                    len(
+                        results[
+                            "errors"
+                        ]
+                    )
+                )
+
+                # -------------------------------------------------
+                # IMPORTANT:
+                # The manual scan counts as this scan cycle.
+                # Do not immediately run another automatic scan.
+                # Go back to command polling.
+                # -------------------------------------------------
+
+                continue
+
+            # -------------------------------------------------
+            # AUTOMATIC SCAN
             # -------------------------------------------------
 
             scan_number += 1
@@ -2695,41 +3698,51 @@ def main():
 
                 tracker[
                     "meta"
-                ]["last_heartbeat"] = now_ts()
+                ]["last_heartbeat"] = (
+                    now_ts()
+                )
 
                 save_tracker(
                     tracker
                 )
 
             # -------------------------------------------------
-            # CONSOLE SUMMARY
+            # CONSOLE
             # -------------------------------------------------
 
             print(
                 "Qualified:",
                 len(
-                    results["qualified"]
+                    results[
+                        "qualified"
+                    ]
                 )
             )
 
             print(
                 "Borderline:",
                 len(
-                    results["borderline"]
+                    results[
+                        "borderline"
+                    ]
                 )
             )
 
             print(
                 "Rejected:",
                 len(
-                    results["rejected"]
+                    results[
+                        "rejected"
+                    ]
                 )
             )
 
             print(
                 "Errors:",
                 len(
-                    results["errors"]
+                    results[
+                        "errors"
+                    ]
                 )
             )
 
@@ -2765,7 +3778,9 @@ def main():
 
             send_telegram(
                 "⚠️ Scanner engine error:\n"
-                f"<code>{html.escape(str(exc))}</code>"
+                f"<code>"
+                f"{html.escape(str(exc))}"
+                f"</code>"
             )
 
             time.sleep(10)
@@ -2776,4 +3791,5 @@ def main():
 # =========================================================
 
 if __name__ == "__main__":
+
     main()
