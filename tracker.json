@@ -3177,13 +3177,59 @@
       },
       "alert_sent": true,
       "alert_sent_at": "2026-09-16 15:10:21 UTC"
+    },
+    {
+      "id": "LTC-PUT-151100",
+      "dedupe_key": "LTC|PUT|1789571460",
+      "symbol": "LTC",
+      "product": "LTC-USD",
+      "signal": "PUT",
+      "score": 87,
+      "status": "QUALIFIED",
+      "result": "PENDING",
+      "created_at": "2026-09-16 15:12:20 UTC",
+      "entry_candle_time": 1789571460,
+      "main_candle_time": 1789571100,
+      "price": 50.402,
+      "rsi": 47.44856623065011,
+      "adx": 16.904276324177463,
+      "plus_di": 21.267120077999195,
+      "minus_di": 22.548475824818503,
+      "macd": -0.07013086067248508,
+      "macd_signal": -0.06817030125350187,
+      "macd_histogram": -0.00196055941898321,
+      "atr": 0.14867364358557936,
+      "extension_atr": 0.08077798546800341,
+      "room_atr": 1.96403338855364,
+      "support": 50.11,
+      "resistance": 50.801,
+      "major_trend": "BEARISH",
+      "entry_trend": "BULLISH",
+      "structure": "BEARISH",
+      "volatility": "HIGH",
+      "bullish_votes": 2,
+      "bearish_votes": 8,
+      "score_components": {
+        "trend": 20,
+        "structure": 10,
+        "dmi_adx": 7,
+        "macd": 10,
+        "rsi": 10,
+        "entry": 7,
+        "pullback": 8,
+        "candle": 5,
+        "room": 5,
+        "extension": 5
+      },
+      "alert_sent": true,
+      "alert_sent_at": "2026-09-16 15:12:21 UTC"
     }
   ],
   "offset": 840821691,
   "meta": {
-    "last_scan": "2026-09-16 15:10:21 UTC",
+    "last_scan": "2026-09-16 15:12:21 UTC",
     "last_heartbeat": "2026-09-16 15:10:21 UTC",
-    "last_signal": "BTC-PUT-150800",
+    "last_signal": "LTC-PUT-151100",
     "alerted_keys": [
       "BTC|PUT|1789564980",
       "LINK|PUT|1789565160",
@@ -3246,7 +3292,8 @@
       "LTC|PUT|1789570860",
       "BNB|PUT|1789571160",
       "LTC|PUT|1789571160",
-      "BTC|PUT|1789571280"
+      "BTC|PUT|1789571280",
+      "LTC|PUT|1789571460"
     ]
   }
 }
