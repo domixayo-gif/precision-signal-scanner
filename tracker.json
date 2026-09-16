@@ -877,13 +877,59 @@
       },
       "alert_sent": true,
       "alert_sent_at": "2026-09-16 13:42:21 UTC"
+    },
+    {
+      "id": "ADA-PUT-134200",
+      "dedupe_key": "ADA|PUT|1789566120",
+      "symbol": "ADA",
+      "product": "ADA-USD",
+      "signal": "PUT",
+      "score": 83,
+      "status": "QUALIFIED",
+      "result": "PENDING",
+      "created_at": "2026-09-16 13:43:19 UTC",
+      "entry_candle_time": 1789566120,
+      "main_candle_time": 1789565700,
+      "price": 0.19234,
+      "rsi": 33.39131765921175,
+      "adx": 32.20411914324514,
+      "plus_di": 13.476711058249705,
+      "minus_di": 27.33338809135763,
+      "macd": -0.0005160099697135712,
+      "macd_signal": -0.0004756656615064608,
+      "macd_histogram": -4.034430820711038e-05,
+      "atr": 0.0006224795438372087,
+      "extension_atr": 0.772373717565095,
+      "room_atr": 1.7510615582334144,
+      "support": 0.19125,
+      "resistance": 0.1954,
+      "major_trend": "BEARISH",
+      "entry_trend": "BEARISH",
+      "structure": "RANGE",
+      "volatility": "HIGH",
+      "bullish_votes": 0,
+      "bearish_votes": 8,
+      "score_components": {
+        "trend": 20,
+        "structure": 0,
+        "dmi_adx": 10,
+        "macd": 10,
+        "rsi": 6,
+        "entry": 15,
+        "pullback": 7,
+        "candle": 5,
+        "room": 5,
+        "extension": 5
+      },
+      "alert_sent": true,
+      "alert_sent_at": "2026-09-16 13:43:21 UTC"
     }
   ],
   "offset": 840821691,
   "meta": {
-    "last_scan": "2026-09-16 13:42:21 UTC",
+    "last_scan": "2026-09-16 13:43:21 UTC",
     "last_heartbeat": "2026-09-16 13:40:21 UTC",
-    "last_signal": "SOL-PUT-133800",
+    "last_signal": "ADA-PUT-134200",
     "alerted_keys": [
       "BTC|PUT|1789564980",
       "LINK|PUT|1789565160",
@@ -896,7 +942,8 @@
       "LINK|PUT|1789565760",
       "ETH|PUT|1789565760",
       "ETH|PUT|1789566060",
-      "SOL|PUT|1789565880"
+      "SOL|PUT|1789565880",
+      "ADA|PUT|1789566120"
     ]
   }
 }
