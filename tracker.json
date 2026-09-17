@@ -3576,6 +3576,36 @@
       "expiry_at": "2026-09-17T16:36:00+00:00",
       "result": "PENDING",
       "id": "V22-BNB-CALL-1789662660"
+    },
+    {
+      "symbol": "BTC",
+      "asset": "BTC OTC",
+      "direction": "CALL",
+      "score": 9,
+      "price": 76577.4,
+      "rsi5": 60.9,
+      "rsi1": 59.1,
+      "entry_ts": 1789663620,
+      "created_at": "2026-09-17T16:52:23.711630+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T16:52:00+00:00",
+      "result": "PENDING",
+      "id": "V22-BTC-CALL-1789663620"
+    },
+    {
+      "symbol": "LTC",
+      "asset": "LTC OTC",
+      "direction": "CALL",
+      "score": 9,
+      "price": 53.557,
+      "rsi5": 63.8,
+      "rsi1": 70.2,
+      "entry_ts": 1789663620,
+      "created_at": "2026-09-17T16:52:24.753485+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T16:52:00+00:00",
+      "result": "PENDING",
+      "id": "V22-LTC-CALL-1789663620"
     }
   ],
   "results": {
