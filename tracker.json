@@ -3711,6 +3711,21 @@
       "expiry_at": "2026-09-17T17:12:00+00:00",
       "result": "PENDING",
       "id": "V22-LTC-CALL-1789664820"
+    },
+    {
+      "symbol": "DOT",
+      "asset": "DOT OTC",
+      "direction": "CALL",
+      "score": 9,
+      "price": 1.0689,
+      "rsi5": 54.0,
+      "rsi1": 74.8,
+      "entry_ts": 1789665240,
+      "created_at": "2026-09-17T17:17:39.284248+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T17:19:00+00:00",
+      "result": "PENDING",
+      "id": "V22-DOT-CALL-1789665240"
     }
   ],
   "results": {
