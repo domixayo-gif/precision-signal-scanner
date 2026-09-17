@@ -4026,6 +4026,36 @@
       "expiry_at": "2026-09-17T19:22:00+00:00",
       "result": "PENDING",
       "id": "V22-SOL-PUT-1789672620"
+    },
+    {
+      "symbol": "ETH",
+      "asset": "ETH OTC",
+      "direction": "PUT",
+      "score": 11,
+      "price": 2449.74,
+      "rsi5": 39.0,
+      "rsi1": 49.3,
+      "entry_ts": 1789673160,
+      "created_at": "2026-09-17T19:28:44.664506+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T19:31:00+00:00",
+      "result": "PENDING",
+      "id": "V22-ETH-PUT-1789673160"
+    },
+    {
+      "symbol": "BNB",
+      "asset": "BNB OTC",
+      "direction": "CALL",
+      "score": 11,
+      "price": 729.49,
+      "rsi5": 53.8,
+      "rsi1": 69.0,
+      "entry_ts": 1789673220,
+      "created_at": "2026-09-17T19:28:44.845935+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T19:32:00+00:00",
+      "result": "PENDING",
+      "id": "V22-BNB-CALL-1789673220"
     }
   ],
   "results": {
