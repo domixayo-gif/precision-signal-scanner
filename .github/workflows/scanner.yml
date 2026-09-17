@@ -1,4 +1,4 @@
-name: Precision Signal Scanner V2.1
+name: Precision Signal Scanner V2.2
 
 on:
   schedule:
@@ -10,18 +10,20 @@ permissions:
   contents: write
 
 concurrency:
-  group: precision-signal-scanner
+  group: precision-signal-scanner-v2
   cancel-in-progress: false
 
 jobs:
   scan:
+    name: Run V2.2 Scanner
     runs-on: ubuntu-latest
+    timeout-minutes: 4
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Set up Python
+      - name: Set up Python 3.12
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -36,7 +38,7 @@ jobs:
           python -m py_compile scanner.py
           python -m py_compile storage.py
 
-      - name: Run V2.1 scanner
+      - name: Run V2.2 scanner
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
