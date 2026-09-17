@@ -3246,6 +3246,21 @@
       "expiry_at": "2026-09-17T13:24:00+00:00",
       "result": "PENDING",
       "id": "V21-DOT-CALL-1789651140"
+    },
+    {
+      "symbol": "BNB",
+      "asset": "BNB OTC",
+      "direction": "PUT",
+      "score": 10,
+      "price": 724.78,
+      "rsi5": 29.8,
+      "rsi1": 46.6,
+      "entry_ts": 1789658640,
+      "created_at": "2026-09-17T15:30:39.729622+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T15:29:00+00:00",
+      "result": "PENDING",
+      "id": "V22-BNB-PUT-1789658640"
     }
   ],
   "results": {
