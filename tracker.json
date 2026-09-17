@@ -4011,6 +4011,21 @@
       "expiry_at": "2026-09-17T19:20:00+00:00",
       "result": "PENDING",
       "id": "V22-AVAX-PUT-1789672500"
+    },
+    {
+      "symbol": "SOL",
+      "asset": "SOL OTC",
+      "direction": "PUT",
+      "score": 11,
+      "price": 100.68,
+      "rsi5": 34.7,
+      "rsi1": 35.1,
+      "entry_ts": 1789672620,
+      "created_at": "2026-09-17T19:23:41.438925+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T19:22:00+00:00",
+      "result": "PENDING",
+      "id": "V22-SOL-PUT-1789672620"
     }
   ],
   "results": {
