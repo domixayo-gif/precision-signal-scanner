@@ -4585,6 +4585,21 @@
       "expiry_at": "2026-09-17T21:12:00+00:00",
       "result": "PENDING",
       "id": "V35-BTC-PUT-1789679220"
+    },
+    {
+      "symbol": "ETH",
+      "asset": "ETH OTC",
+      "direction": "PUT",
+      "score": 9,
+      "price": 2449.85,
+      "rsi5": 50.4,
+      "rsi1": 49.3,
+      "entry_ts": 1789679160,
+      "created_at": "2026-09-17T21:09:42.649302+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T21:11:00+00:00",
+      "result": "PENDING",
+      "id": "V22-ETH-PUT-1789679160"
     }
   ],
   "results": {
