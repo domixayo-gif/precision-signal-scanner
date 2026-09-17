@@ -1,5 +1,5 @@
 {
-  "version": "V4.0",
+  "version": "V5.0",
   "signals": [
     {
       "id": "LINK-154645",
@@ -3226,17 +3226,173 @@
       "alert_sent_at": "2026-09-16 15:12:21 UTC"
     }
   ],
-  "borderline": [],
+  "borderline": [
+    {
+      "symbol": "USDCAD",
+      "provider_symbol": "USD/CAD",
+      "market_type": "FX",
+      "mode": "NORMAL",
+      "signal": "NO TRADE",
+      "candidate": "CALL",
+      "score": 80,
+      "dominance": 9,
+      "blockers": [
+        "Structure not aligned",
+        "ADX too low"
+      ],
+      "trend5": "BULLISH",
+      "entry1": "BULLISH",
+      "structure": "BEARISH",
+      "adx": 16.0802673256481,
+      "plus_di": 24.238572700741386,
+      "minus_di": 17.2431666151917,
+      "rsi": 53.137209530176115,
+      "macd_hist": 1.9319644744612665e-05,
+      "price": 1.39889,
+      "entry_time_ms": 1789635120000,
+      "candle_strength": 0.9166666666662041,
+      "pullback_score": 10,
+      "room_score": 4,
+      "extension_score": 5,
+      "breakdown": {
+        "Trend": 20,
+        "Structure": 0,
+        "ADX/DMI": 0,
+        "MACD": 10,
+        "RSI": 10,
+        "Entry": 15,
+        "Pullback": 10,
+        "Candle": 5,
+        "Room": 5,
+        "Extension": 5
+      },
+      "created_at": "2026-09-17T08:54:05.158871+00:00"
+    }
+  ],
   "metadata": {
-    "last_scan": "2026-09-17T08:22:36.861773+00:00",
+    "last_scan": "2026-09-17T08:53:52.741618+00:00",
     "last_signal": null,
-    "scan_count": 4,
+    "scan_count": 5,
     "signal_locks": {},
     "processed_keys": [],
     "delivery_failed_keys": [],
     "telegram_offset": null,
+    "markets": [
+      {
+        "name": "EURUSD",
+        "symbol": "EUR/USD",
+        "type": "FX"
+      },
+      {
+        "name": "GBPUSD",
+        "symbol": "GBP/USD",
+        "type": "FX"
+      },
+      {
+        "name": "USDJPY",
+        "symbol": "USD/JPY",
+        "type": "FX"
+      },
+      {
+        "name": "AUDUSD",
+        "symbol": "AUD/USD",
+        "type": "FX"
+      },
+      {
+        "name": "NZDUSD",
+        "symbol": "NZD/USD",
+        "type": "FX"
+      },
+      {
+        "name": "USDCAD",
+        "symbol": "USD/CAD",
+        "type": "FX"
+      },
+      {
+        "name": "USDCHF",
+        "symbol": "USD/CHF",
+        "type": "FX"
+      },
+      {
+        "name": "EURGBP",
+        "symbol": "EUR/GBP",
+        "type": "FX"
+      },
+      {
+        "name": "EURJPY",
+        "symbol": "EUR/JPY",
+        "type": "FX"
+      },
+      {
+        "name": "GBPJPY",
+        "symbol": "GBP/JPY",
+        "type": "FX"
+      },
+      {
+        "name": "AUDJPY",
+        "symbol": "AUD/JPY",
+        "type": "FX"
+      },
+      {
+        "name": "EURCHF",
+        "symbol": "EUR/CHF",
+        "type": "FX"
+      },
+      {
+        "name": "EURAUD",
+        "symbol": "EUR/AUD",
+        "type": "FX"
+      },
+      {
+        "name": "GBPAUD",
+        "symbol": "GBP/AUD",
+        "type": "FX"
+      },
+      {
+        "name": "GBPCAD",
+        "symbol": "GBP/CAD",
+        "type": "FX"
+      },
+      {
+        "name": "CADJPY",
+        "symbol": "CAD/JPY",
+        "type": "FX"
+      },
+      {
+        "name": "CHFJPY",
+        "symbol": "CHF/JPY",
+        "type": "FX"
+      },
+      {
+        "name": "AUDCAD",
+        "symbol": "AUD/CAD",
+        "type": "FX"
+      },
+      {
+        "name": "AUDCHF",
+        "symbol": "AUD/CHF",
+        "type": "FX"
+      },
+      {
+        "name": "NZDJPY",
+        "symbol": "NZD/JPY",
+        "type": "FX"
+      }
+    ],
+    "last_rejection_reasons": {
+      "Structure not aligned": 6,
+      "1M entry mismatch": 5,
+      "No clean pullback": 8,
+      "Confirmation candle mismatch": 6,
+      "Weak directional dominance": 3,
+      "5M trend mismatch": 4,
+      "Confirmation candle weak": 3,
+      "ADX too low": 3,
+      "DMI mismatch": 1,
+      "MACD mismatch": 2
+    },
+    "data_provider": "Twelve Data",
     "working_bybit_endpoint": "https://api.bybit.com",
-    "markets": [],
     "last_heartbeat": null,
     "alerted_keys": []
   }
