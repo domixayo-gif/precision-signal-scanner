@@ -4116,6 +4116,51 @@
       "expiry_at": "2026-09-17T19:41:00+00:00",
       "result": "PENDING",
       "id": "V22-LINK-PUT-1789673760"
+    },
+    {
+      "symbol": "SOL",
+      "asset": "SOL OTC",
+      "direction": "PUT",
+      "score": 9,
+      "price": 100.85,
+      "rsi5": 35.8,
+      "rsi1": 44.1,
+      "entry_ts": 1789673820,
+      "created_at": "2026-09-17T19:43:53.826973+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T19:42:00+00:00",
+      "result": "PENDING",
+      "id": "V22-SOL-PUT-1789673820"
+    },
+    {
+      "symbol": "ADA",
+      "asset": "ADA OTC",
+      "direction": "PUT",
+      "score": 9,
+      "price": 0.20147,
+      "rsi5": 40.5,
+      "rsi1": 42.9,
+      "entry_ts": 1789673820,
+      "created_at": "2026-09-17T19:43:54.023362+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T19:42:00+00:00",
+      "result": "PENDING",
+      "id": "V22-ADA-PUT-1789673820"
+    },
+    {
+      "symbol": "AVAX",
+      "asset": "AVAX OTC",
+      "direction": "PUT",
+      "score": 11,
+      "price": 7.579,
+      "rsi5": 36.7,
+      "rsi1": 40.0,
+      "entry_ts": 1789674000,
+      "created_at": "2026-09-17T19:43:54.476340+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T19:45:00+00:00",
+      "result": "PENDING",
+      "id": "V22-AVAX-PUT-1789674000"
     }
   ],
   "results": {
