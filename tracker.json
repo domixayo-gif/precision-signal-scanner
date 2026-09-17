@@ -4648,6 +4648,22 @@
       "expiry_at": "2026-09-17T21:26:00+00:00",
       "result": "PENDING",
       "id": "V35-POL-PUT-1789680060"
+    },
+    {
+      "symbol": "SOL",
+      "asset": "SOL OTC",
+      "direction": "CALL",
+      "score": 85,
+      "price": 101.22,
+      "rsi5": 53.3,
+      "rsi1": 64.7,
+      "adx": 21.6,
+      "entry_ts": 1789680720,
+      "created_at": "2026-09-17T21:34:35.051641+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T21:37:00+00:00",
+      "result": "PENDING",
+      "id": "V35-SOL-CALL-1789680720"
     }
   ],
   "results": {
