@@ -15,7 +15,7 @@ concurrency:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 6
 
     steps:
       - name: Checkout code
@@ -34,11 +34,11 @@ jobs:
       - name: Validate Python syntax
         run: python -m py_compile scanner.py
 
-      - name: Run one scanner cycle
+      - name: Run scanner
         env:
           TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_ACTIONS: "true"
-        run: python scanner.py --once
+        run: python scanner.py --loop --loop
