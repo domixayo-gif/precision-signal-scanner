@@ -1,19 +1,49 @@
 #!/usr/bin/env python3
 """
-PRECISION SCANNER V4.0
-Multi-Market Bybit Scanner
+PRECISION SCANNER V5.0
+Twelve Data Multi-Market Scanner
 --------------------------------
-Bybit public candles -> 5M trend + 1M entry -> filters -> score -> Telegram.
+
+Market data:
+    Twelve Data
+
+Strategy:
+    5M trend + 1M entry
+    EMA 9/21/50
+    RSI
+    MACD
+    ADX/DMI
+    Structure
+    Pullback
+    Confirmation candle
+    Room
+    Extension
+    Directional dominance
 
 Markets:
-- Bybit FX perpetuals discovered automatically
-- Bybit crypto linear perpetuals discovered automatically
-- Minimum target: 10 instruments
-- FX is prioritized, then major/high-volume crypto is added.
+    Forex majors
+    Forex minors/crosses
+    Crypto
 
-Research/test framework only.
-No profit guarantee.
-No trade execution.
+Telegram:
+    Qualified CALL / PUT alerts
+
+Tracker:
+    tracker.json
+    Optional GitHub Actions persistence
+
+IMPORTANT:
+    This is a research/test scanner.
+    It does NOT execute trades.
+    It does NOT guarantee profitability.
+
+Pocket Option note:
+    Normal forex data can be directionally compared with
+    Pocket Option standard forex markets.
+
+    Pocket Option OTC markets may use a different/internal
+    price feed, so exact candle-by-candle synchronization
+    with OTC is NOT guaranteed.
 """
 
 from __future__ import annotations
@@ -25,32 +55,51 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 import requests
 
 
 # ============================================================
-# CONFIGURATION
+# VERSION
 # ============================================================
 
-VERSION = "V4.0"
+VERSION = "V5.0"
 
-ENDPOINTS = [
-    "https://api.bybit.com",
-    "https://api.bytick.com",
-]
 
-# Timeframes
-TF5 = "5"
-TF1 = "1"
+# ============================================================
+# TWELVE DATA
+# ============================================================
+
+TWELVE_API = "https://api.twelvedata.com"
+
+TWELVE_KEY = os.getenv(
+    "TWELVE_DATA_API_KEY",
+    ""
+).strip()
+
+TIMEOUT = 20
+RETRIES = 3
+
+
+# ============================================================
+# TIMEFRAMES
+# ============================================================
+
+TF5 = "5min"
+TF1 = "1min"
 
 # Reference expiry only
 EXPIRY = 5
 
-# Strategy thresholds
+
+# ============================================================
+# SCANNER SETTINGS
+# ============================================================
+
 MIN_SCORE = 85
 BORDERLINE = 80
+
 MIN_DOM = 3
 MIN_ADX = 18
 MIN_CANDLE = 0.50
@@ -58,81 +107,157 @@ MIN_CANDLE = 0.50
 CALL_RSI = (43, 68)
 PUT_RSI = (32, 57)
 
+# Signal lock
 LOCK = 300
+
+# Number of candles requested
 LIMIT = 220
-TIMEOUT = 20
-RETRIES = 3
 
-# ------------------------------------------------------------
-# MULTI-MARKET SETTINGS
-# ------------------------------------------------------------
-
-# The scanner will try to maintain at least this many symbols.
+# Number of markets
 MIN_SCAN_SYMBOLS = 10
-
-# Maximum number of instruments scanned per cycle.
-# Increase this if you want more markets.
 MAX_SCAN_SYMBOLS = 20
 
-# Maximum crypto instruments used to fill the minimum.
-MAX_CRYPTO_SYMBOLS = 17
 
-# These are preference symbols only.
-# They are NOT blindly assumed to exist.
-PREFERRED_CRYPTO = [
-    "BTCUSDT",
-    "ETHUSDT",
-    "SOLUSDT",
-    "XRPUSDT",
-    "DOGEUSDT",
-    "BNBUSDT",
-    "ADAUSDT",
-    "AVAXUSDT",
-    "LINKUSDT",
-    "LTCUSDT",
-    "DOTUSDT",
-    "TRXUSDT",
-    "SUIUSDT",
-    "BCHUSDT",
-    "TONUSDT",
-    "NEARUSDT",
-    "UNIUSDT",
+# ============================================================
+# SCAN INTERVAL
+# ============================================================
+
+# Scan every 60 seconds.
+#
+# This is intentionally faster than V4's 300 seconds because
+# the scanner uses 1-minute entry candles.
+#
+# The strategy still uses a 5-minute reference trend.
+SCAN_INTERVAL = 60
+
+
+# ============================================================
+# FOREX MARKETS
+# ============================================================
+
+FOREX_PAIRS = [
+    "EUR/USD",
+    "GBP/USD",
+    "USD/JPY",
+    "AUD/USD",
+    "NZD/USD",
+    "USD/CAD",
+    "USD/CHF",
+
+    "EUR/GBP",
+    "EUR/JPY",
+    "GBP/JPY",
+
+    "AUD/JPY",
+    "EUR/CHF",
+    "EUR/AUD",
+    "GBP/AUD",
+    "GBP/CAD",
+    "CAD/JPY",
+    "CHF/JPY",
+
+    "AUD/CAD",
+    "AUD/CHF",
+    "NZD/JPY",
+    "NZD/CHF",
+    "NZD/CAD",
+
+    "EUR/NZD",
+    "GBP/NZD",
 ]
 
-# Known Bybit FX symbols.
-# These are preference names only.
-# Actual discovery comes from Bybit instruments-info.
-PREFERRED_FX = [
-    "EURUSDUSDT",
-    "GBPUSDUSDT",
-    "USDJPYUSDT",
+
+# ============================================================
+# CRYPTO MARKETS
+# ============================================================
+
+CRYPTO_PAIRS = [
+    "BTC/USD",
+    "ETH/USD",
+    "SOL/USD",
+    "XRP/USD",
+    "DOGE/USD",
+    "BNB/USD",
+    "ADA/USD",
+    "AVAX/USD",
+    "LINK/USD",
+    "LTC/USD",
+    "DOT/USD",
+    "TRX/USD",
+    "SUI/USD",
+    "BCH/USD",
+    "TON/USD",
+    "NEAR/USD",
+    "UNI/USD",
 ]
 
-# Tracker
+
+# ============================================================
+# TRACKER
+# ============================================================
+
 TRACKER_FILE = "tracker.json"
 MAX_ITEMS = 1000
 
-# Telegram
-TG = os.getenv("TELEGRAM_TOKEN", "").strip()
-CHAT = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-# GitHub
-GH = os.getenv("GITHUB_TOKEN", "").strip()
-REPO = os.getenv("GITHUB_REPOSITORY", "").strip()
-ACTIONS = os.getenv("GITHUB_ACTIONS", "").lower() == "true"
+# ============================================================
+# TELEGRAM
+# ============================================================
 
-# HTTP session
+TG = os.getenv(
+    "TELEGRAM_TOKEN",
+    ""
+).strip()
+
+CHAT = os.getenv(
+    "TELEGRAM_CHAT_ID",
+    ""
+).strip()
+
+
+# ============================================================
+# GITHUB
+# ============================================================
+
+GH = os.getenv(
+    "GITHUB_TOKEN",
+    ""
+).strip()
+
+REPO = os.getenv(
+    "GITHUB_REPOSITORY",
+    ""
+).strip()
+
+ACTIONS = (
+    os.getenv(
+        "GITHUB_ACTIONS",
+        ""
+    ).lower()
+    == "true"
+)
+
+
+# ============================================================
+# HTTP SESSION
+# ============================================================
+
 S = requests.Session()
+
 S.headers.update(
     {
-        "User-Agent": f"PrecisionScanner/{VERSION}",
-        "Accept": "application/json",
+        "User-Agent":
+            f"PrecisionScanner/{VERSION}",
+        "Accept":
+            "application/json",
     }
 )
 
-WORKING = None
 
-# Dynamic market list
+# ============================================================
+# GLOBALS
+# ============================================================
+
 MARKETS: list[dict[str, Any]] = []
 
 
@@ -141,7 +266,9 @@ MARKETS: list[dict[str, Any]] = []
 # ============================================================
 
 def now():
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(
+        timezone.utc
+    ).isoformat()
 
 
 def unix():
@@ -151,12 +278,18 @@ def unix():
 def f(x):
     try:
         y = float(x)
-        return y if math.isfinite(y) else None
+
+        if math.isfinite(y):
+            return y
+
+        return None
+
     except Exception:
         return None
 
 
 def price(x):
+
     if x is None:
         return "N/A"
 
@@ -171,61 +304,94 @@ def price(x):
     return f"{x:.8f}"
 
 
-def default():
+# ============================================================
+# DEFAULT TRACKER
+# ============================================================
+
+def default_tracker():
+
     return {
         "version": VERSION,
+
         "signals": [],
+
         "borderline": [],
+
         "metadata": {
             "last_scan": None,
             "last_signal": None,
+
             "scan_count": 0,
+
             "signal_locks": {},
+
             "processed_keys": [],
+
             "delivery_failed_keys": [],
+
             "telegram_offset": None,
-            "working_bybit_endpoint": None,
+
             "markets": [],
+
+            "last_rejection_reasons": {},
+
+            "data_provider": "Twelve Data",
         },
     }
 
 
 # ============================================================
-# TRACKER
+# LOAD TRACKER
 # ============================================================
 
-def load():
+def load_tracker():
+
     try:
-        with open(TRACKER_FILE, encoding="utf8") as h:
+
+        with open(
+            TRACKER_FILE,
+            encoding="utf8",
+        ) as h:
+
             d = json.load(h)
 
-        b = default()
+        b = default_tracker()
 
-        b.update(
-            {
-                k: d[k]
-                for k in ("signals", "borderline")
-                if k in d
-            }
+        if "signals" in d:
+            b["signals"] = d["signals"]
+
+        if "borderline" in d:
+            b["borderline"] = d["borderline"]
+
+        b["metadata"].update(
+            d.get(
+                "metadata",
+                {}
+            )
         )
-
-        b["metadata"].update(d.get("metadata", {}))
 
         return b
 
     except Exception:
-        return default()
+
+        return default_tracker()
 
 
-T = load()
+T = load_tracker()
 
+
+# ============================================================
+# SAVE TRACKER
+# ============================================================
 
 def save_local():
+
     with open(
         TRACKER_FILE,
         "w",
         encoding="utf8",
     ) as h:
+
         json.dump(
             T,
             h,
@@ -234,36 +400,66 @@ def save_local():
         )
 
 
+# ============================================================
+# GITHUB SAVE
+# ============================================================
+
 def gh_save():
+
     save_local()
 
-    if not ACTIONS or not GH or not REPO:
+    if (
+        not ACTIONS
+        or not GH
+        or not REPO
+    ):
         return False
 
-    u = f"https://api.github.com/repos/{REPO}/contents/{TRACKER_FILE}"
+    url = (
+        f"https://api.github.com/"
+        f"repos/{REPO}/contents/"
+        f"{TRACKER_FILE}"
+    )
 
-    hd = {
-        "Authorization": f"Bearer {GH}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": f"PrecisionScanner/{VERSION}",
+    headers = {
+        "Authorization":
+            f"Bearer {GH}",
+
+        "Accept":
+            "application/vnd.github+json",
+
+        "X-GitHub-Api-Version":
+            "2022-11-28",
+
+        "User-Agent":
+            f"PrecisionScanner/{VERSION}",
     }
 
     try:
+
         r = S.get(
-            u,
-            headers=hd,
+            url,
+            headers=headers,
             timeout=TIMEOUT,
         )
 
-        sha = r.json().get("sha") if r.status_code == 200 else None
+        sha = (
+            r.json().get("sha")
+            if r.status_code == 200
+            else None
+        )
 
-        if r.status_code not in (200, 404):
+        if r.status_code not in (
+            200,
+            404,
+        ):
+
             print(
                 "[TRACKER] GET",
                 r.status_code,
                 r.text[:300],
             )
+
             return False
 
         raw = json.dumps(
@@ -272,18 +468,23 @@ def gh_save():
             ensure_ascii=False,
         ).encode()
 
-        p = {
-            "message": f"Update tracker {VERSION}",
-            "content": base64.b64encode(raw).decode(),
+        payload = {
+            "message":
+                f"Update tracker {VERSION}",
+
+            "content":
+                base64.b64encode(
+                    raw
+                ).decode(),
         }
 
         if sha:
-            p["sha"] = sha
+            payload["sha"] = sha
 
         r = S.put(
-            u,
-            headers=hd,
-            json=p,
+            url,
+            headers=headers,
+            json=payload,
             timeout=TIMEOUT,
         )
 
@@ -292,13 +493,18 @@ def gh_save():
             r.status_code,
         )
 
-        return r.status_code in (200, 201)
+        return r.status_code in (
+            200,
+            201,
+        )
 
     except Exception as e:
+
         print(
             "[TRACKER] save error",
             e,
         )
+
         return False
 
 
@@ -306,104 +512,436 @@ def gh_save():
 # TELEGRAM
 # ============================================================
 
-def tg(method, **kw):
+def tg(
+    method,
+    **kwargs,
+):
+
     if not TG:
         return None
 
     try:
+
         return S.post(
-            f"https://api.telegram.org/bot{TG}/{method}",
+            f"https://api.telegram.org/"
+            f"bot{TG}/{method}",
+
             timeout=TIMEOUT + 5,
-            **kw,
+
+            **kwargs,
         )
 
     except Exception as e:
-        print("[TELEGRAM]", e)
+
+        print(
+            "[TELEGRAM]",
+            e,
+        )
+
         return None
 
 
 def send(text):
+
     if not TG or not CHAT:
+
         print(
             "[TELEGRAM] credentials missing"
         )
+
         return False
 
     r = tg(
         "sendMessage",
+
         json={
             "chat_id": CHAT,
-            "text": text[:3900],
-            "disable_web_page_preview": True,
+
+            "text":
+                text[:3900],
+
+            "disable_web_page_preview":
+                True,
         },
     )
 
     ok = bool(
-        r and r.status_code == 200
+        r
+        and r.status_code == 200
     )
 
     if not ok:
+
         print(
             "[TELEGRAM] send failed",
-            r.status_code if r else "exception",
-            r.text[:300] if r else "",
+
+            r.status_code
+            if r
+            else "exception",
+
+            r.text[:300]
+            if r
+            else "",
         )
 
     return ok
 
 
 def updates():
+
     if not TG:
         return []
 
-    p = {
+    params = {
         "timeout": 1,
         "limit": 20,
     }
 
-    off = T["metadata"].get(
-        "telegram_offset"
+    offset = (
+        T["metadata"]
+        .get("telegram_offset")
     )
 
-    if off is not None:
-        p["offset"] = off
+    if offset is not None:
+        params["offset"] = offset
 
     r = tg(
         "getUpdates",
-        params=p,
+        params=params,
     )
 
-    if not r or r.status_code != 200:
+    if (
+        not r
+        or r.status_code != 200
+    ):
         return []
 
     try:
+
         return r.json().get(
             "result",
             [],
         )
 
     except Exception:
+
         return []
 
 
 # ============================================================
-# INDICATORS
+# TWELVE DATA API
+# ============================================================
+
+def twelve_get(
+    endpoint,
+    params,
+):
+
+    if not TWELVE_KEY:
+
+        raise RuntimeError(
+            "TWELVE_DATA_API_KEY "
+            "is missing"
+        )
+
+    p = dict(params)
+
+    p["apikey"] = TWELVE_KEY
+
+    last_error = "unknown"
+
+    for attempt in range(
+        1,
+        RETRIES + 1,
+    ):
+
+        try:
+
+            r = S.get(
+                TWELVE_API + endpoint,
+                params=p,
+                timeout=TIMEOUT,
+            )
+
+            if r.status_code != 200:
+
+                last_error = (
+                    f"HTTP {r.status_code}: "
+                    f"{r.text[:300]}"
+                )
+
+                print(
+                    "[TWELVE]",
+                    last_error,
+                )
+
+                if r.status_code in (
+                    400,
+                    401,
+                    403,
+                    404,
+                ):
+                    break
+
+                time.sleep(
+                    attempt * 2
+                )
+
+                continue
+
+            data = r.json()
+
+            if (
+                isinstance(data, dict)
+                and (
+                    data.get("status")
+                    == "error"
+                    or data.get("code")
+                )
+            ):
+
+                last_error = (
+                    f"{data.get('code', '')} "
+                    f"{data.get('message', '')}"
+                )
+
+                print(
+                    "[TWELVE]",
+                    last_error,
+                )
+
+                break
+
+            return data
+
+        except Exception as e:
+
+            last_error = str(e)
+
+            print(
+                "[TWELVE] exception",
+                attempt,
+                "/",
+                RETRIES,
+                e,
+            )
+
+            time.sleep(
+                min(
+                    attempt * 2,
+                    5,
+                )
+            )
+
+    raise RuntimeError(
+        f"Twelve Data failed: "
+        f"{last_error}"
+    )
+
+
+# ============================================================
+# DATA VALIDATION
+# ============================================================
+
+def validate_series(data):
+
+    if not isinstance(
+        data,
+        dict,
+    ):
+
+        raise RuntimeError(
+            "Invalid Twelve Data response"
+        )
+
+    values = data.get(
+        "values"
+    )
+
+    if not values:
+
+        message = (
+            data.get("message")
+            or data.get("status")
+            or "No values returned"
+        )
+
+        raise RuntimeError(
+            str(message)
+        )
+
+    return values
+
+
+# ============================================================
+# CANDLE CONVERSION
+# ============================================================
+
+def candles(values):
+
+    out = []
+
+    for row in values:
+
+        try:
+
+            o = f(
+                row.get("open")
+            )
+
+            h = f(
+                row.get("high")
+            )
+
+            l = f(
+                row.get("low")
+            )
+
+            c = f(
+                row.get("close")
+            )
+
+            dt = str(
+                row.get("datetime")
+                or ""
+            )
+
+            if None in (
+                o,
+                h,
+                l,
+                c,
+            ):
+                continue
+
+            if h < l:
+                continue
+
+            # Twelve Data forex timestamps
+            # are normally UTC when timezone
+            # is explicitly requested.
+            try:
+
+                dt2 = (
+                    dt.replace(
+                        "Z",
+                        "+00:00",
+                    )
+                )
+
+                timestamp = (
+                    datetime.fromisoformat(
+                        dt2
+                    ).timestamp()
+                )
+
+            except Exception:
+
+                timestamp = 0
+
+            out.append(
+                {
+                    "t": timestamp,
+                    "o": o,
+                    "h": h,
+                    "l": l,
+                    "c": c,
+                }
+            )
+
+        except Exception:
+            continue
+
+    out.sort(
+        key=lambda x: x["t"]
+    )
+
+    return out
+
+
+# ============================================================
+# FETCH CANDLES
+# ============================================================
+
+def fetch(
+    symbol,
+    interval,
+):
+
+    data = twelve_get(
+        "/time_series",
+        {
+            "symbol":
+                symbol,
+
+            "interval":
+                interval,
+
+            "outputsize":
+                LIMIT,
+
+            "timezone":
+                "UTC",
+
+            "format":
+                "JSON",
+        },
+    )
+
+    values = validate_series(
+        data
+    )
+
+    c = candles(
+        values
+    )
+
+    if not c:
+
+        raise RuntimeError(
+            f"No candles returned "
+            f"for {symbol} "
+            f"{interval}"
+        )
+
+    print(
+        f"[DATA] OK {symbol} "
+        f"{interval}: "
+        f"{len(c)} candles"
+    )
+
+    return c
+
+
+# ============================================================
+# EMA
 # ============================================================
 
 def ema(a, n):
+
     if len(a) < n:
         return [None] * len(a)
 
     z = [None] * len(a)
 
-    prev = sum(a[:n]) / n
+    prev = sum(
+        a[:n]
+    ) / n
+
     z[n - 1] = prev
 
-    k = 2 / (n + 1)
+    k = 2 / (
+        n + 1
+    )
 
-    for i in range(n, len(a)):
+    for i in range(
+        n,
+        len(a),
+    ):
+
         prev = (
-            (a[i] - prev) * k
+            (a[i] - prev)
+            * k
             + prev
         )
 
@@ -412,7 +950,15 @@ def ema(a, n):
     return z
 
 
-def rsi(a, n=14):
+# ============================================================
+# RSI
+# ============================================================
+
+def rsi(
+    a,
+    n=14,
+):
+
     z = [None] * len(a)
 
     if len(a) <= n:
@@ -420,61 +966,118 @@ def rsi(a, n=14):
 
     g = (
         sum(
-            max(a[i] - a[i - 1], 0)
-            for i in range(1, n + 1)
+            max(
+                a[i] - a[i - 1],
+                0,
+            )
+            for i in range(
+                1,
+                n + 1,
+            )
         )
         / n
     )
 
     l = (
         sum(
-            max(a[i - 1] - a[i], 0)
-            for i in range(1, n + 1)
+            max(
+                a[i - 1] - a[i],
+                0,
+            )
+            for i in range(
+                1,
+                n + 1,
+            )
         )
         / n
     )
 
-    def q(g, l):
+    def q(gain, loss):
+
+        if loss == 0:
+            return 100
+
         return (
             100
-            if l == 0
-            else 100 - 100 / (1 + g / l)
+            - 100
+            / (
+                1
+                + gain / loss
+            )
         )
 
-    z[n] = q(g, l)
+    z[n] = q(
+        g,
+        l,
+    )
 
-    for i in range(n + 1, len(a)):
-        d = a[i] - a[i - 1]
+    for i in range(
+        n + 1,
+        len(a),
+    ):
+
+        d = (
+            a[i]
+            - a[i - 1]
+        )
 
         g = (
-            (g * (n - 1))
-            + max(d, 0)
+            (
+                g * (n - 1)
+            )
+            + max(
+                d,
+                0,
+            )
         ) / n
 
         l = (
-            (l * (n - 1))
-            + max(-d, 0)
+            (
+                l * (n - 1)
+            )
+            + max(
+                -d,
+                0,
+            )
         ) / n
 
-        z[i] = q(g, l)
+        z[i] = q(
+            g,
+            l,
+        )
 
     return z
 
 
-def atr(c, n=14):
+# ============================================================
+# ATR
+# ============================================================
+
+def atr(
+    c,
+    n=14,
+):
+
     if len(c) <= n:
         return [None] * len(c)
 
     tr = [0]
 
-    for i in range(1, len(c)):
+    for i in range(
+        1,
+        len(c),
+    ):
+
         tr.append(
             max(
-                c[i]["h"] - c[i]["l"],
+                c[i]["h"]
+                - c[i]["l"],
+
                 abs(
                     c[i]["h"]
                     - c[i - 1]["c"]
                 ),
+
                 abs(
                     c[i]["l"]
                     - c[i - 1]["c"]
@@ -484,12 +1087,24 @@ def atr(c, n=14):
 
     z = [None] * len(c)
 
-    p = sum(tr[1:n + 1]) / n
+    p = (
+        sum(
+            tr[1:n + 1]
+        )
+        / n
+    )
+
     z[n] = p
 
-    for i in range(n + 1, len(c)):
+    for i in range(
+        n + 1,
+        len(c),
+    ):
+
         p = (
-            (p * (n - 1))
+            (
+                p * (n - 1)
+            )
             + tr[i]
         ) / n
 
@@ -498,51 +1113,98 @@ def atr(c, n=14):
     return z
 
 
+# ============================================================
+# MACD
+# ============================================================
+
 def macd(a):
-    e12 = ema(a, 12)
-    e26 = ema(a, 26)
+
+    e12 = ema(
+        a,
+        12,
+    )
+
+    e26 = ema(
+        a,
+        26,
+    )
 
     m = [None] * len(a)
+
     idx = []
     vals = []
 
-    for i in range(len(a)):
+    for i in range(
+        len(a)
+    ):
+
         if (
-            e12[i] is not None
-            and e26[i] is not None
+            e12[i]
+            is not None
+            and
+            e26[i]
+            is not None
         ):
-            m[i] = e12[i] - e26[i]
+
+            m[i] = (
+                e12[i]
+                - e26[i]
+            )
+
             idx.append(i)
             vals.append(m[i])
 
-    se = ema(vals, 9)
+    se = ema(
+        vals,
+        9,
+    )
 
     sig = [None] * len(a)
     hist = [None] * len(a)
 
     for j, i in enumerate(idx):
+
         sig[i] = se[j]
 
         if sig[i] is not None:
-            hist[i] = m[i] - sig[i]
+
+            hist[i] = (
+                m[i]
+                - sig[i]
+            )
 
     return hist
 
 
-def adx(c, n=14):
+# ============================================================
+# ADX / DMI
+# ============================================================
+
+def adx(
+    c,
+    n=14,
+):
+
     L = len(c)
 
     tr = [0] * L
     pd = [0] * L
     md = [0] * L
 
-    for i in range(1, L):
+    for i in range(
+        1,
+        L,
+    ):
+
         tr[i] = max(
-            c[i]["h"] - c[i]["l"],
+            c[i]["h"]
+            - c[i]["l"],
+
             abs(
                 c[i]["h"]
                 - c[i - 1]["c"]
             ),
+
             abs(
                 c[i]["l"]
                 - c[i - 1]["c"]
@@ -561,13 +1223,19 @@ def adx(c, n=14):
 
         pd[i] = (
             u
-            if u > d and u > 0
+            if (
+                u > d
+                and u > 0
+            )
             else 0
         )
 
         md[i] = (
             d
-            if d > u and d > 0
+            if (
+                d > u
+                and d > 0
+            )
             else 0
         )
 
@@ -577,37 +1245,85 @@ def adx(c, n=14):
     dx = [None] * L
 
     if L <= 2 * n:
-        return z, plus, minus
+        return (
+            z,
+            plus,
+            minus,
+        )
 
-    at = sum(tr[1:n + 1]) / n
-    pp = sum(pd[1:n + 1]) / n
-    mm = sum(md[1:n + 1]) / n
+    at = (
+        sum(
+            tr[1:n + 1]
+        )
+        / n
+    )
 
-    for i in range(n, L):
+    pp = (
+        sum(
+            pd[1:n + 1]
+        )
+        / n
+    )
+
+    mm = (
+        sum(
+            md[1:n + 1]
+        )
+        / n
+    )
+
+    for i in range(
+        n,
+        L,
+    ):
 
         if i > n:
+
             at = (
-                (at * (n - 1))
+                (
+                    at
+                    * (n - 1)
+                )
                 + tr[i]
             ) / n
 
             pp = (
-                (pp * (n - 1))
+                (
+                    pp
+                    * (n - 1)
+                )
                 + pd[i]
             ) / n
 
             mm = (
-                (mm * (n - 1))
+                (
+                    mm
+                    * (n - 1)
+                )
                 + md[i]
             ) / n
 
         if at:
-            plus[i] = 100 * pp / at
-            minus[i] = 100 * mm / at
 
-            den = plus[i] + minus[i]
+            plus[i] = (
+                100
+                * pp
+                / at
+            )
+
+            minus[i] = (
+                100
+                * mm
+                / at
+            )
+
+            den = (
+                plus[i]
+                + minus[i]
+            )
 
             if den:
+
                 dx[i] = (
                     100
                     * abs(
@@ -617,716 +1333,66 @@ def adx(c, n=14):
                     / den
                 )
 
-    valid = [
-        x for x in dx
-        if x is not None
-    ]
-
-    if len(valid) < n:
-        return z, plus, minus
-
     count = 0
     start = None
     seed = 0
 
-    for i in range(n, L):
+    for i in range(
+        n,
+        L,
+    ):
 
         if dx[i] is not None:
+
             seed += dx[i]
             count += 1
 
             if count == n:
+
                 start = i
                 break
 
     if start is None:
-        return z, plus, minus
 
-    p = seed / n
+        return (
+            z,
+            plus,
+            minus,
+        )
+
+    p = (
+        seed
+        / n
+    )
+
     z[start] = p
 
-    for i in range(start + 1, L):
+    for i in range(
+        start + 1,
+        L,
+    ):
 
         if dx[i] is not None:
+
             p = (
-                (p * (n - 1))
+                (
+                    p
+                    * (n - 1)
+                )
                 + dx[i]
             ) / n
 
             z[i] = p
 
-    return z, plus, minus
-
-
-# ============================================================
-# CANDLE DATA
-# ============================================================
-
-def candles(rows):
-    out = []
-
-    for r in rows:
-
-        if len(r) < 5:
-            continue
-
-        ts, o, h, l, c = map(
-            f,
-            r[:5],
-        )
-
-        if (
-            None in (
-                ts,
-                o,
-                h,
-                l,
-                c,
-            )
-            or h < l
-        ):
-            continue
-
-        out.append(
-            {
-                "t": ts,
-                "o": o,
-                "h": h,
-                "l": l,
-                "c": c,
-            }
-        )
-
-    return list(reversed(out))
-
-
-# ============================================================
-# BYBIT API
-# ============================================================
-
-def api_get(path, params):
-    global WORKING
-
-    eps = (
-        [WORKING]
-        if WORKING
-        else []
-    ) + [
-        e for e in ENDPOINTS
-        if e != WORKING
-    ]
-
-    last = "unknown"
-
-    for ep in eps:
-
-        for attempt in range(
-            1,
-            RETRIES + 1,
-        ):
-
-            try:
-
-                r = S.get(
-                    ep + path,
-                    params=params,
-                    timeout=TIMEOUT,
-                )
-
-                if r.status_code != 200:
-
-                    last = (
-                        f"HTTP {r.status_code}: "
-                        f"{r.text[:250]}"
-                    )
-
-                    print(
-                        "[BYBIT]",
-                        last,
-                    )
-
-                    if r.status_code in (
-                        400,
-                        401,
-                        403,
-                        404,
-                    ):
-                        break
-
-                    time.sleep(
-                        attempt * 2
-                    )
-
-                    continue
-
-                p = r.json()
-
-                if p.get("retCode") != 0:
-
-                    last = (
-                        f"retCode="
-                        f"{p.get('retCode')} "
-                        f"{p.get('retMsg')}"
-                    )
-
-                    print(
-                        "[BYBIT]",
-                        last,
-                    )
-
-                    break
-
-                WORKING = ep
-
-                T["metadata"][
-                    "working_bybit_endpoint"
-                ] = ep
-
-                return p
-
-            except Exception as e:
-
-                last = str(e)
-
-                print(
-                    "[BYBIT] exception",
-                    attempt,
-                    "/",
-                    RETRIES,
-                    e,
-                )
-
-                time.sleep(
-                    min(
-                        attempt * 2,
-                        5,
-                    )
-                )
-
-    raise RuntimeError(
-        f"Bybit API failed: {last}"
+    return (
+        z,
+        plus,
+        minus,
     )
 
 
 # ============================================================
-# MARKET DISCOVERY
-# ============================================================
-
-def discover_instruments():
-    """
-    Discover active Bybit linear instruments.
-
-    FX contracts are identified from the FX symbols
-    actually returned by Bybit.
-
-    Crypto contracts are identified as USDT linear
-    contracts and ranked by 24h turnover.
-    """
-
-    print(
-        "[MARKETS] Discovering Bybit instruments..."
-    )
-
-    instruments = []
-
-    cursor = None
-
-    while True:
-
-        params = {
-            "category": "linear",
-            "limit": 1000,
-        }
-
-        if cursor:
-            params["cursor"] = cursor
-
-        try:
-            p = api_get(
-                "/v5/market/instruments-info",
-                params,
-            )
-
-        except Exception as e:
-            print(
-                "[MARKETS] instrument discovery failed:",
-                e,
-            )
-            break
-
-        result = p.get(
-            "result",
-            {},
-        )
-
-        page = result.get(
-            "list",
-            [],
-        )
-
-        instruments.extend(page)
-
-        cursor = result.get(
-            "nextPageCursor"
-        )
-
-        if not cursor or not page:
-            break
-
-    print(
-        f"[MARKETS] Discovered {len(instruments)} linear instruments"
-    )
-
-    return instruments
-
-
-def get_tickers():
-    """
-    Get 24h ticker information for ranking
-    liquid crypto markets.
-    """
-
-    try:
-
-        p = api_get(
-            "/v5/market/tickers",
-            {
-                "category": "linear",
-            },
-        )
-
-        return p.get(
-            "result",
-            {}).get(
-            "list",
-            [],
-        )
-
-    except Exception as e:
-
-        print(
-            "[MARKETS] ticker discovery failed:",
-            e,
-        )
-
-        return []
-
-
-def is_active_linear(x):
-    if not isinstance(x, dict):
-        return False
-
-    if x.get("status") not in (
-        None,
-        "",
-        "Trading",
-    ):
-        return False
-
-    symbol = str(
-        x.get("symbol", "")
-    ).upper()
-
-    if not symbol:
-        return False
-
-    if not symbol.endswith("USDT"):
-        return False
-
-    return True
-
-
-def discover_fx(instruments):
-    """
-    Return FX symbols that Bybit actually exposes.
-
-    The preferred list is used first, but we only accept
-    symbols confirmed by the live instruments endpoint.
-    """
-
-    available = {
-        str(x.get("symbol", "")).upper(): x
-        for x in instruments
-        if is_active_linear(x)
-    }
-
-    found = []
-
-    # Preferred known FX contracts
-    for sym in PREFERRED_FX:
-
-        sym = sym.upper()
-
-        if sym in available:
-
-            found.append(
-                {
-                    "symbol": sym,
-                    "type": "FX",
-                    "base": sym.replace(
-                        "USDT",
-                        "",
-                    ),
-                }
-            )
-
-    # Additional FX-looking symbols.
-    #
-    # This intentionally uses a conservative allow-list of
-    # currency bases so random crypto symbols are not
-    # classified as FX.
-    fx_bases = {
-        "EURUSD",
-        "GBPUSD",
-        "USDJPY",
-        "AUDUSD",
-        "NZDUSD",
-        "USDCAD",
-        "USDCHF",
-        "EURGBP",
-        "EURJPY",
-        "GBPJPY",
-        "AUDJPY",
-        "EURCHF",
-        "EURAUD",
-        "GBPAUD",
-        "GBPCAD",
-        "CADJPY",
-        "CHFJPY",
-        "AUDCAD",
-        "AUDCHF",
-        "NZDJPY",
-        "NZDCHF",
-        "NZDCAD",
-        "EURNZD",
-        "GBPNZD",
-    }
-
-    for sym, info in available.items():
-
-        if not sym.endswith("USDT"):
-            continue
-
-        base = sym[:-4]
-
-        if base in fx_bases:
-
-            if not any(
-                x["symbol"] == sym
-                for x in found
-            ):
-                found.append(
-                    {
-                        "symbol": sym,
-                        "type": "FX",
-                        "base": base,
-                    }
-                )
-
-    return found
-
-
-def discover_crypto(
-    instruments,
-    tickers,
-    exclude_symbols=None,
-):
-    """
-    Select liquid USDT crypto perpetuals.
-
-    Preference coins are selected first when available.
-    Remaining slots are filled by 24h turnover.
-    """
-
-    if exclude_symbols is None:
-        exclude_symbols = set()
-
-    available = {
-        str(x.get("symbol", "")).upper(): x
-        for x in instruments
-        if is_active_linear(x)
-    }
-
-    # Symbols that are definitely not desired as normal
-    # crypto candidates.
-    excluded = set(exclude_symbols)
-
-    selected = []
-
-    # --------------------------------------------------------
-    # 1. Preferred major crypto
-    # --------------------------------------------------------
-
-    for sym in PREFERRED_CRYPTO:
-
-        sym = sym.upper()
-
-        if sym in excluded:
-            continue
-
-        if sym not in available:
-            continue
-
-        selected.append(
-            {
-                "symbol": sym,
-                "type": "CRYPTO",
-                "base": sym.replace(
-                    "USDT",
-                    "",
-                ),
-            }
-        )
-
-        if len(selected) >= MAX_CRYPTO_SYMBOLS:
-            return selected
-
-    # --------------------------------------------------------
-    # 2. Fill using turnover
-    # --------------------------------------------------------
-
-    turnover = {}
-
-    for x in tickers:
-
-        sym = str(
-            x.get("symbol", "")
-        ).upper()
-
-        if not sym:
-            continue
-
-        turnover[sym] = (
-            f(x.get("turnover24h"))
-            or 0
-        )
-
-    candidates = []
-
-    for sym in available:
-
-        if sym in excluded:
-            continue
-
-        if sym in {
-            x["symbol"]
-            for x in selected
-        }:
-            continue
-
-        if not sym.endswith("USDT"):
-            continue
-
-        # Avoid obvious FX bases
-        base = sym[:-4]
-
-        if base in {
-            "EURUSD",
-            "GBPUSD",
-            "USDJPY",
-            "AUDUSD",
-            "NZDUSD",
-            "USDCAD",
-            "USDCHF",
-            "EURGBP",
-            "EURJPY",
-            "GBPJPY",
-            "AUDJPY",
-            "EURCHF",
-            "EURAUD",
-            "GBPAUD",
-            "GBPCAD",
-            "CADJPY",
-            "CHFJPY",
-            "AUDCAD",
-            "AUDCHF",
-            "NZDJPY",
-            "NZDCHF",
-            "NZDCAD",
-            "EURNZD",
-            "GBPNZD",
-        }:
-            continue
-
-        candidates.append(
-            (
-                turnover.get(sym, 0),
-                sym,
-            )
-        )
-
-    candidates.sort(
-        reverse=True
-    )
-
-    for _, sym in candidates:
-
-        selected.append(
-            {
-                "symbol": sym,
-                "type": "CRYPTO",
-                "base": sym[:-4],
-            }
-        )
-
-        if len(selected) >= MAX_CRYPTO_SYMBOLS:
-            break
-
-    return selected
-
-
-def build_market_list():
-    """
-    Build final market list.
-
-    Priority:
-        1. All discovered FX contracts
-        2. Preferred major crypto
-        3. Highest-turnover crypto
-
-    Goal:
-        at least 10 total whenever Bybit has enough
-        eligible instruments.
-    """
-
-    instruments = discover_instruments()
-
-    tickers = get_tickers()
-
-    fx = discover_fx(
-        instruments
-    )
-
-    fx_symbols = {
-        x["symbol"]
-        for x in fx
-    }
-
-    needed_crypto = max(
-        0,
-        MIN_SCAN_SYMBOLS
-        - len(fx),
-    )
-
-    global MAX_CRYPTO_SYMBOLS
-
-    old_max_crypto = MAX_CRYPTO_SYMBOLS
-
-    MAX_CRYPTO_SYMBOLS = max(
-        MAX_CRYPTO_SYMBOLS,
-        needed_crypto,
-    )
-
-    crypto = discover_crypto(
-        instruments,
-        tickers,
-        exclude_symbols=fx_symbols,
-    )
-
-    MAX_CRYPTO_SYMBOLS = old_max_crypto
-
-    # Limit crypto if necessary
-    crypto = crypto[
-        :max(
-            needed_crypto,
-            min(
-                len(crypto),
-                MAX_CRYPTO_SYMBOLS,
-            ),
-        )
-    ]
-
-    combined = fx + crypto
-
-    # Final hard cap
-    combined = combined[
-        :MAX_SCAN_SYMBOLS
-    ]
-
-    if len(combined) < MIN_SCAN_SYMBOLS:
-
-        print(
-            f"[MARKETS] WARNING: only "
-            f"{len(combined)} eligible markets found. "
-            f"Target is {MIN_SCAN_SYMBOLS}."
-        )
-
-    print(
-        "\n[MARKETS] FINAL SCAN LIST"
-    )
-
-    for i, m in enumerate(
-        combined,
-        1,
-    ):
-        print(
-            f"  {i:02d}. "
-            f"{m['type']:6s} "
-            f"{m['symbol']}"
-        )
-
-    print(
-        f"[MARKETS] Total: {len(combined)}"
-    )
-
-    T["metadata"][
-        "markets"
-    ] = combined
-
-    return combined
-
-
-# ============================================================
-# CANDLE FETCHING
-# ============================================================
-
-def fetch(sym, interval):
-
-    try:
-
-        p = api_get(
-            "/v5/market/kline",
-            {
-                "category": "linear",
-                "symbol": sym,
-                "interval": interval,
-                "limit": LIMIT,
-            },
-        )
-
-        rows = (
-            p.get(
-                "result",
-                {}
-            ).get(
-                "list",
-                []
-            )
-        )
-
-        if not rows:
-            raise RuntimeError(
-                "empty kline"
-            )
-
-        print(
-            f"[BYBIT] OK {sym} "
-            f"{interval}: "
-            f"{len(rows)} candles"
-        )
-
-        return rows
-
-    except Exception as e:
-
-        raise RuntimeError(
-            f"Unable to fetch "
-            f"{sym} {interval}: {e}"
-        )
-
-
-# ============================================================
-# STRATEGY
+# TREND
 # ============================================================
 
 def trend(c):
@@ -1336,15 +1402,27 @@ def trend(c):
         for x in c
     ]
 
-    e9 = ema(a, 9)[-1]
-    e21 = ema(a, 21)[-1]
-    e50 = ema(a, 50)[-1]
+    e9 = ema(
+        a,
+        9,
+    )[-1]
+
+    e21 = ema(
+        a,
+        21,
+    )[-1]
+
+    e50 = ema(
+        a,
+        50,
+    )[-1]
 
     if None in (
         e9,
         e21,
         e50,
     ):
+
         return "NEUTRAL"
 
     if (
@@ -1354,6 +1432,7 @@ def trend(c):
             and a[-1] > e21
         )
     ):
+
         return "BULLISH"
 
     if (
@@ -1363,12 +1442,20 @@ def trend(c):
             and a[-1] < e21
         )
     ):
+
         return "BEARISH"
 
     return "NEUTRAL"
 
 
-def structure(c, n=8):
+# ============================================================
+# STRUCTURE
+# ============================================================
+
+def structure(
+    c,
+    n=8,
+):
 
     if len(c) < n + 2:
         return "NEUTRAL"
@@ -1395,33 +1482,55 @@ def structure(c, n=8):
         for x in a[n // 2:]
     )
 
-    if h2 > h1 and l2 > l1:
+    if (
+        h2 > h1
+        and l2 > l1
+    ):
+
         return "BULLISH"
 
-    if h2 < h1 and l2 < l1:
+    if (
+        h2 < h1
+        and l2 < l1
+    ):
+
         return "BEARISH"
 
-    return (
-        "BULLISH"
-        if a[-1]["c"] > a[0]["c"]
-        else "BEARISH"
-        if a[-1]["c"] < a[0]["c"]
-        else "NEUTRAL"
-    )
+    if (
+        a[-1]["c"]
+        > a[0]["c"]
+    ):
 
+        return "BULLISH"
+
+    if (
+        a[-1]["c"]
+        < a[0]["c"]
+    ):
+
+        return "BEARISH"
+
+    return "NEUTRAL"
+
+
+# ============================================================
+# CANDLE HELPERS
+# ============================================================
 
 def strength(x):
 
-    r = x["h"] - x["l"]
-
-    return (
-        abs(
-            x["c"]
-            - x["o"]
-        ) / r
-        if r > 0
-        else 0
+    r = (
+        x["h"]
+        - x["l"]
     )
+
+    if r <= 0:
+        return 0
+
+    return abs(
+        x["c"]
+        - x["o"]
+    ) / r
 
 
 def cdir(x):
@@ -1435,35 +1544,41 @@ def cdir(x):
     return "NEUTRAL"
 
 
+# ============================================================
+# ANALYSIS
+# ============================================================
+
 def analyze(
-    name,
-    sym,
-    market_type="CRYPTO",
+    market,
 ):
 
+    name = market["name"]
+    symbol = market["symbol"]
+    market_type = market["type"]
+
     print(
-        f"[SCAN] {name} "
-        f"({sym}) "
+        f"\n[SCAN] {name} "
+        f"({symbol}) "
         f"type={market_type}"
     )
 
-    c5 = candles(
-        fetch(
-            sym,
-            TF5,
-        )
+    c5 = fetch(
+        symbol,
+        TF5,
     )
 
-    c1 = candles(
-        fetch(
-            sym,
-            TF1,
-        )
+    c1 = fetch(
+        symbol,
+        TF1,
     )
 
-    if len(c5) < 60 or len(c1) < 60:
+    if (
+        len(c5) < 60
+        or len(c1) < 60
+    ):
+
         raise RuntimeError(
-            f"{name}: insufficient candles"
+            "insufficient candles"
         )
 
     a5 = [
@@ -1471,21 +1586,39 @@ def analyze(
         for x in c5
     ]
 
-    tr5 = trend(c5)
-    en1 = trend(c1)
-    st = structure(c5)
+    tr5 = trend(
+        c5
+    )
 
-    rv = rsi(a5)[-1]
-    mh = macd(a5)[-1]
+    en1 = trend(
+        c1
+    )
 
-    av, pdi, mdi = adx(c5)
+    st = structure(
+        c5
+    )
+
+    rv = rsi(
+        a5
+    )[-1]
+
+    mh = macd(
+        a5
+    )[-1]
+
+    av, pdi, mdi = adx(
+        c5
+    )
 
     ax = av[-1]
     pi = pdi[-1]
     mi = mdi[-1]
 
     ec = c1[-1]
-    cs = strength(ec)
+
+    cs = strength(
+        ec
+    )
 
     votes = {
         "CALL": 0,
@@ -1499,9 +1632,11 @@ def analyze(
     ):
 
         if d == "BULLISH":
+
             votes["CALL"] += pts
 
         elif d == "BEARISH":
+
             votes["PUT"] += pts
 
     if (
@@ -1530,6 +1665,7 @@ def analyze(
             <= rv
             <= CALL_RSI[1]
         ):
+
             votes["CALL"] += 1
 
         if (
@@ -1537,9 +1673,13 @@ def analyze(
             <= rv
             <= PUT_RSI[1]
         ):
+
             votes["PUT"] += 1
 
-    if votes["CALL"] == votes["PUT"]:
+    if (
+        votes["CALL"]
+        == votes["PUT"]
+    ):
 
         direction = "NO TRADE"
         dom = 0
@@ -1548,7 +1688,8 @@ def analyze(
 
         direction = (
             "CALL"
-            if votes["CALL"] > votes["PUT"]
+            if votes["CALL"]
+            > votes["PUT"]
             else "PUT"
         )
 
@@ -1572,7 +1713,10 @@ def analyze(
         "Extension": 0,
     }
 
-    # Trend
+    # --------------------------------------------------------
+    # TREND
+    # --------------------------------------------------------
+
     if (
         (
             direction == "CALL"
@@ -1584,14 +1728,19 @@ def analyze(
             and tr5 == "BEARISH"
         )
     ):
+
         sc["Trend"] = 20
 
     else:
+
         blockers.append(
             "5M trend mismatch"
         )
 
-    # Structure
+    # --------------------------------------------------------
+    # STRUCTURE
+    # --------------------------------------------------------
+
     if (
         (
             direction == "CALL"
@@ -1603,14 +1752,19 @@ def analyze(
             and st == "BEARISH"
         )
     ):
+
         sc["Structure"] = 10
 
     else:
+
         blockers.append(
             "Structure not aligned"
         )
 
+    # --------------------------------------------------------
     # ADX / DMI
+    # --------------------------------------------------------
+
     if ax is None:
 
         blockers.append(
@@ -1652,7 +1806,10 @@ def analyze(
                 "DMI mismatch"
             )
 
+    # --------------------------------------------------------
     # MACD
+    # --------------------------------------------------------
+
     if mh is None:
 
         blockers.append(
@@ -1679,7 +1836,10 @@ def analyze(
             "MACD mismatch"
         )
 
+    # --------------------------------------------------------
     # RSI
+    # --------------------------------------------------------
+
     if rv is None:
 
         blockers.append(
@@ -1710,7 +1870,10 @@ def analyze(
             "RSI outside zone"
         )
 
-    # 1M entry
+    # --------------------------------------------------------
+    # 1M ENTRY
+    # --------------------------------------------------------
+
     if (
         (
             direction == "CALL"
@@ -1731,46 +1894,55 @@ def analyze(
             "1M entry mismatch"
         )
 
-    # Pullback
+    # --------------------------------------------------------
+    # PULLBACK
+    # --------------------------------------------------------
+
     recent = c1[-5:]
 
-    pb = (
-        sum(
-            cdir(x) == "BEARISH"
-            for x in recent
-        )
-        if direction == "CALL"
-        else
-        sum(
-            cdir(x) == "BULLISH"
-            for x in recent
-        )
-    )
+    if direction == "CALL":
 
-    pull = (
-        10
-        if (
-            cdir(ec)
-            == (
-                "BULLISH"
-                if direction == "CALL"
-                else "BEARISH"
-            )
-            and pb >= 2
+        pb = sum(
+            cdir(x)
+            == "BEARISH"
+            for x in recent
         )
-        else
-        6
-        if (
-            cdir(ec)
-            == (
-                "BULLISH"
-                if direction == "CALL"
-                else "BEARISH"
-            )
-            and pb >= 1
+
+    else:
+
+        pb = sum(
+            cdir(x)
+            == "BULLISH"
+            for x in recent
         )
-        else 2
-    )
+
+    if direction == "CALL":
+
+        confirm_dir = "BULLISH"
+
+    else:
+
+        confirm_dir = "BEARISH"
+
+    if (
+        cdir(ec)
+        == confirm_dir
+        and pb >= 2
+    ):
+
+        pull = 10
+
+    elif (
+        cdir(ec)
+        == confirm_dir
+        and pb >= 1
+    ):
+
+        pull = 6
+
+    else:
+
+        pull = 2
 
     if pull >= 6:
 
@@ -1782,27 +1954,19 @@ def analyze(
             "No clean pullback"
         )
 
-    # Confirmation candle
+    # --------------------------------------------------------
+    # CONFIRMATION CANDLE
+    # --------------------------------------------------------
+
     if (
         cdir(ec)
-        == (
-            "BULLISH"
-            if direction == "CALL"
-            else "BEARISH"
-        )
+        == confirm_dir
         and cs >= MIN_CANDLE
     ):
 
         sc["Candle"] = 5
 
-    elif (
-        cdir(ec)
-        != (
-            "BULLISH"
-            if direction == "CALL"
-            else "BEARISH"
-        )
-    ):
+    elif cdir(ec) != confirm_dir:
 
         blockers.append(
             "Confirmation candle mismatch"
@@ -1814,7 +1978,10 @@ def analyze(
             "Confirmation candle weak"
         )
 
-    # Room
+    # --------------------------------------------------------
+    # ROOM
+    # --------------------------------------------------------
+
     recent20 = c5[-21:-1]
 
     cur = ec["c"]
@@ -1874,7 +2041,10 @@ def analyze(
             "Insufficient room"
         )
 
-    # Extension
+    # --------------------------------------------------------
+    # EXTENSION
+    # --------------------------------------------------------
+
     e21 = ema(
         a5,
         21,
@@ -1886,10 +2056,13 @@ def analyze(
 
     ratio = (
         abs(
-            cur - e21
+            cur
+            - e21
         ) / at
-        if e21 is not None
-        and at
+        if (
+            e21 is not None
+            and at
+        )
         else 99
     )
 
@@ -1915,12 +2088,19 @@ def analyze(
             "Price too extended"
         )
 
-    # Dominance
+    # --------------------------------------------------------
+    # DOMINANCE
+    # --------------------------------------------------------
+
     if dom < MIN_DOM:
 
         blockers.append(
             "Weak directional dominance"
         )
+
+    # --------------------------------------------------------
+    # TOTAL
+    # --------------------------------------------------------
 
     total = (
         sum(sc.values())
@@ -1928,63 +2108,93 @@ def analyze(
         else 0
     )
 
-    final = (
-        direction
-        if (
-            direction in (
-                "CALL",
-                "PUT",
-            )
-            and total >= MIN_SCORE
-            and not blockers
+    if (
+        direction in (
+            "CALL",
+            "PUT",
         )
-        else "NO TRADE"
-    )
+        and total >= MIN_SCORE
+        and not blockers
+    ):
+
+        final = direction
+
+    else:
+
+        final = "NO TRADE"
 
     return {
         "symbol": name,
-        "bybit_symbol": sym,
+        "provider_symbol": symbol,
         "market_type": market_type,
+
         "mode": "NORMAL",
+
         "signal": final,
         "candidate": direction,
+
         "score": total,
         "dominance": dom,
+
         "blockers": blockers,
+
         "trend5": tr5,
         "entry1": en1,
         "structure": st,
+
         "adx": ax,
         "plus_di": pi,
         "minus_di": mi,
+
         "rsi": rv,
         "macd_hist": mh,
+
         "price": cur,
-        "entry_time_ms": int(
-            ec["t"]
-        ),
-        "candle_strength": cs,
-        "pullback_score": pull,
-        "room_score": roomscore,
-        "extension_score": exscore,
-        "breakdown": sc,
+
+        "entry_time_ms":
+            int(
+                ec["t"] * 1000
+            ),
+
+        "candle_strength":
+            cs,
+
+        "pullback_score":
+            pull,
+
+        "room_score":
+            roomscore,
+
+        "extension_score":
+            exscore,
+
+        "breakdown":
+            sc,
     }
 
 
 # ============================================================
-# SIGNAL PROCESSING
+# SIGNAL IDS
 # ============================================================
 
 def sid(r):
 
+    safe_symbol = (
+        r["symbol"]
+        .replace(
+            "/",
+            "",
+        )
+    )
+
     return (
-        f"{r['symbol']}-"
+        f"{safe_symbol}-"
         f"{r['signal']}-"
         f"{r['entry_time_ms']}"
     )
 
 
-def key(r):
+def signal_key(r):
 
     return (
         f"{r['mode']}:"
@@ -1994,25 +2204,39 @@ def key(r):
     )
 
 
+# ============================================================
+# LOCK
+# ============================================================
+
 def locked(r):
 
-    return (
-        unix()
-        < int(
-            T["metadata"]
-            .get(
-                "signal_locks",
-                {}
-            )
-            .get(
-                r["mode"]
-                + ":"
-                + r["symbol"],
-                0,
-            )
+    lock_key = (
+        r["mode"]
+        + ":"
+        + r["symbol"]
+    )
+
+    until = (
+        T["metadata"]
+        .get(
+            "signal_locks",
+            {}
+        )
+        .get(
+            lock_key,
+            0,
         )
     )
 
+    return (
+        unix()
+        < int(until)
+    )
+
+
+# ============================================================
+# PROCESS SIGNAL
+# ============================================================
 
 def process(r):
 
@@ -2020,35 +2244,47 @@ def process(r):
         "CALL",
         "PUT",
     ):
+
         return (
             "rejected",
             None,
         )
 
     if (
-        r["score"] < MIN_SCORE
+        r["score"]
+        < MIN_SCORE
         or r["blockers"]
     ):
+
         return (
             "rejected",
             None,
         )
 
-    k = key(r)
+    k = signal_key(r)
+
     id_ = sid(r)
 
     if (
         k
-        in T["metadata"].get(
+        in T["metadata"]
+        .get(
             "processed_keys",
             [],
         )
-        or any(
-            x.get("signal_id")
-            == id_
-            for x in T["signals"]
-        )
     ):
+
+        return (
+            "duplicate",
+            id_,
+        )
+
+    if any(
+        x.get("signal_id")
+        == id_
+        for x in T["signals"]
+    ):
+
         return (
             "duplicate",
             id_,
@@ -2068,14 +2304,29 @@ def process(r):
 
     rec = {
         **r,
-        "signal_id": id_,
-        "created_at": now(),
-        "created_at_unix": unix(),
-        "result": "PENDING",
-        "reference_expiry_minutes": EXPIRY,
+
+        "signal_id":
+            id_,
+
+        "created_at":
+            now(),
+
+        "created_at_unix":
+            unix(),
+
+        "result":
+            "PENDING",
+
+        "reference_expiry_minutes":
+            EXPIRY,
+
+        "data_provider":
+            "Twelve Data",
     }
 
-    T["signals"].append(rec)
+    T["signals"].append(
+        rec
+    )
 
     T["metadata"][
         "last_signal"
@@ -2086,64 +2337,122 @@ def process(r):
         []
     ).append(k)
 
-    T["metadata"].setdefault(
-        "signal_locks",
-        {}
-    )[
+    lock_key = (
         r["mode"]
         + ":"
         + r["symbol"]
-    ] = unix() + LOCK
+    )
 
-    T["signals"] = T[
-        "signals"
-    ][-MAX_ITEMS:]
+    T["metadata"].setdefault(
+        "signal_locks",
+        {}
+    )[lock_key] = (
+        unix()
+        + LOCK
+    )
+
+    T["signals"] = (
+        T["signals"]
+        [-MAX_ITEMS:]
+    )
 
     T["metadata"][
         "processed_keys"
-    ] = T["metadata"][
-        "processed_keys"
-    ][-MAX_ITEMS * 2:]
+    ] = (
+        T["metadata"]
+        ["processed_keys"]
+        [-MAX_ITEMS * 2:]
+    )
 
     save_local()
 
-    market_icon = (
+    icon = (
         "💱"
-        if r.get("market_type")
+        if r["market_type"]
         == "FX"
         else "🪙"
     )
 
+    direction_text = (
+        "CALL / UP"
+        if r["signal"]
+        == "CALL"
+        else
+        "PUT / DOWN"
+    )
+
     msg = (
-        f"🧠 PRECISION SCANNER {VERSION}\n"
+        f"🧠 PRECISION SCANNER "
+        f"{VERSION}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
+
         f"🟢 NEW QUALIFIED SIGNAL\n"
-        f"{market_icon} "
+
+        f"{icon} "
         f"{r['symbol']} "
-        f"{'CALL / UP' if r['signal'] == 'CALL' else 'PUT / DOWN'}\n"
-        f"📂 Market: {r.get('market_type', 'CRYPTO')}\n"
-        f"🎯 Score: {r['score']}/100\n"
-        f"⏱ Reference expiry: {EXPIRY} minutes\n"
-        f"💰 Price: {price(r['price'])}\n"
-        f"📊 5M Trend: {r['trend5']}\n"
-        f"📈 1M Entry: {r['entry1']}\n"
-        f"🏗 Structure: {r['structure']}\n"
-        f"📐 ADX: {r['adx']:.1f}\n"
-        f"📉 RSI: {r['rsi']:.1f}\n"
-        f"↗️ +DI: {r['plus_di']:.1f}\n"
-        f"↘️ -DI: {r['minus_di']:.1f}\n"
-        f"〽️ MACD Hist: {r['macd_hist']:.5f}\n"
-        f"🕯 Candle: {r['candle_strength']:.2f}\n"
-        f"↩️ Pullback: {r['pullback_score']}/10\n"
-        f"🚪 Room: {r['room_score']}/5\n"
-        f"📏 Extension: {r['extension_score']}/5\n"
+        f"{direction_text}\n"
+
+        f"📂 Market: "
+        f"{r['market_type']}\n"
+
+        f"📡 Data: "
+        f"Twelve Data\n"
+
+        f"🎯 Score: "
+        f"{r['score']}/100\n"
+
+        f"⏱ Reference expiry: "
+        f"{EXPIRY} minutes\n"
+
+        f"💰 Price: "
+        f"{price(r['price'])}\n"
+
+        f"📊 5M Trend: "
+        f"{r['trend5']}\n"
+
+        f"📈 1M Entry: "
+        f"{r['entry1']}\n"
+
+        f"🏗 Structure: "
+        f"{r['structure']}\n"
+
+        f"📐 ADX: "
+        f"{r['adx']:.1f}\n"
+
+        f"📉 RSI: "
+        f"{r['rsi']:.1f}\n"
+
+        f"↗️ +DI: "
+        f"{r['plus_di']:.1f}\n"
+
+        f"↘️ -DI: "
+        f"{r['minus_di']:.1f}\n"
+
+        f"〽️ MACD Hist: "
+        f"{r['macd_hist']:.5f}\n"
+
+        f"🕯 Candle: "
+        f"{r['candle_strength']:.2f}\n"
+
+        f"↩️ Pullback: "
+        f"{r['pullback_score']}/10\n"
+
+        f"🚪 Room: "
+        f"{r['room_score']}/5\n"
+
+        f"📏 Extension: "
+        f"{r['extension_score']}/5\n"
+
         f"🆔 {id_}\n"
-        f"🕒 Created: {now()}\n\n"
-        f"⚠️ Test/research only. "
+
+        f"🕒 Created: "
+        f"{now()}\n\n"
+
+        f"⚠️ Research/test only. "
         f"Score is setup quality, "
         f"not win probability. "
         f"No profit guarantee. "
-        f"Scanner does not place trades."
+        f"No trade execution."
     )
 
     if send(msg):
@@ -2168,12 +2477,140 @@ def process(r):
 
 
 # ============================================================
-# SCANNER
+# MARKET LIST
+# ============================================================
+
+def build_market_list():
+
+    markets = []
+
+    # Forex first
+    for pair in FOREX_PAIRS:
+
+        markets.append(
+            {
+                "name":
+                    pair.replace(
+                        "/",
+                        "",
+                    ),
+
+                "symbol":
+                    pair,
+
+                "type":
+                    "FX",
+            }
+        )
+
+    # Crypto second
+    for pair in CRYPTO_PAIRS:
+
+        markets.append(
+            {
+                "name":
+                    pair.replace(
+                        "/",
+                        "",
+                    ),
+
+                "symbol":
+                    pair,
+
+                "type":
+                    "CRYPTO",
+            }
+        )
+
+    markets = markets[
+        :MAX_SCAN_SYMBOLS
+    ]
+
+    print(
+        "\n[MARKETS] FINAL V5.0 LIST"
+    )
+
+    for i, market in enumerate(
+        markets,
+        1,
+    ):
+
+        print(
+            f"  {i:02d}. "
+            f"{market['type']:6s} "
+            f"{market['symbol']}"
+        )
+
+    print(
+        f"[MARKETS] Total: "
+        f"{len(markets)}"
+    )
+
+    T["metadata"][
+        "markets"
+    ] = markets
+
+    return markets
+
+
+# ============================================================
+# REJECTION TRACKING
+# ============================================================
+
+def record_rejections(
+    r,
+    counters,
+):
+
+    for reason in r.get(
+        "blockers",
+        [],
+    ):
+
+        counters[reason] = (
+            counters.get(
+                reason,
+                0,
+            )
+            + 1
+        )
+
+
+# ============================================================
+# SCAN
 # ============================================================
 
 def scan():
 
     global MARKETS
+
+    if not TWELVE_KEY:
+
+        print(
+            "[FATAL] "
+            "TWELVE_DATA_API_KEY "
+            "is missing."
+        )
+
+        print(
+            "[CONFIG] Set your "
+            "Twelve Data API key "
+            "before scanning."
+        )
+
+        return {
+            "qualified": 0,
+            "borderline": 0,
+            "rejected": 0,
+            "errors": 1,
+            "new": 0,
+            "alerts": 0,
+            "duplicates": 0,
+            "locked": 0,
+            "markets": 0,
+            "fx": 0,
+            "crypto": 0,
+        }
 
     T["metadata"][
         "last_scan"
@@ -2188,10 +2625,11 @@ def scan():
         )
     ) + 1
 
-    # Refresh market list every scan
-    MARKETS = build_market_list()
+    MARKETS = (
+        build_market_list()
+    )
 
-    s = {
+    summary = {
         "qualified": 0,
         "borderline": 0,
         "rejected": 0,
@@ -2205,73 +2643,163 @@ def scan():
         "crypto": 0,
     }
 
+    rejection_reasons = {}
+
     for market in MARKETS:
 
-        name = market["base"]
-        sym = market["symbol"]
-        market_type = market["type"]
+        if market["type"] == "FX":
 
-        if market_type == "FX":
-            s["fx"] += 1
+            summary["fx"] += 1
+
         else:
-            s["crypto"] += 1
+
+            summary["crypto"] += 1
 
         try:
 
-            r = analyze(
-                name,
-                sym,
-                market_type,
+            result = analyze(
+                market
             )
 
-            st, id_ = process(r)
+            record_rejections(
+                result,
+                rejection_reasons,
+            )
 
-            if st == "alert_sent":
+            # ------------------------------------------------
+            # Borderline diagnostics
+            # ------------------------------------------------
 
-                s["qualified"] += 1
-                s["new"] += 1
-                s["alerts"] += 1
+            if (
+                result["signal"]
+                == "NO TRADE"
+                and
+                result["candidate"]
+                in (
+                    "CALL",
+                    "PUT",
+                )
+                and
+                result["score"]
+                >= BORDERLINE
+            ):
 
-            elif st == "delivery_failed":
+                summary[
+                    "borderline"
+                ] += 1
 
-                s["qualified"] += 1
-                s["new"] += 1
+                T[
+                    "borderline"
+                ].append(
+                    {
+                        **result,
+                        "created_at":
+                            now(),
+                    }
+                )
 
-            elif st == "duplicate":
+                T[
+                    "borderline"
+                ] = (
+                    T[
+                        "borderline"
+                    ][-MAX_ITEMS:]
+                )
 
-                s["duplicates"] += 1
+            status, signal_id = (
+                process(result)
+            )
 
-            elif st == "locked":
+            if status == "alert_sent":
 
-                s["locked"] += 1
+                summary[
+                    "qualified"
+                ] += 1
+
+                summary["new"] += 1
+
+                summary["alerts"] += 1
+
+            elif (
+                status
+                == "delivery_failed"
+            ):
+
+                summary[
+                    "qualified"
+                ] += 1
+
+                summary["new"] += 1
+
+            elif status == "duplicate":
+
+                summary[
+                    "duplicates"
+                ] += 1
+
+            elif status == "locked":
+
+                summary[
+                    "locked"
+                ] += 1
 
             else:
 
-                s["rejected"] += 1
+                summary[
+                    "rejected"
+                ] += 1
 
         except Exception as e:
 
-            s["errors"] += 1
+            summary["errors"] += 1
 
             print(
                 f"[ERROR] "
-                f"{name} "
-                f"({sym}): "
+                f"{market['symbol']}: "
                 f"{e}"
             )
+
+    T["metadata"][
+        "last_rejection_reasons"
+    ] = rejection_reasons
 
     save_local()
     gh_save()
 
     print(
-        "[SUMMARY]",
+        "\n[REJECTION DIAGNOSTICS]"
+    )
+
+    if rejection_reasons:
+
+        ranked = sorted(
+            rejection_reasons.items(),
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
+        for reason, count in ranked[:10]:
+
+            print(
+                f"  {count:03d} "
+                f"{reason}"
+            )
+
+    else:
+
+        print(
+            "  None recorded."
+        )
+
+    print(
+        "\n[SUMMARY]",
         json.dumps(
-            s,
+            summary,
             indent=2,
         ),
     )
 
-    return s
+    return summary
 
 
 # ============================================================
@@ -2280,23 +2808,32 @@ def scan():
 
 def stats():
 
-    a = T["signals"]
+    signals = T[
+        "signals"
+    ]
 
-    w = sum(
-        x.get("result") == "WIN"
-        for x in a
+    wins = sum(
+        x.get("result")
+        == "WIN"
+        for x in signals
     )
 
-    l = sum(
-        x.get("result") == "LOSS"
-        for x in a
+    losses = sum(
+        x.get("result")
+        == "LOSS"
+        for x in signals
     )
 
-    d = w + l
+    decided = (
+        wins
+        + losses
+    )
 
-    wr = (
-        w / d * 100
-        if d
+    winrate = (
+        wins
+        / decided
+        * 100
+        if decided
         else 0
     )
 
@@ -2308,27 +2845,43 @@ def stats():
     )
 
     fx = sum(
-        x.get("type") == "FX"
+        x.get("type")
+        == "FX"
         for x in markets
     )
 
     crypto = sum(
-        x.get("type") == "CRYPTO"
+        x.get("type")
+        == "CRYPTO"
         for x in markets
     )
 
     return (
-        f"📊 PRECISION SCANNER {VERSION}\n\n"
-        f"Markets currently scanned: "
+        f"📊 PRECISION SCANNER "
+        f"{VERSION}\n\n"
+
+        f"Data provider: "
+        f"Twelve Data\n"
+
+        f"Markets: "
         f"{len(markets)}\n"
+
         f"FX: {fx}\n"
         f"Crypto: {crypto}\n\n"
-        f"Recorded: {len(a)}\n"
-        f"WIN: {w}\n"
-        f"LOSS: {l}\n"
-        f"Pending: {len(a) - d}\n"
+
+        f"Recorded: "
+        f"{len(signals)}\n"
+
+        f"WIN: {wins}\n"
+        f"LOSS: {losses}\n"
+
+        f"Pending: "
+        f"{len(signals) - decided}\n\n"
+
         f"Measured win rate: "
-        f"{wr:.1f}% ({d} decided)\n\n"
+        f"{winrate:.1f}% "
+        f"({decided} decided)\n\n"
+
         f"Historical tracker data only."
     )
 
@@ -2341,70 +2894,102 @@ def commands():
 
     manual = False
 
-    for u in updates():
+    for update in updates():
 
-        uid = u.get(
+        update_id = update.get(
             "update_id"
         )
 
-        if isinstance(uid, int):
+        if isinstance(
+            update_id,
+            int,
+        ):
+
             T["metadata"][
                 "telegram_offset"
-            ] = uid + 1
+            ] = (
+                update_id + 1
+            )
 
-        m = (
-            u.get("message")
-            or u.get("channel_post")
-            or {}
+        message = (
+            update.get("message")
+            or
+            update.get("channel_post")
+            or
+            {}
         )
 
         text = str(
-            m.get("text")
+            message.get("text")
             or ""
         ).strip()
 
         if not text:
             continue
 
-        p = text.split(
+        parts = text.split(
             maxsplit=1
         )
 
-        cmd = (
-            p[0]
+        command = (
+            parts[0]
             .split("@")[0]
             .lower()
         )
 
-        arg = (
-            p[1].strip()
-            if len(p) > 1
+        argument = (
+            parts[1].strip()
+            if len(parts) > 1
             else ""
         )
 
-        if cmd in (
+        # ----------------------------------------------------
+        # HELP
+        # ----------------------------------------------------
+
+        if command in (
             "/start",
             "/help",
         ):
 
             send(
-                f"🧠 PRECISION SCANNER {VERSION}\n\n"
-                f"/scan - run a scan now\n"
+                f"🧠 PRECISION SCANNER "
+                f"{VERSION}\n\n"
+
+                f"/scan - run scan now\n"
                 f"/stats - tracker statistics\n"
-                f"/markets - show current markets\n"
-                f"/win SIGNAL_ID - record WIN\n"
-                f"/loss SIGNAL_ID - record LOSS\n\n"
-                f"Multi-market Bybit scanner.\n"
-                f"5M trend + 1M entry.\n"
-                f"NO TRADE is allowed.\n\n"
-                f"Test framework only."
+                f"/markets - current markets\n"
+
+                f"/win SIGNAL_ID "
+                f"- record WIN\n"
+
+                f"/loss SIGNAL_ID "
+                f"- record LOSS\n\n"
+
+                f"Data provider: "
+                f"Twelve Data\n"
+
+                f"5M trend + 1M entry\n"
+                f"NO TRADE is allowed\n\n"
+
+                f"Research/test framework."
             )
 
-        elif cmd == "/stats":
+        # ----------------------------------------------------
+        # STATS
+        # ----------------------------------------------------
 
-            send(stats())
+        elif command == "/stats":
 
-        elif cmd == "/markets":
+            send(
+                stats()
+            )
+
+        # ----------------------------------------------------
+        # MARKETS
+        # ----------------------------------------------------
+
+        elif command == "/markets":
 
             markets = T[
                 "metadata"
@@ -2416,42 +3001,49 @@ def commands():
             if not markets:
 
                 send(
-                    "No market list yet. "
-                    "Run /scan first."
+                    "No market list yet."
                 )
 
             else:
 
                 lines = [
-                    "📋 CURRENT MARKETS",
+                    "📋 V5.0 MARKETS",
                     "━━━━━━━━━━━━━━━━━━",
                 ]
 
-                for i, x in enumerate(
+                for i, market in enumerate(
                     markets,
                     1,
                 ):
 
                     lines.append(
                         f"{i}. "
-                        f"{x.get('type')} "
-                        f"{x.get('symbol')}"
+                        f"{market.get('type')} "
+                        f"{market.get('symbol')}"
                     )
 
                 send(
                     "\n".join(lines)
                 )
 
-        elif cmd == "/scan":
+        # ----------------------------------------------------
+        # MANUAL SCAN
+        # ----------------------------------------------------
+
+        elif command == "/scan":
 
             send(
-                "🔎 Manual scan requested. "
+                "🔎 Manual scan requested.\n"
                 "Running one scan now."
             )
 
             manual = True
 
-        elif cmd in (
+        # ----------------------------------------------------
+        # WIN / LOSS
+        # ----------------------------------------------------
+
+        elif command in (
             "/win",
             "/loss",
         ):
@@ -2459,11 +3051,13 @@ def commands():
             found = next(
                 (
                     x
-                    for x in T["signals"]
+                    for x in T[
+                        "signals"
+                    ]
                     if x.get(
                         "signal_id"
                     )
-                    == arg
+                    == argument
                 ),
                 None,
             )
@@ -2472,8 +3066,10 @@ def commands():
 
                 found["result"] = (
                     "WIN"
-                    if cmd == "/win"
-                    else "LOSS"
+                    if command
+                    == "/win"
+                    else
+                    "LOSS"
                 )
 
                 found[
@@ -2485,8 +3081,8 @@ def commands():
 
                 send(
                     f"✅ Recorded "
-                    f"{'WIN' if cmd == '/win' else 'LOSS'}\n"
-                    f"{arg}"
+                    f"{'WIN' if command == '/win' else 'LOSS'}\n"
+                    f"{argument}"
                 )
 
             else:
@@ -2501,43 +3097,94 @@ def commands():
 
 
 # ============================================================
-# RUN MODES
+# ONCE
 # ============================================================
 
 def once():
 
     print(
-        f"=== PRECISION SCANNER "
+        f"\n=== PRECISION SCANNER "
         f"{VERSION} ONE-SHOT ==="
     )
 
+    if not TWELVE_KEY:
+
+        print(
+            "\n[SETUP REQUIRED]"
+        )
+
+        print(
+            "Set environment variable:"
+        )
+
+        print(
+            "TWELVE_DATA_API_KEY"
+        )
+
+        return
+
     manual = commands()
 
-    s = scan()
+    result = scan()
 
     if manual:
 
         send(
             f"🔎 MANUAL SCAN COMPLETE\n"
-            f"Markets: {s['markets']}\n"
-            f"FX: {s['fx']}\n"
-            f"Crypto: {s['crypto']}\n"
-            f"Qualified: {s['qualified']}\n"
-            f"Rejected: {s['rejected']}\n"
-            f"Errors: {s['errors']}\n"
-            f"New: {s['new']}\n"
-            f"Alerts: {s['alerts']}\n"
-            f"Duplicates: {s['duplicates']}\n"
-            f"Locked: {s['locked']}"
+
+            f"Markets: "
+            f"{result['markets']}\n"
+
+            f"FX: "
+            f"{result['fx']}\n"
+
+            f"Crypto: "
+            f"{result['crypto']}\n"
+
+            f"Qualified: "
+            f"{result['qualified']}\n"
+
+            f"Rejected: "
+            f"{result['rejected']}\n"
+
+            f"Errors: "
+            f"{result['errors']}\n"
+
+            f"New: "
+            f"{result['new']}\n"
+
+            f"Alerts: "
+            f"{result['alerts']}\n"
+
+            f"Duplicates: "
+            f"{result['duplicates']}\n"
+
+            f"Locked: "
+            f"{result['locked']}"
         )
 
+
+# ============================================================
+# LOOP
+# ============================================================
 
 def loop():
 
     print(
-        f"=== PRECISION SCANNER "
-        f"{VERSION} LOOP / 300s ==="
+        f"\n=== PRECISION SCANNER "
+        f"{VERSION} "
+        f"LOOP / {SCAN_INTERVAL}s ==="
     )
+
+    if not TWELVE_KEY:
+
+        print(
+            "\n[FATAL] "
+            "TWELVE_DATA_API_KEY "
+            "is missing."
+        )
+
+        return
 
     while True:
 
@@ -2545,9 +3192,37 @@ def loop():
 
             manual = commands()
 
-            s = scan()
+            result = scan()
+
+            if manual:
+
+                send(
+                    f"🔎 MANUAL SCAN COMPLETE\n"
+
+                    f"Markets: "
+                    f"{result['markets']}\n"
+
+                    f"FX: "
+                    f"{result['fx']}\n"
+
+                    f"Crypto: "
+                    f"{result['crypto']}\n"
+
+                    f"Qualified: "
+                    f"{result['qualified']}\n"
+
+                    f"Alerts: "
+                    f"{result['alerts']}\n"
+
+                    f"Errors: "
+                    f"{result['errors']}"
+                )
 
         except KeyboardInterrupt:
+
+            print(
+                "\n[STOP] Scanner stopped."
+            )
 
             break
 
@@ -2558,22 +3233,15 @@ def loop():
                 e,
             )
 
-            manual = False
-            s = None
+        print(
+            f"\n[WAIT] "
+            f"Next scan in "
+            f"{SCAN_INTERVAL} seconds..."
+        )
 
-        if manual and s:
-
-            send(
-                f"🔎 MANUAL SCAN COMPLETE\n"
-                f"Markets: {s['markets']}\n"
-                f"FX: {s['fx']}\n"
-                f"Crypto: {s['crypto']}\n"
-                f"Qualified: {s['qualified']}\n"
-                f"Alerts: {s['alerts']}\n"
-                f"Errors: {s['errors']}"
-            )
-
-        time.sleep(300)
+        time.sleep(
+            SCAN_INTERVAL
+        )
 
 
 # ============================================================
@@ -2585,27 +3253,50 @@ if __name__ == "__main__":
     print(
         "[START]",
         VERSION,
-        "Bybit public market data",
+        "Twelve Data market data",
     )
 
     print(
         "[CONFIG]",
-        f"Minimum markets: {MIN_SCAN_SYMBOLS}",
-        f"Maximum markets: {MAX_SCAN_SYMBOLS}",
+        f"Minimum markets: "
+        f"{MIN_SCAN_SYMBOLS}",
+
+        f"Maximum markets: "
+        f"{MAX_SCAN_SYMBOLS}",
+
+        f"Scan interval: "
+        f"{SCAN_INTERVAL}s",
     )
 
-    if (
-        sys.argv[1:]
-        and sys.argv[1].lower()
-        == "--loop"
-    ):
+    if not TWELVE_KEY:
+
+        print(
+            "\n[ERROR] "
+            "TWELVE_DATA_API_KEY "
+            "is not configured."
+        )
+
+        print(
+            "Create/configure a "
+            "Twelve Data API key "
+            "and expose it as "
+            "TWELVE_DATA_API_KEY."
+        )
+
+        sys.exit(1)
+
+    args = [
+        x.lower()
+        for x in sys.argv[1:]
+    ]
+
+    if "--loop" in args:
 
         loop()
 
     elif (
-        not sys.argv[1:]
-        or sys.argv[1].lower()
-        == "--once"
+        not args
+        or "--once" in args
     ):
 
         once()
@@ -2613,9 +3304,15 @@ if __name__ == "__main__":
     else:
 
         print(
-            "Usage: "
-            "python scanner.py "
-            "--once | --loop"
+            "Usage:"
+        )
+
+        print(
+            "python scanner.py --once"
+        )
+
+        print(
+            "python scanner.py --loop"
         )
 
         sys.exit(1)
