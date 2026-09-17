@@ -4664,6 +4664,22 @@
       "expiry_at": "2026-09-17T21:37:00+00:00",
       "result": "PENDING",
       "id": "V35-SOL-CALL-1789680720"
+    },
+    {
+      "symbol": "DOGE",
+      "asset": "DOGE OTC",
+      "direction": "PUT",
+      "score": 85,
+      "price": 0.08153,
+      "rsi5": 29.9,
+      "rsi1": 39.6,
+      "adx": 53.6,
+      "entry_ts": 1789681440,
+      "created_at": "2026-09-17T21:46:57.766344+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T21:49:00+00:00",
+      "result": "PENDING",
+      "id": "V35-DOGE-PUT-1789681440"
     }
   ],
   "results": {
