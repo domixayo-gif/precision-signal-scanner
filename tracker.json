@@ -3621,6 +3621,51 @@
       "expiry_at": "2026-09-17T17:01:00+00:00",
       "result": "PENDING",
       "id": "V22-BNB-CALL-1789664160"
+    },
+    {
+      "symbol": "ETH",
+      "asset": "ETH OTC",
+      "direction": "CALL",
+      "score": 11,
+      "price": 2471.43,
+      "rsi5": 53.4,
+      "rsi1": 71.6,
+      "entry_ts": 1789664760,
+      "created_at": "2026-09-17T17:07:32.235376+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T17:11:00+00:00",
+      "result": "PENDING",
+      "id": "V22-ETH-CALL-1789664760"
+    },
+    {
+      "symbol": "ADA",
+      "asset": "ADA OTC",
+      "direction": "CALL",
+      "score": 11,
+      "price": 0.20267,
+      "rsi5": 50.8,
+      "rsi1": 73.6,
+      "entry_ts": 1789664520,
+      "created_at": "2026-09-17T17:07:32.496973+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T17:07:00+00:00",
+      "result": "PENDING",
+      "id": "V22-ADA-CALL-1789664520"
+    },
+    {
+      "symbol": "POL",
+      "asset": "POL OTC",
+      "direction": "CALL",
+      "score": 11,
+      "price": 0.0984,
+      "rsi5": 53.9,
+      "rsi1": 66.5,
+      "entry_ts": 1789664520,
+      "created_at": "2026-09-17T17:07:33.266377+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T17:07:00+00:00",
+      "result": "PENDING",
+      "id": "V22-POL-CALL-1789664520"
     }
   ],
   "results": {
