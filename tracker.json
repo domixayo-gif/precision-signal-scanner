@@ -3441,6 +3441,21 @@
       "expiry_at": "2026-09-17T16:05:00+00:00",
       "result": "PENDING",
       "id": "V22-TON-CALL-1789660800"
+    },
+    {
+      "symbol": "LTC",
+      "asset": "LTC OTC",
+      "direction": "CALL",
+      "score": 11,
+      "price": 53.719,
+      "rsi5": 68.0,
+      "rsi1": 66.7,
+      "entry_ts": 1789661220,
+      "created_at": "2026-09-17T16:12:00.936341+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T16:12:00+00:00",
+      "result": "PENDING",
+      "id": "V22-LTC-CALL-1789661220"
     }
   ],
   "results": {
