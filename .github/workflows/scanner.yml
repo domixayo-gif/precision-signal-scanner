@@ -1,23 +1,20 @@
-name: Precision Signal Scanner V2.2
+name: Precision Signal Scanner V2.2 Continuous
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"
-
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: precision-signal-scanner-v2
+  group: precision-signal-scanner-continuous
   cancel-in-progress: false
 
 jobs:
   scan:
-    name: Run V2.2 Scanner
+    name: Run V2.2 Continuous Scanner
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 350
 
     steps:
       - name: Checkout repository
@@ -33,15 +30,30 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Validate Python syntax
+      - name: Validate Python files
         run: |
           python -m py_compile scanner.py
           python -m py_compile storage.py
 
-      - name: Run V2.2 scanner
+      - name: Run continuous scanner
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python scanner.py
+          for i in $(seq 1 65)
+          do
+            echo "========================================"
+            echo "SCAN $i OF 65"
+            echo "Started: $(date -u)"
+            echo "========================================"
+
+            python scanner.py || echo "Scanner returned an error. Continuing."
+
+            if [ "$i" -lt 65 ]; then
+              echo "Waiting 5 minutes for the next scan..."
+              sleep 300
+            fi
+          done
+
+          echo "Continuous scanner session finished."
