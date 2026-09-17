@@ -1,5 +1,5 @@
 {
-  "version": "V3.9",
+  "version": "V4.0",
   "signals": [
     {
       "id": "LINK-154645",
@@ -3228,14 +3228,15 @@
   ],
   "borderline": [],
   "metadata": {
-    "last_scan": "2026-09-17T08:00:03.680816+00:00",
+    "last_scan": "2026-09-17T08:22:36.861773+00:00",
     "last_signal": null,
-    "scan_count": 3,
+    "scan_count": 4,
     "signal_locks": {},
     "processed_keys": [],
     "delivery_failed_keys": [],
     "telegram_offset": null,
     "working_bybit_endpoint": "https://api.bybit.com",
+    "markets": [],
     "last_heartbeat": null,
     "alerted_keys": []
   }
