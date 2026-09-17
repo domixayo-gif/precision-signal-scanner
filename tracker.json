@@ -4569,6 +4569,22 @@
       "expiry_at": "2026-09-17T21:04:00+00:00",
       "result": "PENDING",
       "id": "V22-DOGE-CALL-1789678740"
+    },
+    {
+      "symbol": "BTC",
+      "asset": "BTC OTC",
+      "direction": "PUT",
+      "score": 85,
+      "price": 76444.91,
+      "rsi5": 39.7,
+      "rsi1": 47.7,
+      "adx": 13.3,
+      "entry_ts": 1789679220,
+      "created_at": "2026-09-17T21:08:43.511585+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T21:12:00+00:00",
+      "result": "PENDING",
+      "id": "V35-BTC-PUT-1789679220"
     }
   ],
   "results": {
