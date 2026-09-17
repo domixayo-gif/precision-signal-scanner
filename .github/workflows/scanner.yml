@@ -1,8 +1,9 @@
-name: Precision Signal Scanner
+name: Precision Signal Scanner V2.1
 
 on:
   schedule:
     - cron: "*/5 * * * *"
+
   workflow_dispatch:
 
 permissions:
@@ -10,15 +11,14 @@ permissions:
 
 concurrency:
   group: precision-signal-scanner
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v7
 
       - name: Set up Python
@@ -32,13 +32,14 @@ jobs:
           pip install requests
 
       - name: Validate Python syntax
-        run: python -m py_compile scanner.py
+        run: |
+          python -m py_compile scanner.py
+          python -m py_compile storage.py
 
-      - name: Run scanner
+      - name: Run V2.1 scanner
         env:
-          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_ACTIONS: "true"
-        run: python scanner.py --loop --loop
+        run: |
+          python scanner.py
