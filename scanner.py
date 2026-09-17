@@ -1,16 +1,16 @@
 import os
 import time
+import traceback
 import requests
 from datetime import datetime, timezone
 
 from storage import read_tracker, update_tracker
 
-
 TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
 BASE = "https://api.exchange.coinbase.com"
-TG = f"https://api.telegram.org/bot{TOKEN}"
+TELEGRAM = "https://api.telegram.org/bot" + TOKEN
 
 ASSETS = [
     "BTC",
@@ -35,43 +35,48 @@ COOLDOWN_MINUTES = 15
 
 def send_message(text):
     response = requests.post(
-        f"{TG}/sendMessage",
+        TELEGRAM + "/sendMessage",
         json={
             "chat_id": CHAT_ID,
             "text": text,
         },
         timeout=30,
     )
-
     response.raise_for_status()
 
 
 def get_candles(symbol, seconds):
+    product = symbol + "-USD"
+    url = BASE + "/products/" + product + "/candles"
+
     try:
         response = requests.get(
-            f"{BASE}/products/{symbol}-USD/candles",
-            params={
-                "granularity": seconds,
-            },
-            headers={
-                "User-Agent": "precision-signal-scanner-v2.2",
-            },
+            url,
+            params={"granularity": seconds},
+            headers={"User-Agent": "precision-signal-scanner-v2.2"},
             timeout=20,
         )
 
         if response.status_code != 200:
             return []
 
-        rows = response.json()
+        data = response.json()
 
-        rows.sort(
-            key=lambda row: row[0]
-        )
+        if not isinstance(data, list):
+            return []
 
-        if len(rows) > 1:
-            rows = rows[:-1]
+        clean = []
 
-        return rows
+        for row in data:
+            if isinstance(row, list) and len(row) >= 6:
+                clean.append(row)
+
+        clean.sort(key=lambda row: row[0])
+
+        if len(clean) > 1:
+            clean = clean[:-1]
+
+        return clean
 
     except Exception:
         return []
@@ -81,16 +86,13 @@ def ema(values, period):
     if len(values) < period:
         return None
 
-    multiplier = 2 / (period + 1)
-
-    value = sum(
-        values[:period]
-    ) / period
+    multiplier = 2.0 / (period + 1.0)
+    value = sum(values[:period]) / period
 
     for price in values[period:]:
         value = (
             price * multiplier
-            + value * (1 - multiplier)
+            + value * (1.0 - multiplier)
         )
 
     return value
@@ -104,19 +106,15 @@ def rsi(values, period=14):
     losses = []
 
     start = len(values) - period - 1
-    end = len(values)
 
-    for index in range(start, end - 1):
-        change = (
-            values[index + 1]
-            - values[index]
-        )
+    for index in range(start, len(values) - 1):
+        change = values[index + 1] - values[index]
 
         if change > 0:
             gains.append(change)
-            losses.append(0)
+            losses.append(0.0)
         else:
-            gains.append(0)
+            gains.append(0.0)
             losses.append(abs(change))
 
     average_gain = sum(gains) / period
@@ -125,12 +123,10 @@ def rsi(values, period=14):
     if average_loss == 0:
         return 100.0
 
-    relative_strength = (
-        average_gain / average_loss
-    )
+    relative_strength = average_gain / average_loss
 
-    return 100 - (
-        100 / (1 + relative_strength)
+    return 100.0 - (
+        100.0 / (1.0 + relative_strength)
     )
 
 
@@ -153,28 +149,23 @@ def average_range(rows, period=14):
     for row in rows[-period:]:
         high = float(row[2])
         low = float(row[1])
-
-        ranges.append(
-            high - low
-        )
+        ranges.append(high - low)
 
     return sum(ranges) / len(ranges)
 
 
-def recent_momentum(values):
+def momentum(values):
     if len(values) < 4:
         return 0
 
     up = 0
     down = 0
-
     recent = values[-4:]
 
     for index in range(1, len(recent)):
         if recent[index] > recent[index - 1]:
             up += 1
-
-        if recent[index] < recent[index - 1]:
+        elif recent[index] < recent[index - 1]:
             down += 1
 
     if up > down:
@@ -187,312 +178,178 @@ def recent_momentum(values):
 
 
 def analyze(symbol):
-    candles_5m = get_candles(
-        symbol,
-        300,
-    )
+    candles_5m = get_candles(symbol, 300)
+    candles_1m = get_candles(symbol, 60)
 
-    candles_1m = get_candles(
-        symbol,
-        60,
-    )
+    if len(candles_5m) < 60:
+        return None, "5M data unavailable"
 
-    if (
-        len(candles_5m) < 60
-        or len(candles_1m) < 40
-    ):
-        return None, "unavailable"
+    if len(candles_1m) < 40:
+        return None, "1M data unavailable"
 
-    prices_5m = [
-        float(row[4])
-        for row in candlesmain()  ]
+    prices_5m = []
+    prices_1m = []
 
-    prices_1m = [
-        float(row[4])
-        for row in candles_1m
-    ]
+    for row in candles_5m:
+        prices_5m.append(float(row[4]))
+
+    for row in candles_1m:
+        prices_1m.append(float(row[4]))
 
     price_5m = prices_5m[-1]
     price_1m = prices_1m[-1]
 
-    ema20_5m = ema(
-        prices_5m,
-        20,
-    )
+    ema20_5m = ema(prices_5m, 20)
+    ema50_5m = ema(prices_5m, 50)
+    ema20_old = ema(prices_5m[:-2], 20)
 
-    ema50_5m = ema(
-        prices_5m,
-        50,
-    )
+    ema9_1m = ema(prices_1m, 9)
+    ema21_1m = ema(prices_1m, 21)
 
-    ema20_previous = ema(
-        prices_5m[:-2],
-        20,
-    )
+    rsi_5m = rsi(prices_5m, 14)
+    rsi_1m = rsi(prices_1m, 14)
 
-    ema9_1m = ema(
-        prices_1m,
-        9,
-    )
+    macd_5m = macd(prices_5m)
+    macd_5m_old = macd(prices_5m[:-1])
 
-    ema21_1m = ema(
-        prices_1m,
-        21,
-    )
+    macd_1m = macd(prices_1m)
+    macd_1m_old = macd(prices_1m[:-1])
 
-    rsi_5m = rsi(
-        prices_5m
-    )
+    atr_5m = average_range(candles_5m, 14)
+    atr_1m = average_range(candles_1m, 14)
 
-    rsi_1m = rsi(
-        prices_1m
-    )
-
-    macd_5m = macd(
-        prices_5m
-    )
-
-    macd_5m_previous = macd(
-        prices_5m[:-1]
-    )
-
-    macd_1m = macd(
-        prices_1m
-    )
-
-    macd_1m_previous = macd(
-        prices_1m[:-1]
-    )
-
-    atr_5m = average_range(
-        candles_5m,
-        14,
-    )
-
-    atr_1m = average_range(
-        candles_1m,
-        14,
-    )
-
-    if None in (
+    values = [
         ema20_5m,
         ema50_5m,
-        ema20_previous,
+        ema20_old,
         ema9_1m,
         ema21_1m,
         rsi_5m,
         rsi_1m,
         macd_5m,
-        macd_5m_previous,
+        macd_5m_old,
         macd_1m,
-        macd_1m_previous,
+        macd_1m_old,
         atr_5m,
         atr_1m,
-    ):
-        return None, "indicator error"
+    ]
+
+    for value in values:
+        if value is None:
+            return None, "indicator error"
 
     call_score = 0
     put_score = 0
 
-    # 1. 5M price vs EMA20 = 2 points
-
     if price_5m > ema20_5m:
         call_score += 2
-
-    if price_5m < ema20_5m:
+    elif price_5m < ema20_5m:
         put_score += 2
-
-    # 2. 5M EMA20 vs EMA50 = 2 points
 
     if ema20_5m > ema50_5m:
         call_score += 2
-
-    if ema20_5m < ema50_5m:
+    elif ema20_5m < ema50_5m:
         put_score += 2
 
-    # 3. 5M EMA20 slope = 1 point
-
-    if ema20_5m > ema20_previous:
+    if ema20_5m > ema20_old:
         call_score += 1
-
-    if ema20_5m < ema20_previous:
+    elif ema20_5m < ema20_old:
         put_score += 1
 
-    # 4. 5M MACD = 1 point
-
-    if (
-        macd_5m > 0
-        and macd_5m >= macd_5m_previous
-    ):
+    if macd_5m > 0 and macd_5m >= macd_5m_old:
         call_score += 1
-
-    if (
-        macd_5m < 0
-        and macd_5m <= macd_5m_previous
-    ):
+    elif macd_5m < 0 and macd_5m <= macd_5m_old:
         put_score += 1
 
-    # 5. RSI agreement = 1 point
-
-    if (
-        rsi_5m > 50
-        and rsi_1m > 50
-    ):
+    if rsi_5m > 50 and rsi_1m > 50:
         call_score += 1
-
-    if (
-        rsi_5m < 50
-        and rsi_1m < 50
-    ):
+    elif rsi_5m < 50 and rsi_1m < 50:
         put_score += 1
-
-    # 6. 1M price vs EMA9 = 1 point
 
     if price_1m > ema9_1m:
         call_score += 1
-
-    if price_1m < ema9_1m:
+    elif price_1m < ema9_1m:
         put_score += 1
-
-    # 7. 1M EMA9 vs EMA21 = 1 point
 
     if ema9_1m > ema21_1m:
         call_score += 1
-
-    if ema9_1m < ema21_1m:
+    elif ema9_1m < ema21_1m:
         put_score += 1
 
-    # 8. 1M MACD = 1 point
-
-    if (
-        macd_1m > 0
-        and macd_1m >= macd_1m_previous
-    ):
+    if macd_1m > 0 and macd_1m >= macd_1m_old:
         call_score += 1
-
-    if (
-        macd_1m < 0
-        and macd_1m <= macd_1m_previous
-    ):
+    elif macd_1m < 0 and macd_1m <= macd_1m_old:
         put_score += 1
 
-    # 9. 1M recent momentum = 1 point
+    current_momentum = momentum(prices_1m)
 
-    momentum = recent_momentum(
-        prices_1m
-    )
-
-    if momentum == 1:
+    if current_momentum == 1:
         call_score += 1
-
-    if momentum == -1:
+    elif current_momentum == -1:
         put_score += 1
-
-    # Choose direction
 
     if call_score > put_score:
         direction = "CALL"
         score = call_score
-
     elif put_score > call_score:
         direction = "PUT"
         score = put_score
-
     else:
         return None, "score tied"
 
-    # 5M trend confirmation
-
     if direction == "CALL":
-        if not (
-            price_5m > ema20_5m
-            and ema20_5m > ema50_5m
-        ):
+        if price_5m <= ema20_5m:
+            return None, "5M trend conflict"
+
+        if ema20_5m <= ema50_5m:
             return None, "5M trend conflict"
 
     if direction == "PUT":
-        if not (
-            price_5m < ema20_5m
-            and ema20_5m < ema50_5m
-        ):
+        if price_5m >= ema20_5m:
             return None, "5M trend conflict"
 
-    # V2.2 allows slightly more room
-    # before rejecting an extended entry.
+        if ema20_5m >= ema50_5m:
+            return None, "5M trend conflict"
 
-    distance = abs(
-        price_1m - ema9_1m
-    )
+    distance = abs(price_1m - ema9_1m)
 
     if distance > atr_1m * 2.2:
         return None, "entry extended"
 
-    # Avoid extreme RSI,
-    # but allow slightly more range than V2.1.
-
     if direction == "CALL":
-        if (
-            rsi_5m >= 75
-            or rsi_1m >= 75
-        ):
+        if rsi_5m >= 75 or rsi_1m >= 75:
             return None, "CALL RSI too high"
 
     if direction == "PUT":
-        if (
-            rsi_5m <= 25
-            or rsi_1m <= 25
-        ):
+        if rsi_5m <= 25 or rsi_1m <= 25:
             return None, "PUT RSI too low"
 
-    # Avoid extremely large entry candles.
-
-    last_candle_range = (
+    last_range = (
         float(candles_1m[-1][2])
         - float(candles_1m[-1][1])
     )
 
-    if last_candle_range > atr_1m * 2.8:
+    if last_range > atr_1m * 2.8:
         return None, "entry candle too large"
 
-    # V2.2 allows slightly flatter trends
-    # when the overall score is strong.
+    slope = abs(ema20_5m - ema20_old)
 
-    slope_size = abs(
-        ema20_5m - ema20_previous
-    )
-
-    if (
-        slope_size < atr_5m * 0.02
-        and score < 10
-    ):
+    if slope < atr_5m * 0.02 and score < 10:
         return None, "5M trend too flat"
 
-    # Main V2.2 qualification.
-
     if score < MIN_SCORE:
-        return None, f"score {score}/11"
+        return None, "score " + str(score) + "/11"
 
-    entry_ts = int(
-        candles_1m[-1][0]
-    )
+    entry_ts = int(candles_1m[-1][0])
 
     signal = {
         "symbol": symbol,
-        "asset": f"{symbol} OTC",
+        "asset": symbol + " OTC",
         "direction": direction,
         "score": score,
-        "price": round(
-            price_1m,
-            8,
-        ),
-        "rsi5": round(
-            rsi_5m,
-            1,
-        ),
-        "rsi1": round(
-            rsi_1m,
-            1,
-        ),
+        "price": round(price_1m, 8),
+        "rsi5": round(rsi_5m, 1),
+        "rsi1": round(rsi_1m, 1),
         "entry_ts": entry_ts,
         "created_at": datetime.now(
             timezone.utc
@@ -514,75 +371,56 @@ def cooldown_allowed(
     direction,
     entry_ts,
 ):
-    cutoff = (
-        entry_ts
-        - COOLDOWN_MINUTES * 60
+    cutoff = entry_ts - (
+        COOLDOWN_MINUTES * 60
     )
 
-    signals = data.get(
-        "signals",
-        [],
-    )
+    signals = data.get("signals", [])
 
     for old in reversed(signals):
         if old.get("symbol") != symbol:
             continue
 
-        old_ts = int(
-            old.get(
-                "entry_ts",
-                0,
-            )
-        )
+        old_ts = int(old.get("entry_ts", 0))
 
         if old_ts < cutoff:
             break
 
-        if (
-            old.get("direction")
-            == direction
-        ):
+        if old.get("direction") == direction:
             return False
 
     return True
 
 
-def save_signals(found, scan_id):
-    if not found:
+def save_signals(signals, scan_id):
+    if not signals:
         return
 
     def mutate(data):
-        existing = {
-            s.get("id")
-            for s in data.get(
-                "signals",
-                [],
-            )
-        }
+        existing_ids = set()
 
-        for signal in found:
-            if signal["id"] not in existing:
-                data["signals"].append(
-                    signal
-                )
+        for old in data.get("signals", []):
+            existing_ids.add(old.get("id"))
 
-        data["signals"] = data[
-            "signals"
-        ][-1000:]
+        for signal in signals:
+            if signal["id"] not in existing_ids:
+                data["signals"].append(signal)
+
+        data["signals"] = data["signals"][-1000:]
 
         return data
 
     update_tracker(
         mutate,
-        f"Add V2.2 signals {scan_id}",
+        "Add V2.2 signals " + scan_id,
     )
 
 
 def main():
-    scan_id = (
-        os.getenv("GITHUB_RUN_ID")
-        or str(int(time.time()))
-    )
+    scan_id = os.getenv("GITHUB_RUN_ID")
+
+    if not scan_id:
+        scan_id = str(int(time.time()))
 
     data, _ = read_tracker()
 
@@ -592,64 +430,69 @@ def main():
 
     for symbol in ASSETS:
         try:
-            signal, reason = analyze(
-                symbol
-            )
+            signal, reason = analyze(symbol)
 
             if signal:
                 signal["id"] = (
-                    f"V22-"
-                    f"{symbol}-"
-                    f"{signal['direction']}-"
-                    f"{signal['entry_ts']}"
+                    "V22-"
+                    + symbol
+                    + "-"
+                    + signal["direction"]
+                    + "-"
+                    + str(signal["entry_ts"])
                 )
 
-                if cooldown_allowed(
+                allowed = cooldown_allowed(
                     data,
                     symbol,
                     signal["direction"],
                     signal["entry_ts"],
-                ):
-                    found.append(
-                        signal
-                    )
+                )
+
+                if allowed:
+                    found.append(signal)
                 else:
                     rejected.append(
-                        f"{symbol}: cooldown"
+                        symbol + ": cooldown"
                     )
 
-            elif reason == "unavailable":
+            elif reason in (
+                "5M data unavailable",
+                "1M data unavailable",
+                "indicator error",
+            ):
                 unavailable.append(
-                    symbol
+                    symbol + "(" + reason + ")"
                 )
 
             else:
                 rejected.append(
-                    f"{symbol}: {reason}"
+                    symbol + ": " + str(reason)
                 )
 
         except Exception as exc:
             unavailable.append(
-                f"{symbol}({type(exc).__name__})"
+                symbol
+                + "("
+                + type(exc).__name__
+                + ": "
+                + str(exc)
+                + ")"
             )
 
-    save_signals(
-        found,
-        scan_id,
-    )
+    save_signals(found, scan_id)
 
-    now = datetime.now(
-        timezone.utc
+    now = datetime.now(timezone.utc)
+
+    timestamp = (
+        now.isoformat()
+        .replace("T", " ")
+        .replace("+00:00", " UTC")
     )
 
     lines = [
         "📡 PRECISION SCANNER V2.2",
-        (
-            "Scan: "
-            + now.isoformat()
-            .replace("T", " ")
-            .replace("+00:00", " UTC")
-        ),
+        "Scan: " + timestamp,
         "Data: Coinbase spot proxy",
         "Trend: 5M",
         "Entry: 1M",
@@ -665,38 +508,33 @@ def main():
             else:
                 icon = "🔴 PUT"
 
-            lines.extend([
-                (
-                    f"{icon} • "
-                    f"{signal['asset']}"
-                ),
-                (
-                    f"Score: "
-                    f"{signal['score']}/11"
-                ),
-                (
-                    f"Price: "
-                    f"{signal['price']}"
-                ),
-                (
-                    f"5M RSI: "
-                    f"{signal['rsi5']} | "
-                    f"1M RSI: "
-                    f"{signal['rsi1']}"
-                ),
-                (
-                    f"Signal ID: "
-                    f"{signal['id']}"
-                ),
-                "Expiry: 5 minutes",
-                "",
-            ])
+            lines.append(
+                icon + " • " + signal["asset"]
+            )
+            lines.append(
+                "Score: "
+                + str(signal["score"])
+                + "/11"
+            )
+            lines.append(
+                "Price: "
+                + str(signal["price"])
+            )
+            lines.append(
+                "5M RSI: "
+                + str(signal["rsi5"])
+                + " | 1M RSI: "
+                + str(signal["rsi1"])
+            )
+            lines.append(
+                "Signal ID: "
+                + signal["id"]
+            )
+            lines.append("Expiry: 5 minutes")
+            lines.append("")
 
     else:
-        lines.append(
-            "⚪ NO TRADE"
-        )
-
+        lines.append("⚪ NO TRADE")
         lines.append(
             "No asset passed the V2.2 filters."
         )
@@ -707,30 +545,32 @@ def main():
                 "Top rejection reasons:"
             )
 
-            for reason in rejected[:6]:
-                lines.append(
-                    "• " + reason
-                )
+            for reason in rejected[:8]:
+                lines.append("• " + reason)
 
     if unavailable:
-        lines.extend([
-            "",
-            "⚠️ MARKET/DATA WARNINGS",
-            "• "
-            + ", ".join(unavailable),
-        ])
+        lines.append("")
+        lines.append(
+            "⚠️ MARKET/DATA WARNINGS"
+        )
 
-    lines.extend([
-        "",
-        "Commands: /win ID | /loss ID | /stats",
-        "",
-        "⚠️ DEMO/TESTING ONLY.",
-        "Coinbase proxy may differ from Pocket Option OTC pricing.",
-    ])
+        for item in unavailable[:8]:
+            lines.append("• " + item)
 
-    send_message(
-        "\n".join(lines)
+    lines.append("")
+    lines.append(
+        "Commands: /win ID | /loss ID | /stats"
     )
+    lines.append("")
+    lines.append(
+        "⚠️ DEMO/TESTING ONLY."
+    )
+    lines.append(
+        "Coinbase proxy may differ from "
+        "Pocket Option OTC pricing."
+    )
+
+    send_message("\n".join(lines))
 
 
 if __name__ == "__main__":
