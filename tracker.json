@@ -3396,6 +3396,36 @@
       "expiry_at": "2026-09-17T15:59:00+00:00",
       "result": "PENDING",
       "id": "V22-DOGE-CALL-1789660440"
+    },
+    {
+      "symbol": "LINK",
+      "asset": "LINK OTC",
+      "direction": "CALL",
+      "score": 10,
+      "price": 11.37,
+      "rsi5": 59.6,
+      "rsi1": 54.9,
+      "entry_ts": 1789660800,
+      "created_at": "2026-09-17T16:01:54.185901+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T16:05:00+00:00",
+      "result": "PENDING",
+      "id": "V22-LINK-CALL-1789660800"
+    },
+    {
+      "symbol": "AVAX",
+      "asset": "AVAX OTC",
+      "direction": "CALL",
+      "score": 9,
+      "price": 7.603,
+      "rsi5": 48.3,
+      "rsi1": 74.5,
+      "entry_ts": 1789660800,
+      "created_at": "2026-09-17T16:01:54.386114+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T16:05:00+00:00",
+      "result": "PENDING",
+      "id": "V22-AVAX-CALL-1789660800"
     }
   ],
   "results": {
