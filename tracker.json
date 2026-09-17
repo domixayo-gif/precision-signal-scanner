@@ -1,4 +1,5 @@
 {
+  "version": "V3.7",
   "signals": [
     {
       "id": "LINK-154645",
@@ -3226,6 +3227,15 @@
     }
   ],
   "offset": 840821691,
+  "metadata": {
+    "last_scan": "2026-09-17T06:22:13.229706+00:00",
+    "last_signal": null,
+    "last_heartbeat": null,
+    "scan_count": 1,
+    "signal_locks": {},
+    "alerted_keys": [],
+    "delivery_failed_keys": []
+  },
   "meta": {
     "last_scan": "2026-09-16 15:12:21 UTC",
     "last_heartbeat": "2026-09-16 15:10:21 UTC",
