@@ -4086,6 +4086,36 @@
       "expiry_at": "2026-09-17T19:34:00+00:00",
       "result": "PENDING",
       "id": "V22-DOT-CALL-1789673340"
+    },
+    {
+      "symbol": "BTC",
+      "asset": "BTC OTC",
+      "direction": "PUT",
+      "score": 10,
+      "price": 76493.04,
+      "rsi5": 39.2,
+      "rsi1": 44.3,
+      "entry_ts": 1789673820,
+      "created_at": "2026-09-17T19:38:50.624149+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T19:42:00+00:00",
+      "result": "PENDING",
+      "id": "V22-BTC-PUT-1789673820"
+    },
+    {
+      "symbol": "LINK",
+      "asset": "LINK OTC",
+      "direction": "PUT",
+      "score": 11,
+      "price": 11.287,
+      "rsi5": 41.7,
+      "rsi1": 35.2,
+      "entry_ts": 1789673760,
+      "created_at": "2026-09-17T19:38:51.188909+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T19:41:00+00:00",
+      "result": "PENDING",
+      "id": "V22-LINK-PUT-1789673760"
     }
   ],
   "results": {
