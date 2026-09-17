@@ -4056,6 +4056,36 @@
       "expiry_at": "2026-09-17T19:32:00+00:00",
       "result": "PENDING",
       "id": "V22-BNB-CALL-1789673220"
+    },
+    {
+      "symbol": "TON",
+      "asset": "TON OTC",
+      "direction": "CALL",
+      "score": 9,
+      "price": 1.3398,
+      "rsi5": 59.4,
+      "rsi1": 68.8,
+      "entry_ts": 1789673280,
+      "created_at": "2026-09-17T19:33:48.230281+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T19:33:00+00:00",
+      "result": "PENDING",
+      "id": "V22-TON-CALL-1789673280"
+    },
+    {
+      "symbol": "DOT",
+      "asset": "DOT OTC",
+      "direction": "CALL",
+      "score": 11,
+      "price": 1.0691,
+      "rsi5": 52.0,
+      "rsi1": 72.1,
+      "entry_ts": 1789673340,
+      "created_at": "2026-09-17T19:33:48.495383+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T19:34:00+00:00",
+      "result": "PENDING",
+      "id": "V22-DOT-CALL-1789673340"
     }
   ],
   "results": {
