@@ -4417,6 +4417,36 @@
       "expiry_at": "2026-09-17T20:44:00+00:00",
       "result": "PENDING",
       "id": "V22-LTC-CALL-1789677540"
+    },
+    {
+      "symbol": "BTC",
+      "asset": "BTC OTC",
+      "direction": "PUT",
+      "score": 9,
+      "price": 76480.78,
+      "rsi5": 43.8,
+      "rsi1": 31.1,
+      "entry_ts": 1789678020,
+      "created_at": "2026-09-17T20:49:30.833263+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T20:52:00+00:00",
+      "result": "PENDING",
+      "id": "V22-BTC-PUT-1789678020"
+    },
+    {
+      "symbol": "ETH",
+      "asset": "ETH OTC",
+      "direction": "PUT",
+      "score": 10,
+      "price": 2449.38,
+      "rsi5": 47.3,
+      "rsi1": 33.2,
+      "entry_ts": 1789677960,
+      "created_at": "2026-09-17T20:49:30.911998+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T20:51:00+00:00",
+      "result": "PENDING",
+      "id": "V22-ETH-PUT-1789677960"
     }
   ],
   "results": {
