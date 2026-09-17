@@ -3666,6 +3666,51 @@
       "expiry_at": "2026-09-17T17:07:00+00:00",
       "result": "PENDING",
       "id": "V22-POL-CALL-1789664520"
+    },
+    {
+      "symbol": "BTC",
+      "asset": "BTC OTC",
+      "direction": "CALL",
+      "score": 11,
+      "price": 76824.65,
+      "rsi5": 60.4,
+      "rsi1": 67.8,
+      "entry_ts": 1789664820,
+      "created_at": "2026-09-17T17:12:35.240010+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T17:12:00+00:00",
+      "result": "PENDING",
+      "id": "V22-BTC-CALL-1789664820"
+    },
+    {
+      "symbol": "SOL",
+      "asset": "SOL OTC",
+      "direction": "CALL",
+      "score": 11,
+      "price": 101.55,
+      "rsi5": 60.6,
+      "rsi1": 67.9,
+      "entry_ts": 1789664820,
+      "created_at": "2026-09-17T17:12:35.415285+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T17:12:00+00:00",
+      "result": "PENDING",
+      "id": "V22-SOL-CALL-1789664820"
+    },
+    {
+      "symbol": "LTC",
+      "asset": "LTC OTC",
+      "direction": "CALL",
+      "score": 11,
+      "price": 53.74,
+      "rsi5": 56.6,
+      "rsi1": 59.8,
+      "entry_ts": 1789664820,
+      "created_at": "2026-09-17T17:12:36.259924+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T17:12:00+00:00",
+      "result": "PENDING",
+      "id": "V22-LTC-CALL-1789664820"
     }
   ],
   "results": {
