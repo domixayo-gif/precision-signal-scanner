@@ -4539,6 +4539,36 @@
       "expiry_at": "2026-09-17T21:00:00+00:00",
       "result": "PENDING",
       "id": "V22-POL-PUT-1789678500"
+    },
+    {
+      "symbol": "TON",
+      "asset": "TON OTC",
+      "direction": "CALL",
+      "score": 11,
+      "price": 1.3411,
+      "rsi5": 60.8,
+      "rsi1": 53.8,
+      "entry_ts": 1789678680,
+      "created_at": "2026-09-17T21:04:40.033361+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T21:03:00+00:00",
+      "result": "PENDING",
+      "id": "V22-TON-CALL-1789678680"
+    },
+    {
+      "symbol": "DOGE",
+      "asset": "DOGE OTC",
+      "direction": "CALL",
+      "score": 10,
+      "price": 0.08175,
+      "rsi5": 62.9,
+      "rsi1": 62.2,
+      "entry_ts": 1789678740,
+      "created_at": "2026-09-17T21:04:40.213470+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T21:04:00+00:00",
+      "result": "PENDING",
+      "id": "V22-DOGE-CALL-1789678740"
     }
   ],
   "results": {
