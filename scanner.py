@@ -28,7 +28,7 @@ ASSETS = [
     "POL",
 ]
 
-MIN_SCORE = 10
+MIN_SCORE = 9
 EXPIRY_MINUTES = 5
 COOLDOWN_MINUTES = 15
 
@@ -54,7 +54,7 @@ def get_candles(symbol, seconds):
                 "granularity": seconds,
             },
             headers={
-                "User-Agent": "precision-signal-scanner-v2.1",
+                "User-Agent": "precision-signal-scanner-v2.2",
             },
             timeout=20,
         )
@@ -119,13 +119,8 @@ def rsi(values, period=14):
             gains.append(0)
             losses.append(abs(change))
 
-    average_gain = (
-        sum(gains) / period
-    )
-
-    average_loss = (
-        sum(losses) / period
-    )
+    average_gain = sum(gains) / period
+    average_loss = sum(losses) / period
 
     if average_loss == 0:
         return 100.0
@@ -210,8 +205,7 @@ def analyze(symbol):
 
     prices_5m = [
         float(row[4])
-        for row in candles_5m
-    ]
+        for row in candlesmain()  ]
 
     prices_1m = [
         float(row[4])
@@ -246,15 +240,26 @@ def analyze(symbol):
         21,
     )
 
-    rsi_5m = rsi(prices_5m)
-    rsi_1m = rsi(prices_1m)
+    rsi_5m = rsi(
+        prices_5m
+    )
 
-    macd_5m = macd(prices_5m)
+    rsi_1m = rsi(
+        prices_1m
+    )
+
+    macd_5m = macd(
+        prices_5m
+    )
+
     macd_5m_previous = macd(
         prices_5m[:-1]
     )
 
-    macd_1m = macd(prices_1m)
+    macd_1m = macd(
+        prices_1m
+    )
+
     macd_1m_previous = macd(
         prices_1m[:-1]
     )
@@ -290,6 +295,7 @@ def analyze(symbol):
     put_score = 0
 
     # 1. 5M price vs EMA20 = 2 points
+
     if price_5m > ema20_5m:
         call_score += 2
 
@@ -297,13 +303,15 @@ def analyze(symbol):
         put_score += 2
 
     # 2. 5M EMA20 vs EMA50 = 2 points
+
     if ema20_5m > ema50_5m:
         call_score += 2
 
     if ema20_5m < ema50_5m:
         put_score += 2
 
-    # 3. EMA20 slope = 1 point
+    # 3. 5M EMA20 slope = 1 point
+
     if ema20_5m > ema20_previous:
         call_score += 1
 
@@ -311,6 +319,7 @@ def analyze(symbol):
         put_score += 1
 
     # 4. 5M MACD = 1 point
+
     if (
         macd_5m > 0
         and macd_5m >= macd_5m_previous
@@ -324,6 +333,7 @@ def analyze(symbol):
         put_score += 1
 
     # 5. RSI agreement = 1 point
+
     if (
         rsi_5m > 50
         and rsi_1m > 50
@@ -337,6 +347,7 @@ def analyze(symbol):
         put_score += 1
 
     # 6. 1M price vs EMA9 = 1 point
+
     if price_1m > ema9_1m:
         call_score += 1
 
@@ -344,6 +355,7 @@ def analyze(symbol):
         put_score += 1
 
     # 7. 1M EMA9 vs EMA21 = 1 point
+
     if ema9_1m > ema21_1m:
         call_score += 1
 
@@ -351,6 +363,7 @@ def analyze(symbol):
         put_score += 1
 
     # 8. 1M MACD = 1 point
+
     if (
         macd_1m > 0
         and macd_1m >= macd_1m_previous
@@ -364,6 +377,7 @@ def analyze(symbol):
         put_score += 1
 
     # 9. 1M recent momentum = 1 point
+
     momentum = recent_momentum(
         prices_1m
     )
@@ -373,6 +387,8 @@ def analyze(symbol):
 
     if momentum == -1:
         put_score += 1
+
+    # Choose direction
 
     if call_score > put_score:
         direction = "CALL"
@@ -385,7 +401,8 @@ def analyze(symbol):
     else:
         return None, "score tied"
 
-    # Strong 5M trend must agree.
+    # 5M trend confirmation
+
     if direction == "CALL":
         if not (
             price_5m > ema20_5m
@@ -400,48 +417,57 @@ def analyze(symbol):
         ):
             return None, "5M trend conflict"
 
-    # Lightweight anti-chasing filter.
+    # V2.2 allows slightly more room
+    # before rejecting an extended entry.
+
     distance = abs(
         price_1m - ema9_1m
     )
 
-    if distance > atr_1m * 1.8:
+    if distance > atr_1m * 2.2:
         return None, "entry extended"
 
-    # Avoid extreme RSI.
+    # Avoid extreme RSI,
+    # but allow slightly more range than V2.1.
+
     if direction == "CALL":
         if (
-            rsi_5m >= 72
-            or rsi_1m >= 72
+            rsi_5m >= 75
+            or rsi_1m >= 75
         ):
             return None, "CALL RSI too high"
 
     if direction == "PUT":
         if (
-            rsi_5m <= 28
-            or rsi_1m <= 28
+            rsi_5m <= 25
+            or rsi_1m <= 25
         ):
             return None, "PUT RSI too low"
 
-    # Avoid an abnormally large entry candle.
+    # Avoid extremely large entry candles.
+
     last_candle_range = (
         float(candles_1m[-1][2])
         - float(candles_1m[-1][1])
     )
 
-    if last_candle_range > atr_1m * 2.2:
+    if last_candle_range > atr_1m * 2.8:
         return None, "entry candle too large"
 
-    # Avoid completely flat EMA20.
+    # V2.2 allows slightly flatter trends
+    # when the overall score is strong.
+
     slope_size = abs(
         ema20_5m - ema20_previous
     )
 
     if (
-        slope_size < atr_5m * 0.03
-        and score < 11
+        slope_size < atr_5m * 0.02
+        and score < 10
     ):
         return None, "5M trend too flat"
+
+    # Main V2.2 qualification.
 
     if score < MIN_SCORE:
         return None, f"score {score}/11"
@@ -450,7 +476,7 @@ def analyze(symbol):
         candles_1m[-1][0]
     )
 
-    return {
+    signal = {
         "symbol": symbol,
         "asset": f"{symbol} OTC",
         "direction": direction,
@@ -471,13 +497,15 @@ def analyze(symbol):
         "created_at": datetime.now(
             timezone.utc
         ).isoformat(),
-        "expiry_minutes": 5,
+        "expiry_minutes": EXPIRY_MINUTES,
         "expiry_at": datetime.fromtimestamp(
             entry_ts + 300,
             timezone.utc,
         ).isoformat(),
         "result": "PENDING",
-    }, None
+    }
+
+    return signal, None
 
 
 def cooldown_allowed(
@@ -546,7 +574,7 @@ def save_signals(found, scan_id):
 
     update_tracker(
         mutate,
-        f"Add V2.1 signals {scan_id}",
+        f"Add V2.2 signals {scan_id}",
     )
 
 
@@ -570,7 +598,7 @@ def main():
 
             if signal:
                 signal["id"] = (
-                    f"V21-"
+                    f"V22-"
                     f"{symbol}-"
                     f"{signal['direction']}-"
                     f"{signal['entry_ts']}"
@@ -615,7 +643,7 @@ def main():
     )
 
     lines = [
-        "📡 PRECISION SCANNER V2.1",
+        "📡 PRECISION SCANNER V2.2",
         (
             "Scan: "
             + now.isoformat()
@@ -626,7 +654,7 @@ def main():
         "Trend: 5M",
         "Entry: 1M",
         "Expiry: 5 MINUTES",
-        "Minimum setup score: 10/11",
+        "Minimum setup score: 9/11",
         "",
     ]
 
@@ -670,7 +698,7 @@ def main():
         )
 
         lines.append(
-            "No asset passed the V2.1 filters."
+            "No asset passed the V2.2 filters."
         )
 
         if rejected:
