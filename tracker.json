@@ -3561,6 +3561,21 @@
       "expiry_at": "2026-09-17T16:32:00+00:00",
       "result": "PENDING",
       "id": "V22-LTC-CALL-1789662420"
+    },
+    {
+      "symbol": "BNB",
+      "asset": "BNB OTC",
+      "direction": "CALL",
+      "score": 10,
+      "price": 727.34,
+      "rsi5": 63.4,
+      "rsi1": 53.6,
+      "entry_ts": 1789662660,
+      "created_at": "2026-09-17T16:37:16.709973+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T16:36:00+00:00",
+      "result": "PENDING",
+      "id": "V22-BNB-CALL-1789662660"
     }
   ],
   "results": {
