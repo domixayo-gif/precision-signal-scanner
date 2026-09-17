@@ -1,9 +1,9 @@
 {
   "version": "V5.0",
   "created_at": "2026-09-17T09:06:45.634062+00:00",
-  "last_scan": "2026-09-17T09:54:39.171653+00:00",
+  "last_scan": "2026-09-17T09:56:31.543021+00:00",
   "last_signal": null,
-  "scan_count": 14,
+  "scan_count": 8,
   "signal_locks": {},
   "processed_keys": [],
   "delivery_failed_keys": [],
@@ -3238,7 +3238,7 @@
     "losses": 0
   },
   "rejection_reasons": {},
-  "rotation_index": 4,
+  "rotation_index": 8,
   "provider": "Twelve Data",
   "markets": [
     {
