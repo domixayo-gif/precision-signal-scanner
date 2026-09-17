@@ -4251,6 +4251,21 @@
       "expiry_at": "2026-09-17T20:08:00+00:00",
       "result": "PENDING",
       "id": "V22-POL-PUT-1789675380"
+    },
+    {
+      "symbol": "DOT",
+      "asset": "DOT OTC",
+      "direction": "CALL",
+      "score": 9,
+      "price": 1.0665,
+      "rsi5": 52.2,
+      "rsi1": 56.9,
+      "entry_ts": 1789675740,
+      "created_at": "2026-09-17T20:14:11.798745+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T20:14:00+00:00",
+      "result": "PENDING",
+      "id": "V22-DOT-CALL-1789675740"
     }
   ],
   "results": {
