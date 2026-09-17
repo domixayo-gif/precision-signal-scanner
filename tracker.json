@@ -3906,6 +3906,51 @@
       "expiry_at": "2026-09-17T18:21:00+00:00",
       "result": "PENDING",
       "id": "V22-BNB-CALL-1789668960"
+    },
+    {
+      "symbol": "ETH",
+      "asset": "ETH OTC",
+      "direction": "PUT",
+      "score": 10,
+      "price": 2450.36,
+      "rsi5": 35.3,
+      "rsi1": 46.4,
+      "entry_ts": 1789671360,
+      "created_at": "2026-09-17T18:58:27.971349+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T19:01:00+00:00",
+      "result": "PENDING",
+      "id": "V22-ETH-PUT-1789671360"
+    },
+    {
+      "symbol": "TON",
+      "asset": "TON OTC",
+      "direction": "PUT",
+      "score": 9,
+      "price": 1.3341,
+      "rsi5": 40.0,
+      "rsi1": 38.3,
+      "entry_ts": 1789671060,
+      "created_at": "2026-09-17T18:58:28.574860+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T18:56:00+00:00",
+      "result": "PENDING",
+      "id": "V22-TON-PUT-1789671060"
+    },
+    {
+      "symbol": "DOT",
+      "asset": "DOT OTC",
+      "direction": "CALL",
+      "score": 10,
+      "price": 1.0695,
+      "rsi5": 49.0,
+      "rsi1": 63.3,
+      "entry_ts": 1789671240,
+      "created_at": "2026-09-17T18:58:28.817114+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T18:59:00+00:00",
+      "result": "PENDING",
+      "id": "V22-DOT-CALL-1789671240"
     }
   ],
   "results": {
