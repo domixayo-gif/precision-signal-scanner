@@ -3951,6 +3951,36 @@
       "expiry_at": "2026-09-17T18:59:00+00:00",
       "result": "PENDING",
       "id": "V22-DOT-CALL-1789671240"
+    },
+    {
+      "symbol": "BTC",
+      "asset": "BTC OTC",
+      "direction": "PUT",
+      "score": 10,
+      "price": 76538.19,
+      "rsi5": 46.2,
+      "rsi1": 49.3,
+      "entry_ts": 1789671420,
+      "created_at": "2026-09-17T19:03:30.900197+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T19:02:00+00:00",
+      "result": "PENDING",
+      "id": "V22-BTC-PUT-1789671420"
+    },
+    {
+      "symbol": "DOGE",
+      "asset": "DOGE OTC",
+      "direction": "PUT",
+      "score": 11,
+      "price": 0.08139,
+      "rsi5": 35.9,
+      "rsi1": 35.2,
+      "entry_ts": 1789671600,
+      "created_at": "2026-09-17T19:03:31.764862+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T19:05:00+00:00",
+      "result": "PENDING",
+      "id": "V22-DOGE-PUT-1789671600"
     }
   ],
   "results": {
