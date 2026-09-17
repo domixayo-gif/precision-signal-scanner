@@ -3516,6 +3516,21 @@
       "expiry_at": "2026-09-17T16:16:00+00:00",
       "result": "PENDING",
       "id": "V22-POL-CALL-1789661460"
+    },
+    {
+      "symbol": "BTC",
+      "asset": "BTC OTC",
+      "direction": "CALL",
+      "score": 9,
+      "price": 76689.39,
+      "rsi5": 72.5,
+      "rsi1": 44.4,
+      "entry_ts": 1789661820,
+      "created_at": "2026-09-17T16:22:06.612622+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T16:22:00+00:00",
+      "result": "PENDING",
+      "id": "V22-BTC-CALL-1789661820"
     }
   ],
   "results": {
