@@ -10,11 +10,12 @@ permissions:
 
 concurrency:
   group: precision-signal-scanner
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 4
 
     steps:
       - name: Checkout code
@@ -33,9 +34,10 @@ jobs:
       - name: Validate Python syntax
         run: python -m py_compile scanner.py
 
-      - name: Run scanner
+      - name: Run one scanner cycle
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python scanner.py
+          GITHUB_ACTIONS: "true"
+        run: python scanner.py --once
