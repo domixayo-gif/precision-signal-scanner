@@ -4161,6 +4161,21 @@
       "expiry_at": "2026-09-17T19:45:00+00:00",
       "result": "PENDING",
       "id": "V22-AVAX-PUT-1789674000"
+    },
+    {
+      "symbol": "ETH",
+      "asset": "ETH OTC",
+      "direction": "PUT",
+      "score": 11,
+      "price": 2445.54,
+      "rsi5": 34.5,
+      "rsi1": 33.5,
+      "entry_ts": 1789674360,
+      "created_at": "2026-09-17T19:48:56.972919+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-17T19:51:00+00:00",
+      "result": "PENDING",
+      "id": "V22-ETH-PUT-1789674360"
     }
   ],
   "results": {
