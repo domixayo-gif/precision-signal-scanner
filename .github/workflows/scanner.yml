@@ -1,4 +1,4 @@
-name: Precision Signal Scanner V2.2 Continuous
+name: Precision Signal Scanner V3.5 Continuous
 
 on:
   workflow_dispatch:
@@ -7,12 +7,12 @@ permissions:
   contents: write
 
 concurrency:
-  group: precision-signal-scanner-continuous
+  group: precision-signal-scanner-v3-5
   cancel-in-progress: false
 
 jobs:
   scan:
-    name: Run V2.2 Continuous Scanner
+    name: Run V3.5 Continuous Scanner
     runs-on: ubuntu-latest
     timeout-minutes: 350
 
@@ -35,7 +35,7 @@ jobs:
           python -m py_compile scanner.py
           python -m py_compile storage.py
 
-      - name: Run continuous scanner
+      - name: Run V3.5 continuous scanner
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -44,16 +44,16 @@ jobs:
           for i in $(seq 1 65)
           do
             echo "========================================"
-            echo "SCAN $i OF 65"
+            echo "V3.5 SCAN $i OF 65"
             echo "Started: $(date -u)"
             echo "========================================"
 
-            python scanner.py || echo "Scanner returned an error. Continuing."
+            python scanner.py || echo "Scanner error. Continuing."
 
             if [ "$i" -lt 65 ]; then
-              echo "Waiting 5 minutes for the next scan..."
-              sleep 300
+              echo "Waiting 60 seconds..."
+              sleep 60
             fi
           done
 
-          echo "Continuous scanner session finished."
+          echo "V3.5 continuous scanner session finished."
