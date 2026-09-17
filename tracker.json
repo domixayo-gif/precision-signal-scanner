@@ -1,5 +1,12 @@
 {
   "version": "V5.0",
+  "created_at": "2026-09-17T09:06:45.634062+00:00",
+  "last_scan": "2026-09-17T09:06:47.424198+00:00",
+  "last_signal": null,
+  "scan_count": 1,
+  "signal_locks": {},
+  "processed_keys": [],
+  "delivery_failed_keys": [],
   "signals": [
     {
       "id": "LINK-154645",
@@ -3224,6 +3231,115 @@
       },
       "alert_sent": true,
       "alert_sent_at": "2026-09-16 15:12:21 UTC"
+    }
+  ],
+  "results": {
+    "wins": 0,
+    "losses": 0
+  },
+  "rejection_reasons": {},
+  "rotation_index": 6,
+  "provider": "Twelve Data",
+  "markets": [
+    {
+      "code": "EURUSD",
+      "symbol": "EUR/USD",
+      "type": "FX"
+    },
+    {
+      "code": "GBPUSD",
+      "symbol": "GBP/USD",
+      "type": "FX"
+    },
+    {
+      "code": "USDJPY",
+      "symbol": "USD/JPY",
+      "type": "FX"
+    },
+    {
+      "code": "AUDUSD",
+      "symbol": "AUD/USD",
+      "type": "FX"
+    },
+    {
+      "code": "NZDUSD",
+      "symbol": "NZD/USD",
+      "type": "FX"
+    },
+    {
+      "code": "USDCAD",
+      "symbol": "USD/CAD",
+      "type": "FX"
+    },
+    {
+      "code": "USDCHF",
+      "symbol": "USD/CHF",
+      "type": "FX"
+    },
+    {
+      "code": "EURGBP",
+      "symbol": "EUR/GBP",
+      "type": "FX"
+    },
+    {
+      "code": "EURJPY",
+      "symbol": "EUR/JPY",
+      "type": "FX"
+    },
+    {
+      "code": "GBPJPY",
+      "symbol": "GBP/JPY",
+      "type": "FX"
+    },
+    {
+      "code": "AUDJPY",
+      "symbol": "AUD/JPY",
+      "type": "FX"
+    },
+    {
+      "code": "EURCHF",
+      "symbol": "EUR/CHF",
+      "type": "FX"
+    },
+    {
+      "code": "EURAUD",
+      "symbol": "EUR/AUD",
+      "type": "FX"
+    },
+    {
+      "code": "GBPAUD",
+      "symbol": "GBP/AUD",
+      "type": "FX"
+    },
+    {
+      "code": "GBPCAD",
+      "symbol": "GBP/CAD",
+      "type": "FX"
+    },
+    {
+      "code": "CADJPY",
+      "symbol": "CAD/JPY",
+      "type": "FX"
+    },
+    {
+      "code": "CHFJPY",
+      "symbol": "CHF/JPY",
+      "type": "FX"
+    },
+    {
+      "code": "AUDCAD",
+      "symbol": "AUD/CAD",
+      "type": "FX"
+    },
+    {
+      "code": "AUDCHF",
+      "symbol": "AUD/CHF",
+      "type": "FX"
+    },
+    {
+      "code": "NZDJPY",
+      "symbol": "NZD/JPY",
+      "type": "FX"
     }
   ],
   "borderline": [
