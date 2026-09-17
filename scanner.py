@@ -1,10 +1,11 @@
 import os
 import time
-import traceback
+import math
 import requests
 from datetime import datetime, timezone
 
 from storage import read_tracker, update_tracker
+
 
 TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
@@ -18,7 +19,6 @@ ASSETS = [
     "SOL",
     "BNB",
     "ADA",
-    "TRX",
     "LINK",
     "TON",
     "AVAX",
@@ -28,9 +28,9 @@ ASSETS = [
     "POL",
 ]
 
-MIN_SCORE = 9
 EXPIRY_MINUTES = 5
-COOLDOWN_MINUTES = 15
+MIN_SCORE = 80
+COOLDOWN_MINUTES = 5
 
 
 def send_message(text):
@@ -46,14 +46,15 @@ def send_message(text):
 
 
 def get_candles(symbol, seconds):
-    product = symbol + "-USD"
-    url = BASE + "/products/" + product + "/candles"
+    url = BASE + "/products/" + symbol + "-USD/candles"
 
     try:
         response = requests.get(
             url,
             params={"granularity": seconds},
-            headers={"User-Agent": "precision-signal-scanner-v2.2"},
+            headers={
+                "User-Agent": "precision-scanner-v3.5"
+            },
             timeout=20,
         )
 
@@ -65,18 +66,18 @@ def get_candles(symbol, seconds):
         if not isinstance(data, list):
             return []
 
-        clean = []
+        rows = []
 
         for row in data:
             if isinstance(row, list) and len(row) >= 6:
-                clean.append(row)
+                rows.append(row)
 
-        clean.sort(key=lambda row: row[0])
+        rows.sort(key=lambda x: x[0])
 
-        if len(clean) > 1:
-            clean = clean[:-1]
+        if len(rows) > 1:
+            rows = rows[:-1]
 
-        return clean
+        return rows
 
     except Exception:
         return []
@@ -86,48 +87,80 @@ def ema(values, period):
     if len(values) < period:
         return None
 
-    multiplier = 2.0 / (period + 1.0)
-    value = sum(values[:period]) / period
+    total = 0.0
 
-    for price in values[period:]:
-        value = (
-            price * multiplier
-            + value * (1.0 - multiplier)
+    for value in values[:period]:
+        total += value
+
+    result = total / period
+    multiplier = 2.0 / (period + 1.0)
+
+    for value in values[period:]:
+        result = (
+            value * multiplier
+            + result * (1.0 - multiplier)
         )
 
-    return value
+    return result
 
 
 def rsi(values, period=14):
     if len(values) < period + 1:
         return None
 
-    gains = []
-    losses = []
+    gains = 0.0
+    losses = 0.0
 
     start = len(values) - period - 1
 
-    for index in range(start, len(values) - 1):
-        change = values[index + 1] - values[index]
+    for i in range(start, len(values) - 1):
+        change = values[i + 1] - values[i]
 
         if change > 0:
-            gains.append(change)
-            losses.append(0.0)
+            gains += change
         else:
-            gains.append(0.0)
-            losses.append(abs(change))
+            losses += abs(change)
 
-    average_gain = sum(gains) / period
-    average_loss = sum(losses) / period
+    average_gain = gains / period
+    average_loss = losses / period
 
     if average_loss == 0:
         return 100.0
 
-    relative_strength = average_gain / average_loss
+    rs = average_gain / average_loss
 
-    return 100.0 - (
-        100.0 / (1.0 + relative_strength)
-    )
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+def true_ranges(rows):
+    ranges = []
+
+    for i in range(len(rows)):
+        high = float(rows[i][2])
+        low = float(rows[i][1])
+
+        if i == 0:
+            previous_close = float(rows[i][4])
+        else:
+            previous_close = float(rows[i - 1][4])
+
+        first = high - low
+        second = abs(high - previous_close)
+        third = abs(low - previous_close)
+
+        value = max(first, second, third)
+        ranges.append(value)
+
+    return ranges
+
+
+def atr(rows, period=14):
+    ranges = true_ranges(rows)
+
+    if len(ranges) < period:
+        return None
+
+    return sum(ranges[-period:]) / period
 
 
 def macd(values):
@@ -140,32 +173,18 @@ def macd(values):
     return fast - slow
 
 
-def average_range(rows, period=14):
-    if len(rows) < period:
-        return None
-
-    ranges = []
-
-    for row in rows[-period:]:
-        high = float(row[2])
-        low = float(row[1])
-        ranges.append(high - low)
-
-    return sum(ranges) / len(ranges)
-
-
 def momentum(values):
-    if len(values) < 4:
+    if len(values) < 5:
         return 0
 
+    recent = values[-5:]
     up = 0
     down = 0
-    recent = values[-4:]
 
-    for index in range(1, len(recent)):
-        if recent[index] > recent[index - 1]:
+    for i in range(1, len(recent)):
+        if recent[i] > recent[i - 1]:
             up += 1
-        elif recent[index] < recent[index - 1]:
+        elif recent[i] < recent[i - 1]:
             down += 1
 
     if up > down:
@@ -177,168 +196,430 @@ def momentum(values):
     return 0
 
 
+def adx_dmi(rows, period=14):
+    if len(rows) < period + 2:
+        return None, None, None
+
+    trs = []
+    plus_dm = []
+    minus_dm = []
+
+    for i in range(1, len(rows)):
+        high = float(rows[i][2])
+        low = float(rows[i][1])
+
+        old_high = float(rows[i - 1][2])
+        old_low = float(rows[i - 1][1])
+        old_close = float(rows[i - 1][4])
+
+        tr1 = high - low
+        tr2 = abs(high - old_close)
+        tr3 = abs(low - old_close)
+
+        trs.append(max(tr1, tr2, tr3))
+
+        move_up = high - old_high
+        move_down = old_low - low
+
+        if move_up > move_down and move_up > 0:
+            plus_dm.append(move_up)
+        else:
+            plus_dm.append(0.0)
+
+        if move_down > move_up and move_down > 0:
+            minus_dm.append(move_down)
+        else:
+            minus_dm.append(0.0)
+
+    if len(trs) < period:
+        return None, None, None
+
+    recent_tr = trs[-period:]
+    recent_plus = plus_dm[-period:]
+    recent_minus = minus_dm[-period:]
+
+    average_tr = sum(recent_tr) / period
+
+    if average_tr == 0:
+        return 0.0, 0.0, 0.0
+
+    plus_di = (
+        sum(recent_plus)
+        / average_tr
+        * 100.0
+    )
+
+    minus_di = (
+        sum(recent_minus)
+        / average_tr
+        * 100.0
+    )
+
+    denominator = plus_di + minus_di
+
+    if denominator == 0:
+        dx = 0.0
+    else:
+        dx = (
+            abs(plus_di - minus_di)
+            / denominator
+            * 100.0
+        )
+
+    return dx, plus_di, minus_di
+
+
+def structure(rows):
+    if len(rows) < 12:
+        return 0
+
+    recent = rows[-6:]
+    older = rows[-12:-6]
+
+    recent_high = max(
+        float(row[2]) for row in recent
+    )
+
+    recent_low = min(
+        float(row[1]) for row in recent
+    )
+
+    older_high = max(
+        float(row[2]) for row in older
+    )
+
+    older_low = min(
+        float(row[1]) for row in older
+    )
+
+    if (
+        recent_high > older_high
+        and recent_low > older_low
+    ):
+        return 1
+
+    if (
+        recent_high < older_high
+        and recent_low < older_low
+    ):
+        return -1
+
+    return 0
+
+
+def candle_direction(row):
+    open_price = float(row[3])
+    close_price = float(row[4])
+
+    if close_price > open_price:
+        return 1
+
+    if close_price < open_price:
+        return -1
+
+    return 0
+
+
 def analyze(symbol):
     candles_5m = get_candles(symbol, 300)
     candles_1m = get_candles(symbol, 60)
 
-    if len(candles_5m) < 60:
+    if len(candles_5m) < 70:
         return None, "5M data unavailable"
 
-    if len(candles_1m) < 40:
+    if len(candles_1m) < 50:
         return None, "1M data unavailable"
 
-    prices_5m = []
-    prices_1m = []
+    prices5 = []
+    prices1 = []
 
     for row in candles_5m:
-        prices_5m.append(float(row[4]))
+        prices5.append(float(row[4]))
 
     for row in candles_1m:
-        prices_1m.append(float(row[4]))
+        prices1.append(float(row[4]))
 
-    price_5m = prices_5m[-1]
-    price_1m = prices_1m[-1]
+    price5 = prices5[-1]
+    price1 = prices1[-1]
 
-    ema20_5m = ema(prices_5m, 20)
-    ema50_5m = ema(prices_5m, 50)
-    ema20_old = ema(prices_5m[:-2], 20)
+    ema20_5 = ema(prices5, 20)
+    ema50_5 = ema(prices5, 50)
+    ema20_old = ema(prices5[:-5], 20)
 
-    ema9_1m = ema(prices_1m, 9)
-    ema21_1m = ema(prices_1m, 21)
+    ema9_1 = ema(prices1, 9)
+    ema21_1 = ema(prices1, 21)
 
-    rsi_5m = rsi(prices_5m, 14)
-    rsi_1m = rsi(prices_1m, 14)
+    rsi5 = rsi(prices5, 14)
+    rsi1 = rsi(prices1, 14)
 
-    macd_5m = macd(prices_5m)
-    macd_5m_old = macd(prices_5m[:-1])
+    macd5 = macd(prices5)
+    macd5_old = macd(prices5[:-3])
 
-    macd_1m = macd(prices_1m)
-    macd_1m_old = macd(prices_1m[:-1])
+    macd1 = macd(prices1)
+    macd1_old = macd(prices1[:-3])
 
-    atr_5m = average_range(candles_5m, 14)
-    atr_1m = average_range(candles_1m, 14)
+    atr5 = atr(candles_5m, 14)
+    atr1 = atr(candles_1m, 14)
+
+    adx5, plus_di, minus_di = adx_dmi(
+        candles_5m,
+        14,
+    )
+
+    struct = structure(candles_5m)
 
     values = [
-        ema20_5m,
-        ema50_5m,
+        ema20_5,
+        ema50_5,
         ema20_old,
-        ema9_1m,
-        ema21_1m,
-        rsi_5m,
-        rsi_1m,
-        macd_5m,
-        macd_5m_old,
-        macd_1m,
-        macd_1m_old,
-        atr_5m,
-        atr_1m,
+        ema9_1,
+        ema21_1,
+        rsi5,
+        rsi1,
+        macd5,
+        macd5_old,
+        macd1,
+        macd1_old,
+        atr5,
+        atr1,
+        adx5,
+        plus_di,
+        minus_di,
     ]
 
     for value in values:
         if value is None:
             return None, "indicator error"
 
-    call_score = 0
-    put_score = 0
+    if atr5 <= 0 or atr1 <= 0:
+        return None, "invalid volatility"
 
-    if price_5m > ema20_5m:
-        call_score += 2
-    elif price_5m < ema20_5m:
-        put_score += 2
+    call = 0
+    put = 0
 
-    if ema20_5m > ema50_5m:
-        call_score += 2
-    elif ema20_5m < ema50_5m:
-        put_score += 2
+    trend_score = 0
+    structure_score = 0
+    adx_score = 0
+    macd_score = 0
+    rsi_score = 0
+    entry_score = 0
+    pullback_score = 0
+    candle_score = 0
+    room_score = 0
+    extension_score = 0
 
-    if ema20_5m > ema20_old:
-        call_score += 1
-    elif ema20_5m < ema20_old:
-        put_score += 1
+    if price5 > ema20_5:
+        trend_score += 10
 
-    if macd_5m > 0 and macd_5m >= macd_5m_old:
-        call_score += 1
-    elif macd_5m < 0 and macd_5m <= macd_5m_old:
-        put_score += 1
+    if ema20_5 > ema50_5:
+        trend_score += 10
 
-    if rsi_5m > 50 and rsi_1m > 50:
-        call_score += 1
-    elif rsi_5m < 50 and rsi_1m < 50:
-        put_score += 1
+    if price5 < ema20_5:
+        trend_score -= 10
 
-    if price_1m > ema9_1m:
-        call_score += 1
-    elif price_1m < ema9_1m:
-        put_score += 1
+    if ema20_5 < ema50_5:
+        trend_score -= 10
 
-    if ema9_1m > ema21_1m:
-        call_score += 1
-    elif ema9_1m < ema21_1m:
-        put_score += 1
+    if trend_score > 0:
+        call += 20
+    elif trend_score < 0:
+        put += 20
 
-    if macd_1m > 0 and macd_1m >= macd_1m_old:
-        call_score += 1
-    elif macd_1m < 0 and macd_1m <= macd_1m_old:
-        put_score += 1
+    if struct == 1:
+        call += 10
+        structure_score = 10
 
-    current_momentum = momentum(prices_1m)
+    elif struct == -1:
+        put += 10
+        structure_score = 10
 
-    if current_momentum == 1:
-        call_score += 1
-    elif current_momentum == -1:
-        put_score += 1
+    if adx5 >= 15:
+        if plus_di > minus_di:
+            call += 10
+            adx_score = 10
+        elif minus_di > plus_di:
+            put += 10
+            adx_score = 10
+        else:
+            adx_score = 5
+    elif adx5 >= 12:
+        if plus_di > minus_di:
+            call += 5
+            adx_score = 5
+        elif minus_di > plus_di:
+            put += 5
+            adx_score = 5
 
-    if call_score > put_score:
+    if macd5 > 0 and macd5 >= macd5_old:
+        call += 5
+        macd_score += 5
+
+    if macd5 < 0 and macd5 <= macd5_old:
+        put += 5
+        macd_score += 5
+
+    if macd1 > 0 and macd1 >= macd1_old:
+        call += 5
+        macd_score += 5
+
+    if macd1 < 0 and macd1 <= macd1_old:
+        put += 5
+        macd_score += 5
+
+    if rsi5 >= 50 and rsi5 < 70:
+        call += 5
+        rsi_score += 5
+
+    if rsi1 >= 48 and rsi1 < 70:
+        call += 5
+        rsi_score += 5
+
+    if rsi5 <= 50 and rsi5 > 30:
+        put += 5
+        rsi_score += 5
+
+    if rsi1 <= 52 and rsi1 > 30:
+        put += 5
+        rsi_score += 5
+
+    if price1 > ema9_1:
+        call += 7
+        entry_score += 7
+
+    if price1 < ema9_1:
+        put += 7
+        entry_score += 7
+
+    if ema9_1 > ema21_1:
+        call += 8
+        entry_score += 8
+
+    if ema9_1 < ema21_1:
+        put += 8
+        entry_score += 8
+
+    distance1 = abs(price1 - ema20_5)
+
+    if atr5 > 0:
+        extension_ratio = distance1 / atr5
+    else:
+        extension_ratio = 99.0
+
+    if extension_ratio <= 1.8:
+        if call > put:
+            call += 5
+            extension_score = 5
+        elif put > call:
+            put += 5
+            extension_score = 5
+
+    last = candles_1m[-1]
+
+    last_open = float(last[3])
+    last_high = float(last[2])
+    last_low = float(last[1])
+    last_close = float(last[4])
+
+    last_range = last_high - last_low
+
+    body = abs(last_close - last_open)
+
+    if last_range > 0:
+        body_ratio = body / last_range
+    else:
+        body_ratio = 0
+
+    if last_range <= atr1 * 1.8:
+        if body_ratio >= 0.45:
+            if last_close > last_open:
+                call += 5
+                candle_score = 5
+            elif last_close < last_open:
+                put += 5
+                candle_score = 5
+
+    recent_low = min(
+        float(row[1])
+        for row in candles_5m[-12:]
+    )
+
+    recent_high = max(
+        float(row[2])
+        for row in candles_5m[-12:]
+    )
+
+    if call > put:
+        room = recent_high - price1
+
+        if room >= atr5 * 0.8:
+            call += 5
+            room_score = 5
+
+    elif put > call:
+        room = price1 - recent_low
+
+        if room >= atr5 * 0.8:
+            put += 5
+            room_score = 5
+
+    recent_momentum = momentum(prices1)
+
+    if recent_momentum == 1:
+        call += 5
+        pullback_score = 5
+
+    elif recent_momentum == -1:
+        put += 5
+        pullback_score = 5
+
+    if call > put:
         direction = "CALL"
-        score = call_score
-    elif put_score > call_score:
+        score = call
+    elif put > call:
         direction = "PUT"
-        score = put_score
+        score = put
     else:
         return None, "score tied"
 
     if direction == "CALL":
-        if price_5m <= ema20_5m:
-            return None, "5M trend conflict"
+        if price5 <= ema20_5:
+            return None, "bullish trend not confirmed"
 
-        if ema20_5m <= ema50_5m:
-            return None, "5M trend conflict"
+        if ema20_5 <= ema50_5:
+            return None, "5M bearish structure"
 
-    if direction == "PUT":
-        if price_5m >= ema20_5m:
-            return None, "5M trend conflict"
+        if plus_di <= minus_di and adx5 >= 15:
+            return None, "DMI conflict"
 
-        if ema20_5m >= ema50_5m:
-            return None, "5M trend conflict"
-
-    distance = abs(price_1m - ema9_1m)
-
-    if distance > atr_1m * 2.2:
-        return None, "entry extended"
-
-    if direction == "CALL":
-        if rsi_5m >= 75 or rsi_1m >= 75:
+        if rsi5 >= 72 or rsi1 >= 75:
             return None, "CALL RSI too high"
 
+        if recent_momentum == -1:
+            return None, "1M momentum conflict"
+
     if direction == "PUT":
-        if rsi_5m <= 25 or rsi_1m <= 25:
+        if price5 >= ema20_5:
+            return None, "bearish trend not confirmed"
+
+        if ema20_5 >= ema50_5:
+            return None, "5M bullish structure"
+
+        if minus_di <= plus_di and adx5 >= 15:
+            return None, "DMI conflict"
+
+        if rsi5 <= 28 or rsi1 <= 25:
             return None, "PUT RSI too low"
 
-    last_range = (
-        float(candles_1m[-1][2])
-        - float(candles_1m[-1][1])
-    )
+        if recent_momentum == 1:
+            return None, "1M momentum conflict"
 
-    if last_range > atr_1m * 2.8:
-        return None, "entry candle too large"
+    volatility_ratio = atr1 / atr5
 
-    slope = abs(ema20_5m - ema20_old)
-
-    if slope < atr_5m * 0.02 and score < 10:
-        return None, "5M trend too flat"
+    if volatility_ratio > 0.55:
+        return None, "extreme volatility"
 
     if score < MIN_SCORE:
-        return None, "score " + str(score) + "/11"
+        return None, "score " + str(score) + "/100"
 
     entry_ts = int(candles_1m[-1][0])
 
@@ -347,9 +628,10 @@ def analyze(symbol):
         "asset": symbol + " OTC",
         "direction": direction,
         "score": score,
-        "price": round(price_1m, 8),
-        "rsi5": round(rsi_5m, 1),
-        "rsi1": round(rsi_1m, 1),
+        "price": round(price1, 8),
+        "rsi5": round(rsi5, 1),
+        "rsi1": round(rsi1, 1),
+        "adx": round(adx5, 1),
         "entry_ts": entry_ts,
         "created_at": datetime.now(
             timezone.utc
@@ -397,13 +679,13 @@ def save_signals(signals, scan_id):
         return
 
     def mutate(data):
-        existing_ids = set()
+        existing = set()
 
         for old in data.get("signals", []):
-            existing_ids.add(old.get("id"))
+            existing.add(old.get("id"))
 
         for signal in signals:
-            if signal["id"] not in existing_ids:
+            if signal["id"] not in existing:
                 data["signals"].append(signal)
 
         data["signals"] = data["signals"][-1000:]
@@ -412,7 +694,7 @@ def save_signals(signals, scan_id):
 
     update_tracker(
         mutate,
-        "Add V2.2 signals " + scan_id,
+        "Add V3.5 signals " + scan_id,
     )
 
 
@@ -425,8 +707,8 @@ def main():
     data, _ = read_tracker()
 
     found = []
-    unavailable = []
     rejected = []
+    unavailable = []
 
     for symbol in ASSETS:
         try:
@@ -434,7 +716,7 @@ def main():
 
             if signal:
                 signal["id"] = (
-                    "V22-"
+                    "V35-"
                     + symbol
                     + "-"
                     + signal["direction"]
@@ -442,14 +724,12 @@ def main():
                     + str(signal["entry_ts"])
                 )
 
-                allowed = cooldown_allowed(
+                if cooldown_allowed(
                     data,
                     symbol,
                     signal["direction"],
                     signal["entry_ts"],
-                )
-
-                if allowed:
+                ):
                     found.append(signal)
                 else:
                     rejected.append(
@@ -460,6 +740,7 @@ def main():
                 "5M data unavailable",
                 "1M data unavailable",
                 "indicator error",
+                "invalid volatility",
             ):
                 unavailable.append(
                     symbol + "(" + reason + ")"
@@ -491,17 +772,23 @@ def main():
     )
 
     lines = [
-        "📡 PRECISION SCANNER V2.2",
+        "🟦 PRECISION SCANNER V3.5",
         "Scan: " + timestamp,
         "Data: Coinbase spot proxy",
         "Trend: 5M",
         "Entry: 1M",
         "Expiry: 5 MINUTES",
-        "Minimum setup score: 9/11",
+        "Minimum score: 80/100",
+        "Assets analyzed: " + str(len(ASSETS)),
         "",
     ]
 
     if found:
+        lines.append(
+            "🚨 QUALIFIED SIGNALS"
+        )
+        lines.append("")
+
         for signal in found:
             if signal["direction"] == "CALL":
                 icon = "🟢 CALL"
@@ -514,11 +801,15 @@ def main():
             lines.append(
                 "Score: "
                 + str(signal["score"])
-                + "/11"
+                + "/100"
             )
             lines.append(
                 "Price: "
                 + str(signal["price"])
+            )
+            lines.append(
+                "ADX: "
+                + str(signal["adx"])
             )
             lines.append(
                 "5M RSI: "
@@ -530,13 +821,15 @@ def main():
                 "Signal ID: "
                 + signal["id"]
             )
-            lines.append("Expiry: 5 minutes")
+            lines.append(
+                "Expiry: 5 minutes"
+            )
             lines.append("")
 
     else:
         lines.append("⚪ NO TRADE")
         lines.append(
-            "No asset passed the V2.2 filters."
+            "No asset passed the V3.5 qualification."
         )
 
         if rejected:
@@ -545,8 +838,8 @@ def main():
                 "Top rejection reasons:"
             )
 
-            for reason in rejected[:8]:
-                lines.append("• " + reason)
+            for item in rejected[:8]:
+                lines.append("• " + item)
 
     if unavailable:
         lines.append("")
@@ -574,4 +867,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main()n()
