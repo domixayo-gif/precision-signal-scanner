@@ -5000,6 +5000,22 @@
       "expiry_at": "2026-09-18T21:42:00+00:00",
       "result": "PENDING",
       "id": "V35-AVAX-CALL-1789767420"
+    },
+    {
+      "symbol": "DOT",
+      "asset": "DOT OTC",
+      "direction": "CALL",
+      "score": 85,
+      "price": 1.1456,
+      "rsi5": 67.1,
+      "rsi1": 55.6,
+      "adx": 38.5,
+      "entry_ts": 1789767540,
+      "created_at": "2026-09-18T21:43:49.707280+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-18T21:44:00+00:00",
+      "result": "PENDING",
+      "id": "V35-DOT-CALL-1789767540"
     }
   ],
   "results": {
