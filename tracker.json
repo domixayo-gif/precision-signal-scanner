@@ -4984,6 +4984,22 @@
       "expiry_at": "2026-09-18T09:23:00+00:00",
       "result": "PENDING",
       "id": "V35-ADA-CALL-1789723080"
+    },
+    {
+      "symbol": "AVAX",
+      "asset": "AVAX OTC",
+      "direction": "CALL",
+      "score": 90,
+      "price": 8.283,
+      "rsi5": 62.5,
+      "rsi1": 69.0,
+      "adx": 15.7,
+      "entry_ts": 1789767420,
+      "created_at": "2026-09-18T21:42:44.819479+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-18T21:42:00+00:00",
+      "result": "PENDING",
+      "id": "V35-AVAX-CALL-1789767420"
     }
   ],
   "results": {
