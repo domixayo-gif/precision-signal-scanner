@@ -5160,6 +5160,22 @@
       "expiry_at": "2026-09-18T22:34:00+00:00",
       "result": "PENDING",
       "id": "V35-ADA-CALL-1789770540"
+    },
+    {
+      "symbol": "LTC",
+      "asset": "LTC OTC",
+      "direction": "CALL",
+      "score": 80,
+      "price": 57.876,
+      "rsi5": 67.6,
+      "rsi1": 55.6,
+      "adx": 32.6,
+      "entry_ts": 1789771320,
+      "created_at": "2026-09-18T22:44:48.326198+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-18T22:47:00+00:00",
+      "result": "PENDING",
+      "id": "V35-LTC-CALL-1789771320"
     }
   ],
   "results": {
