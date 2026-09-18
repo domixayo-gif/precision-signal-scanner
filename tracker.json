@@ -5048,6 +5048,22 @@
       "expiry_at": "2026-09-18T21:59:00+00:00",
       "result": "PENDING",
       "id": "V35-ADA-CALL-1789768440"
+    },
+    {
+      "symbol": "BTC",
+      "asset": "BTC OTC",
+      "direction": "CALL",
+      "score": 90,
+      "price": 81236.92,
+      "rsi5": 54.0,
+      "rsi1": 52.3,
+      "adx": 39.4,
+      "entry_ts": 1789768620,
+      "created_at": "2026-09-18T21:59:34.939741+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-18T22:02:00+00:00",
+      "result": "PENDING",
+      "id": "V35-BTC-CALL-1789768620"
     }
   ],
   "results": {
