@@ -4760,6 +4760,22 @@
       "expiry_at": "2026-09-18T08:42:00+00:00",
       "result": "PENDING",
       "id": "V35-DOT-CALL-1789720620"
+    },
+    {
+      "symbol": "DOGE",
+      "asset": "DOGE OTC",
+      "direction": "CALL",
+      "score": 80,
+      "price": 0.08459,
+      "rsi5": 54.1,
+      "rsi1": 54.8,
+      "adx": 33.3,
+      "entry_ts": 1789721100,
+      "created_at": "2026-09-18T08:47:47.402272+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-18T08:50:00+00:00",
+      "result": "PENDING",
+      "id": "V35-DOGE-CALL-1789721100"
     }
   ],
   "results": {
