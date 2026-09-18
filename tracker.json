@@ -4696,6 +4696,22 @@
       "expiry_at": "2026-09-18T08:26:00+00:00",
       "result": "PENDING",
       "id": "V35-AVAX-CALL-1789719660"
+    },
+    {
+      "symbol": "TON",
+      "asset": "TON OTC",
+      "direction": "CALL",
+      "score": 80,
+      "price": 1.3696,
+      "rsi5": 69.4,
+      "rsi1": 51.2,
+      "adx": 51.7,
+      "entry_ts": 1789719900,
+      "created_at": "2026-09-18T08:30:08.849690+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-18T08:30:00+00:00",
+      "result": "PENDING",
+      "id": "V35-TON-CALL-1789719900"
     }
   ],
   "results": {
