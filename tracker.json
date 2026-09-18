@@ -4856,6 +4856,22 @@
       "expiry_at": "2026-09-18T09:01:00+00:00",
       "result": "PENDING",
       "id": "V35-ETH-CALL-1789721760"
+    },
+    {
+      "symbol": "DOT",
+      "asset": "DOT OTC",
+      "direction": "CALL",
+      "score": 85,
+      "price": 1.1612,
+      "rsi5": 69.8,
+      "rsi1": 67.5,
+      "adx": 75.6,
+      "entry_ts": 1789721820,
+      "created_at": "2026-09-18T09:00:19.079336+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-18T09:02:00+00:00",
+      "result": "PENDING",
+      "id": "V35-DOT-CALL-1789721820"
     }
   ],
   "results": {
