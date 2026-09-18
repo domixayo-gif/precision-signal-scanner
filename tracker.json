@@ -5144,6 +5144,22 @@
       "expiry_at": "2026-09-18T22:26:00+00:00",
       "result": "PENDING",
       "id": "V35-ETH-CALL-1789770060"
+    },
+    {
+      "symbol": "ADA",
+      "asset": "ADA OTC",
+      "direction": "CALL",
+      "score": 80,
+      "price": 0.2258,
+      "rsi5": 56.8,
+      "rsi1": 58.5,
+      "adx": 18.8,
+      "entry_ts": 1789770540,
+      "created_at": "2026-09-18T22:31:09.353828+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-18T22:34:00+00:00",
+      "result": "PENDING",
+      "id": "V35-ADA-CALL-1789770540"
     }
   ],
   "results": {
