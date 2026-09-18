@@ -4872,6 +4872,22 @@
       "expiry_at": "2026-09-18T09:02:00+00:00",
       "result": "PENDING",
       "id": "V35-DOT-CALL-1789721820"
+    },
+    {
+      "symbol": "ADA",
+      "asset": "ADA OTC",
+      "direction": "CALL",
+      "score": 80,
+      "price": 0.21491,
+      "rsi5": 59.9,
+      "rsi1": 69.6,
+      "adx": 44.7,
+      "entry_ts": 1789721880,
+      "created_at": "2026-09-18T09:01:21.774555+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-18T09:03:00+00:00",
+      "result": "PENDING",
+      "id": "V35-ADA-CALL-1789721880"
     }
   ],
   "results": {
