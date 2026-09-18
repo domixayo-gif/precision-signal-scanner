@@ -4904,6 +4904,22 @@
       "expiry_at": "2026-09-18T09:13:00+00:00",
       "result": "PENDING",
       "id": "V35-ADA-CALL-1789722480"
+    },
+    {
+      "symbol": "BNB",
+      "asset": "BNB OTC",
+      "direction": "CALL",
+      "score": 80,
+      "price": 754.76,
+      "rsi5": 59.2,
+      "rsi1": 71.0,
+      "adx": 17.7,
+      "entry_ts": 1789722420,
+      "created_at": "2026-09-18T09:13:48.255752+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-18T09:12:00+00:00",
+      "result": "PENDING",
+      "id": "V35-BNB-CALL-1789722420"
     }
   ],
   "results": {
