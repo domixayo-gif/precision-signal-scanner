@@ -4920,6 +4920,38 @@
       "expiry_at": "2026-09-18T09:12:00+00:00",
       "result": "PENDING",
       "id": "V35-BNB-CALL-1789722420"
+    },
+    {
+      "symbol": "BNB",
+      "asset": "BNB OTC",
+      "direction": "CALL",
+      "score": 80,
+      "price": 754.12,
+      "rsi5": 52.6,
+      "rsi1": 47.7,
+      "adx": 15.2,
+      "entry_ts": 1789723020,
+      "created_at": "2026-09-18T09:18:59.322886+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-18T09:22:00+00:00",
+      "result": "PENDING",
+      "id": "V35-BNB-CALL-1789723020"
+    },
+    {
+      "symbol": "DOGE",
+      "asset": "DOGE OTC",
+      "direction": "CALL",
+      "score": 80,
+      "price": 0.0852,
+      "rsi5": 62.4,
+      "rsi1": 68.1,
+      "adx": 53.4,
+      "entry_ts": 1789722900,
+      "created_at": "2026-09-18T09:18:59.825646+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-18T09:20:00+00:00",
+      "result": "PENDING",
+      "id": "V35-DOGE-CALL-1789722900"
     }
   ],
   "results": {
