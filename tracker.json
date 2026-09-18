@@ -4728,6 +4728,22 @@
       "expiry_at": "2026-09-18T08:36:00+00:00",
       "result": "PENDING",
       "id": "V35-AVAX-CALL-1789720260"
+    },
+    {
+      "symbol": "LTC",
+      "asset": "LTC OTC",
+      "direction": "CALL",
+      "score": 80,
+      "price": 55.506,
+      "rsi5": 67.7,
+      "rsi1": 58.8,
+      "adx": 60.4,
+      "entry_ts": 1789720560,
+      "created_at": "2026-09-18T08:37:25.535127+00:00",
+      "expiry_minutes": 5,
+      "expiry_at": "2026-09-18T08:41:00+00:00",
+      "result": "PENDING",
+      "id": "V35-LTC-CALL-1789720560"
     }
   ],
   "results": {
