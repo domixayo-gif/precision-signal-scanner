@@ -1,59 +1,36 @@
-name: Precision Signal Scanner V3.5 Continuous
+name: Precision Signal Scanner
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
 
 permissions:
   contents: write
 
-concurrency:
-  group: precision-signal-scanner-v3-5
-  cancel-in-progress: false
-
 jobs:
-  scan:
-    name: Run V3.5 Continuous Scanner
+  scanner:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v7
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests
+          pip install -r requirements.txt
 
-      - name: Validate Python files
-        run: |
-          python -m py_compile scanner.py
-          python -m py_compile storage.py
-
-      - name: Run V3.5 continuous scanner
+      - name: Run IQ Option scanner
         env:
+          IQ_EMAIL: ${{ secrets.IQ_EMAIL }}
+          IQ_PASSWORD: ${{ secrets.IQ_PASSWORD }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          for i in $(seq 1 65)
-          do
-            echo "========================================"
-            echo "V3.5 SCAN $i OF 65"
-            echo "Started: $(date -u)"
-            echo "========================================"
-
-            python scanner.py || echo "Scanner error. Continuing."
-
-            if [ "$i" -lt 65 ]; then
-              echo "Waiting 60 seconds..."
-              sleep 60
-            fi
-          done
-
-          echo "V3.5 continuous scanner session finished."
+          python scanner.py
