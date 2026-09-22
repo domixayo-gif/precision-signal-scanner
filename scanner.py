@@ -10,16 +10,18 @@ import iqoptionapi.constants as OP_code
 
 
 # ============================================================
-# PRECISION IQ OPTION OTC SCANNER — CONTINUOUS VERSION
+# PRECISION IQ OPTION OTC SCANNER
+# CONTINUOUS 5-MINUTE VERSION
 # ============================================================
-# READ-ONLY SCANNER
+# READ-ONLY
 # - No automatic trading
-# - Discovers real IQ Option OTC instruments
+# - Discovers REAL IQ Option OTC instruments
+# - Uses live get_all_open_time() discovery first
 # - 5M trend + 1M entry
 # - 5-minute reference expiry
-# - Keeps running continuously
-# - Scans every 5 minutes
-# - Sends QUALIFIED SIGNAL or NO TRADE to Telegram
+# - MIN SCORE remains 80
+# - Sends QUALIFIED SIGNAL or NO TRADE
+# - Repeats every 5 minutes
 # ============================================================
 
 
@@ -70,11 +72,15 @@ BALANCE_MODE = "PRACTICE"
 # ============================================================
 
 def telegram_send(message):
+
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("Telegram credentials missing.")
         return False
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    url = (
+        f"https://api.telegram.org/"
+        f"bot{TELEGRAM_TOKEN}/sendMessage"
+    )
 
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -84,6 +90,7 @@ def telegram_send(message):
     }
 
     try:
+
         response = requests.post(
             url,
             json=payload,
@@ -93,20 +100,29 @@ def telegram_send(message):
         if response.ok:
             return True
 
-        print("Telegram error:", response.text)
+        print(
+            "Telegram error:",
+            response.text,
+        )
 
     except Exception as e:
-        print("Telegram exception:", e)
+
+        print(
+            "Telegram exception:",
+            e,
+        )
 
     return False
 
 
 # ============================================================
-# MATH HELPERS
+# BASIC HELPERS
 # ============================================================
 
 def safe_float(value, default=0.0):
+
     try:
+
         value = float(value)
 
         if math.isnan(value) or math.isinf(value):
@@ -119,12 +135,14 @@ def safe_float(value, default=0.0):
 
 
 def mean(values):
-    values = [safe_float(v) for v in values]
 
     if not values:
         return 0.0
 
-    return sum(values) / len(values)
+    return sum(
+        safe_float(v)
+        for v in values
+    ) / len(values)
 
 
 # ============================================================
@@ -132,18 +150,29 @@ def mean(values):
 # ============================================================
 
 def ema(values, period):
-    values = [safe_float(v) for v in values]
+
+    values = [
+        safe_float(v)
+        for v in values
+    ]
 
     if len(values) < period:
         return []
 
     multiplier = 2.0 / (period + 1.0)
 
-    result = [sum(values[:period]) / period]
+    result = [
+        sum(values[:period]) / period
+    ]
 
     for price in values[period:]:
+
         result.append(
-            (price - result[-1]) * multiplier + result[-1]
+            (
+                (price - result[-1])
+                * multiplier
+            )
+            + result[-1]
         )
 
     return result
@@ -154,7 +183,11 @@ def ema(values, period):
 # ============================================================
 
 def rsi(values, period=14):
-    values = [safe_float(v) for v in values]
+
+    values = [
+        safe_float(v)
+        for v in values
+    ]
 
     if len(values) <= period:
         return []
@@ -163,39 +196,83 @@ def rsi(values, period=14):
     losses = []
 
     for i in range(1, len(values)):
-        change = values[i] - values[i - 1]
 
-        gains.append(max(change, 0.0))
-        losses.append(max(-change, 0.0))
+        change = (
+            values[i]
+            - values[i - 1]
+        )
 
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
+        gains.append(
+            max(change, 0.0)
+        )
+
+        losses.append(
+            max(-change, 0.0)
+        )
+
+    avg_gain = (
+        sum(gains[:period])
+        / period
+    )
+
+    avg_loss = (
+        sum(losses[:period])
+        / period
+    )
 
     result = []
 
     if avg_loss == 0:
-        result.append(100.0)
-    else:
-        rs = avg_gain / avg_loss
-        result.append(100.0 - (100.0 / (1.0 + rs)))
 
-    for i in range(period, len(gains)):
+        result.append(100.0)
+
+    else:
+
+        rs = avg_gain / avg_loss
+
+        result.append(
+            100.0
+            - (
+                100.0
+                / (1.0 + rs)
+            )
+        )
+
+    for i in range(
+        period,
+        len(gains)
+    ):
+
         avg_gain = (
-            ((avg_gain * (period - 1)) + gains[i])
+            (
+                avg_gain * (period - 1)
+                + gains[i]
+            )
             / period
         )
 
         avg_loss = (
-            ((avg_loss * (period - 1)) + losses[i])
+            (
+                avg_loss * (period - 1)
+                + losses[i]
+            )
             / period
         )
 
         if avg_loss == 0:
+
             result.append(100.0)
+
         else:
+
             rs = avg_gain / avg_loss
+
             result.append(
-                100.0 - (100.0 / (1.0 + rs))
+                100.0
+                - (
+                    100.0
+                    / (1.0 + rs)
+                )
             )
 
     return result
@@ -205,9 +282,22 @@ def rsi(values, period=14):
 # MACD
 # ============================================================
 
-def macd(values, fast=12, slow=26, signal=9):
-    fast_ema = ema(values, fast)
-    slow_ema = ema(values, slow)
+def macd(
+    values,
+    fast=12,
+    slow=26,
+    signal=9,
+):
+
+    fast_ema = ema(
+        values,
+        fast,
+    )
+
+    slow_ema = ema(
+        values,
+        slow,
+    )
 
     if not fast_ema or not slow_ema:
         return [], []
@@ -221,17 +311,22 @@ def macd(values, fast=12, slow=26, signal=9):
 
     length = min(
         len(fast_aligned),
-        len(slow_ema)
+        len(slow_ema),
     )
 
     macd_line = []
 
     for i in range(length):
+
         macd_line.append(
-            fast_aligned[i] - slow_ema[i]
+            fast_aligned[i]
+            - slow_ema[i]
         )
 
-    signal_line = ema(macd_line, signal)
+    signal_line = ema(
+        macd_line,
+        signal,
+    )
 
     return macd_line, signal_line
 
@@ -241,23 +336,33 @@ def macd(values, fast=12, slow=26, signal=9):
 # ============================================================
 
 def atr(candles, period=14):
+
     if len(candles) <= period:
         return []
 
     trs = []
 
     for i in range(1, len(candles)):
+
         current = candles[i]
         previous = candles[i - 1]
 
-        high = safe_float(current["high"])
-        low = safe_float(current["low"])
-        prev_close = safe_float(previous["close"])
+        high = safe_float(
+            current["high"]
+        )
+
+        low = safe_float(
+            current["low"]
+        )
+
+        previous_close = safe_float(
+            previous["close"]
+        )
 
         tr = max(
             high - low,
-            abs(high - prev_close),
-            abs(low - prev_close),
+            abs(high - previous_close),
+            abs(low - previous_close),
         )
 
         trs.append(tr)
@@ -270,8 +375,13 @@ def atr(candles, period=14):
     ]
 
     for value in trs[period:]:
+
         result.append(
-            ((result[-1] * (period - 1)) + value)
+            (
+                result[-1]
+                * (period - 1)
+                + value
+            )
             / period
         )
 
@@ -283,6 +393,7 @@ def atr(candles, period=14):
 # ============================================================
 
 def adx_dmi(candles, period=14):
+
     if len(candles) <= period + 1:
         return None
 
@@ -295,30 +406,52 @@ def adx_dmi(candles, period=14):
         current = candles[i]
         previous = candles[i - 1]
 
-        high = safe_float(current["high"])
-        low = safe_float(current["low"])
+        high = safe_float(
+            current["high"]
+        )
 
-        prev_high = safe_float(previous["high"])
-        prev_low = safe_float(previous["low"])
-        prev_close = safe_float(previous["close"])
+        low = safe_float(
+            current["low"]
+        )
 
-        up_move = high - prev_high
-        down_move = prev_low - low
+        previous_high = safe_float(
+            previous["high"]
+        )
 
-        if up_move > down_move and up_move > 0:
-            pdm = up_move
-        else:
-            pdm = 0.0
+        previous_low = safe_float(
+            previous["low"]
+        )
 
-        if down_move > up_move and down_move > 0:
-            mdm = down_move
-        else:
-            mdm = 0.0
+        previous_close = safe_float(
+            previous["close"]
+        )
+
+        up_move = (
+            high - previous_high
+        )
+
+        down_move = (
+            previous_low - low
+        )
+
+        pdm = (
+            up_move
+            if up_move > down_move
+            and up_move > 0
+            else 0.0
+        )
+
+        mdm = (
+            down_move
+            if down_move > up_move
+            and down_move > 0
+            else 0.0
+        )
 
         tr = max(
             high - low,
-            abs(high - prev_close),
-            abs(low - prev_close),
+            abs(high - previous_close),
+            abs(low - previous_close),
         )
 
         plus_dm.append(pdm)
@@ -328,84 +461,93 @@ def adx_dmi(candles, period=14):
     if len(tr_values) < period:
         return None
 
-    atr_values = []
+    smooth_tr = (
+        sum(tr_values[:period])
+        / period
+    )
 
-    current_atr = sum(
-        tr_values[:period]
-    ) / period
+    smooth_plus = (
+        sum(plus_dm[:period])
+        / period
+    )
 
-    atr_values.append(current_atr)
+    smooth_minus = (
+        sum(minus_dm[:period])
+        / period
+    )
 
-    for i in range(period, len(tr_values)):
-        current_atr = (
-            ((current_atr * (period - 1))
-             + tr_values[i])
-            / period
-        )
-
-        atr_values.append(current_atr)
+    dx_values = []
 
     plus_values = []
     minus_values = []
 
-    smooth_plus = sum(
-        plus_dm[:period]
-    ) / period
+    for i in range(period - 1, len(tr_values)):
 
-    smooth_minus = sum(
-        minus_dm[:period]
-    ) / period
+        if i >= period:
 
-    for i in range(len(atr_values)):
-
-        if i > 0:
-            idx = period + i - 1
-
-            if idx < len(plus_dm):
-                smooth_plus = (
-                    ((smooth_plus * (period - 1))
-                     + plus_dm[idx])
-                    / period
+            smooth_tr = (
+                (
+                    smooth_tr * (period - 1)
+                    + tr_values[i]
                 )
+                / period
+            )
 
-                smooth_minus = (
-                    ((smooth_minus * (period - 1))
-                     + minus_dm[idx])
-                    / period
+            smooth_plus = (
+                (
+                    smooth_plus * (period - 1)
+                    + plus_dm[i]
                 )
+                / period
+            )
 
-        atr_value = atr_values[i]
+            smooth_minus = (
+                (
+                    smooth_minus * (period - 1)
+                    + minus_dm[i]
+                )
+                / period
+            )
 
-        if atr_value <= 0:
+        if smooth_tr <= 0:
+
             plus_di = 0.0
             minus_di = 0.0
+
         else:
+
             plus_di = (
-                100.0 * smooth_plus / atr_value
+                100.0
+                * smooth_plus
+                / smooth_tr
             )
 
             minus_di = (
-                100.0 * smooth_minus / atr_value
+                100.0
+                * smooth_minus
+                / smooth_tr
             )
 
         plus_values.append(plus_di)
         minus_values.append(minus_di)
 
-    dx_values = []
+        denominator = (
+            plus_di
+            + minus_di
+        )
 
-    for plus_di, minus_di in zip(
-        plus_values,
-        minus_values
-    ):
+        if denominator <= 0:
 
-        denominator = plus_di + minus_di
-
-        if denominator == 0:
             dx = 0.0
+
         else:
+
             dx = (
                 100.0
-                * abs(plus_di - minus_di)
+                * abs(
+                    plus_di
+                    - minus_di
+                )
                 / denominator
             )
 
@@ -414,14 +556,18 @@ def adx_dmi(candles, period=14):
     if len(dx_values) < period:
         return None
 
-    adx_value = sum(
-        dx_values[:period]
-    ) / period
+    adx_value = (
+        sum(dx_values[:period])
+        / period
+    )
 
     for value in dx_values[period:]:
+
         adx_value = (
-            ((adx_value * (period - 1))
-             + value)
+            (
+                adx_value * (period - 1)
+                + value
+            )
             / period
         )
 
@@ -436,9 +582,10 @@ def adx_dmi(candles, period=14):
 # CANDLE STRENGTH
 # ============================================================
 
-def candle_strength(candles, count=20):
-    if not candles:
-        return 0.0
+def candle_strength(
+    candles,
+    count=20,
+):
 
     selected = candles[-count:]
 
@@ -446,20 +593,33 @@ def candle_strength(candles, count=20):
 
     for candle in selected:
 
-        high = safe_float(candle["high"])
-        low = safe_float(candle["low"])
-        open_price = safe_float(candle["open"])
-        close = safe_float(candle["close"])
+        high = safe_float(
+            candle["high"]
+        )
 
-        rng = high - low
+        low = safe_float(
+            candle["low"]
+        )
 
-        if rng <= 0:
+        open_price = safe_float(
+            candle["open"]
+        )
+
+        close = safe_float(
+            candle["close"]
+        )
+
+        candle_range = high - low
+
+        if candle_range <= 0:
             continue
 
-        body = abs(close - open_price)
+        body = abs(
+            close - open_price
+        )
 
         strengths.append(
-            body / rng
+            body / candle_range
         )
 
     return mean(strengths)
@@ -469,7 +629,11 @@ def candle_strength(candles, count=20):
 # MARKET STRUCTURE
 # ============================================================
 
-def market_structure(candles, lookback=20):
+def market_structure(
+    candles,
+    lookback=20,
+):
+
     if len(candles) < lookback:
         return "NEUTRAL"
 
@@ -485,46 +649,79 @@ def market_structure(candles, lookback=20):
         for c in selected
     ]
 
-    if len(highs) < 6:
+    if len(highs) < 10:
         return "NEUTRAL"
 
-    recent_high = max(highs[-5:])
-    previous_high = max(highs[-10:-5])
+    recent_high = max(
+        highs[-5:]
+    )
 
-    recent_low = min(lows[-5:])
-    previous_low = min(lows[-10:-5])
+    previous_high = max(
+        highs[-10:-5]
+    )
 
-    if recent_high < previous_high and recent_low < previous_low:
+    recent_low = min(
+        lows[-5:]
+    )
+
+    previous_low = min(
+        lows[-10:-5]
+    )
+
+    if (
+        recent_high < previous_high
+        and recent_low < previous_low
+    ):
         return "BEARISH"
 
-    if recent_high > previous_high and recent_low > previous_low:
+    if (
+        recent_high > previous_high
+        and recent_low > previous_low
+    ):
         return "BULLISH"
 
     return "NEUTRAL"
 
 
 # ============================================================
-# CANDLE NORMALIZATION
+# NORMALIZE CANDLE
 # ============================================================
 
 def normalize_candle(candle):
+
     try:
+
+        high = candle.get(
+            "max",
+            candle.get("high")
+        )
+
+        low = candle.get(
+            "min",
+            candle.get("low")
+        )
+
         return {
             "open": safe_float(
                 candle.get("open")
             ),
+
             "close": safe_float(
                 candle.get("close")
             ),
+
             "high": safe_float(
-                candle.get("max", candle.get("high"))
+                high
             ),
+
             "low": safe_float(
-                candle.get("min", candle.get("low"))
+                low
             ),
+
             "from": safe_float(
                 candle.get("from", 0)
             ),
+
             "to": safe_float(
                 candle.get("to", 0)
             ),
@@ -538,9 +735,15 @@ def normalize_candle(candle):
 # GET CANDLES
 # ============================================================
 
-def get_candles(api, asset, interval, count):
+def get_candles(
+    api,
+    asset,
+    interval,
+    count,
+):
 
     try:
+
         candles = api.get_candles(
             asset,
             interval,
@@ -555,7 +758,9 @@ def get_candles(api, asset, interval, count):
 
         for candle in candles:
 
-            item = normalize_candle(candle)
+            item = normalize_candle(
+                candle
+            )
 
             if item is not None:
                 normalized.append(item)
@@ -569,7 +774,8 @@ def get_candles(api, asset, interval, count):
     except Exception as e:
 
         print(
-            f"Candle error {asset} "
+            f"Candle error "
+            f"{asset} "
             f"{interval}s: {e}"
         )
 
@@ -585,55 +791,363 @@ def is_otc_name(name):
     if not name:
         return False
 
-    name = str(name).upper()
+    text = str(name).upper()
 
     return (
-        "-OTC" in name
-        or "_OTC" in name
-        or " OTC" in name
-        or ".OTC" in name
+        "-OTC" in text
+        or "_OTC" in text
+        or " OTC" in text
+        or ".OTC" in text
     )
 
 
 # ============================================================
-# CLEAN ACTIVE NAME
+# CLEAN ASSET NAME
 # ============================================================
 
 def clean_active_name(name):
 
     name = str(name).strip()
 
+    # IQ Option can sometimes return
+    # names with a prefix separated by a dot.
     if "." in name:
-        name = name.split(".")[-1]
+
+        parts = name.split(".")
+
+        if is_otc_name(parts[-1]):
+            name = parts[-1]
 
     return name
 
 
 # ============================================================
-# GET IQ OPTION INITIALIZATION
+# REGISTER IQ OPTION ACTIVE
 # ============================================================
 
-def get_raw_init(api):
+def register_active(
+    asset_name,
+    info,
+):
+
+    if not isinstance(info, dict):
+        return
+
+    active_id = (
+        info.get("active_id")
+        or info.get("activeId")
+        or info.get("id")
+    )
+
+    if active_id is None:
+        return
 
     try:
-        data = api.get_all_init_v2()
 
-        if data:
-            return data
+        OP_code.ACTIVES[
+            asset_name
+        ] = int(active_id)
+
+        print(
+            f"Registered "
+            f"{asset_name} -> "
+            f"{active_id}"
+        )
 
     except Exception as e:
-        print("get_all_init_v2 error:", e)
+
+        print(
+            f"Could not register "
+            f"{asset_name}: {e}"
+        )
+
+
+# ============================================================
+# LIVE OTC DISCOVERY
+# ============================================================
+
+def discover_otc_live(api):
+
+    print(
+        "Checking IQ Option "
+        "live open-time data..."
+    )
 
     try:
-        data = api.get_all_init()
 
-        if data:
-            return data
+        open_time = (
+            api.get_all_open_time()
+        )
 
     except Exception as e:
-        print("get_all_init error:", e)
 
-    return {}
+        print(
+            "get_all_open_time error:",
+            e,
+        )
+
+        return []
+
+
+    if not isinstance(
+        open_time,
+        dict,
+    ):
+
+        print(
+            "Invalid open-time data."
+        )
+
+        return []
+
+
+    assets = []
+
+
+    # --------------------------------------------------------
+    # IQ OPTION OTC IS USUALLY FOUND
+    # IN TURBO / BINARY
+    # --------------------------------------------------------
+
+    for section_name in (
+        "turbo",
+        "binary",
+        "digital",
+    ):
+
+        section = open_time.get(
+            section_name,
+            {},
+        )
+
+        if not isinstance(
+            section,
+            dict,
+        ):
+            continue
+
+
+        for raw_name, info in section.items():
+
+            if not is_otc_name(
+                raw_name
+            ):
+                continue
+
+
+            if not isinstance(
+                info,
+                dict,
+            ):
+                continue
+
+
+            # ------------------------------------------------
+            # OPEN / ENABLED CHECK
+            # ------------------------------------------------
+
+            is_open = info.get(
+                "open",
+                info.get(
+                    "enabled",
+                    True,
+                ),
+            )
+
+            if is_open is False:
+                continue
+
+
+            if info.get(
+                "is_suspended",
+                False,
+            ):
+                continue
+
+
+            if info.get(
+                "suspended",
+                False,
+            ):
+                continue
+
+
+            asset = clean_active_name(
+                raw_name
+            )
+
+
+            # ------------------------------------------------
+            # REGISTER REAL ACTIVE ID
+            # ------------------------------------------------
+
+            register_active(
+                asset,
+                info,
+            )
+
+
+            if asset not in assets:
+
+                assets.append(
+                    asset
+                )
+
+
+    assets = assets[
+        :MAX_OTC_ASSETS
+    ]
+
+
+    print(
+        f"Live OTC discovery found "
+        f"{len(assets)} assets."
+    )
+
+
+    if assets:
+
+        print(
+            "OTC assets:"
+        )
+
+        print(
+            ", ".join(assets)
+        )
+
+
+    return assets
+
+
+# ============================================================
+# FALLBACK INITIALIZATION DISCOVERY
+# ============================================================
+
+def discover_otc_from_init(api):
+
+    print(
+        "Trying initialization "
+        "data fallback..."
+    )
+
+    raw = None
+
+    try:
+
+        raw = api.get_all_init_v2()
+
+    except Exception as e:
+
+        print(
+            "get_all_init_v2 error:",
+            e,
+        )
+
+
+    if not raw:
+
+        try:
+
+            raw = api.get_all_init()
+
+        except Exception as e:
+
+            print(
+                "get_all_init error:",
+                e,
+            )
+
+
+    if not isinstance(
+        raw,
+        dict,
+    ):
+
+        return []
+
+
+    assets = []
+
+
+    for section_name in (
+        "turbo",
+        "binary",
+        "digital",
+    ):
+
+        section = raw.get(
+            section_name,
+            {},
+        )
+
+        if not isinstance(
+            section,
+            dict,
+        ):
+            continue
+
+
+        for raw_name, info in section.items():
+
+            if not is_otc_name(
+                raw_name
+            ):
+                continue
+
+
+            if not isinstance(
+                info,
+                dict,
+            ):
+                continue
+
+
+            if info.get(
+                "enabled",
+                True,
+            ) is False:
+
+                continue
+
+
+            if info.get(
+                "is_suspended",
+                False,
+            ):
+
+                continue
+
+
+            asset = clean_active_name(
+                raw_name
+            )
+
+
+            register_active(
+                asset,
+                info,
+            )
+
+
+            if asset not in assets:
+
+                assets.append(
+                    asset
+                )
+
+
+    assets = assets[
+        :MAX_OTC_ASSETS
+    ]
+
+
+    print(
+        f"Initialization fallback "
+        f"found {len(assets)} OTC assets."
+    )
+
+
+    return assets
 
 
 # ============================================================
@@ -642,78 +1156,43 @@ def get_raw_init(api):
 
 def discover_otc_assets(api):
 
-    raw = get_raw_init(api)
+    # First use LIVE open-time information.
+    assets = discover_otc_live(api)
 
-    if not raw:
-        print("No initialization data.")
-        return []
+    if assets:
+        return assets
 
-    assets = []
 
-    for section_name in (
-        "binary",
-        "turbo",
-    ):
+    # If live data is temporarily empty,
+    # use initialization data.
+    assets = discover_otc_from_init(api)
 
-        section = raw.get(section_name, {})
+    if assets:
+        return assets
 
-        if not isinstance(section, dict):
-            continue
-
-        for name, info in section.items():
-
-            if not is_otc_name(name):
-                continue
-
-            if not isinstance(info, dict):
-                continue
-
-            enabled = info.get("enabled", True)
-            suspended = info.get("is_suspended", False)
-
-            if enabled is False:
-                continue
-
-            if suspended:
-                continue
-
-            clean_name = clean_active_name(name)
-
-            active_id = (
-                info.get("active_id")
-                or info.get("id")
-                or info.get("activeId")
-            )
-
-            if active_id is not None:
-
-                try:
-                    OP_code.ACTIVES[clean_name] = int(
-                        active_id
-                    )
-
-                except Exception:
-                    pass
-
-            if clean_name not in assets:
-                assets.append(clean_name)
-
-    assets = assets[:MAX_OTC_ASSETS]
 
     print(
-        f"Discovered {len(assets)} OTC assets."
+        "No OTC assets found "
+        "from either discovery method."
     )
 
-    return assets
+    return []
 
 
 # ============================================================
-# TEST CANDLE FEED
+# TEST CANDLE FEEDS
 # ============================================================
 
-def test_candle_feed(api, assets):
+def test_candle_feed(
+    api,
+    assets,
+):
 
     working = []
+
+    print(
+        "Testing OTC candle feeds..."
+    )
 
     for asset in assets:
 
@@ -726,7 +1205,20 @@ def test_candle_feed(api, assets):
 
         if len(candles) >= 5:
 
-            working.append(asset)
+            working.append(
+                asset
+            )
+
+            print(
+                f"OK: {asset}"
+            )
+
+        else:
+
+            print(
+                f"No usable feed: "
+                f"{asset}"
+            )
 
     print(
         f"Working OTC candle feeds: "
@@ -740,7 +1232,10 @@ def test_candle_feed(api, assets):
 # ANALYZE ASSET
 # ============================================================
 
-def analyze_asset(api, asset):
+def analyze_asset(
+    api,
+    asset,
+):
 
     candles_5m = get_candles(
         api,
@@ -756,11 +1251,14 @@ def analyze_asset(api, asset):
         CANDLE_COUNT_1M,
     )
 
+
     if (
         len(candles_5m) < 60
         or len(candles_1m) < 60
     ):
+
         return None
+
 
     close_5m = [
         c["close"]
@@ -772,14 +1270,22 @@ def analyze_asset(api, asset):
         for c in candles_1m
     ]
 
+
     # --------------------------------------------------------
-    # 5M INDICATORS
+    # 5M
     # --------------------------------------------------------
 
-    ema20_5m = ema(close_5m, 20)
-    ema50_5m = ema(close_5m, 50)
+    ema20_5m = ema(
+        close_5m,
+        20,
+    )
 
-    rsi_5m_values = rsi(
+    ema50_5m = ema(
+        close_5m,
+        50,
+    )
+
+    rsi_5m = rsi(
         close_5m,
         14,
     )
@@ -798,10 +1304,14 @@ def analyze_asset(api, asset):
         14,
     )
 
-    if not ema20_5m or not ema50_5m:
+
+    if not ema20_5m:
         return None
 
-    if not rsi_5m_values:
+    if not ema50_5m:
+        return None
+
+    if not rsi_5m:
         return None
 
     if not atr_5m:
@@ -810,8 +1320,9 @@ def analyze_asset(api, asset):
     if not dmi:
         return None
 
+
     # --------------------------------------------------------
-    # 1M INDICATORS
+    # 1M
     # --------------------------------------------------------
 
     ema9_1m = ema(
@@ -824,7 +1335,7 @@ def analyze_asset(api, asset):
         21,
     )
 
-    rsi_1m_values = rsi(
+    rsi_1m = rsi(
         close_1m,
         14,
     )
@@ -833,51 +1344,63 @@ def analyze_asset(api, asset):
         close_1m
     )
 
-    if not ema9_1m or not ema21_1m:
+
+    if not ema9_1m:
         return None
 
-    if not rsi_1m_values:
+    if not ema21_1m:
         return None
+
+    if not rsi_1m:
+        return None
+
 
     price = close_1m[-1]
 
+
     # --------------------------------------------------------
-    # CURRENT VALUES
+    # CURRENT INDICATORS
     # --------------------------------------------------------
 
     ema20 = ema20_5m[-1]
     ema50 = ema50_5m[-1]
 
-    rsi5 = rsi_5m_values[-1]
-    rsi1 = rsi_1m_values[-1]
+    rsi5 = rsi_5m[-1]
+    rsi1 = rsi_1m[-1]
 
     atr_value = atr_5m[-1]
 
     adx_value = dmi["adx"]
+
     plus_di = dmi["plus_di"]
     minus_di = dmi["minus_di"]
 
     ema9 = ema9_1m[-1]
     ema21 = ema21_1m[-1]
 
+
     # --------------------------------------------------------
-    # TREND
+    # 5M TREND
     # --------------------------------------------------------
 
     if (
         ema20 > ema50
         and price > ema20
     ):
+
         trend = "BULLISH"
 
     elif (
         ema20 < ema50
         and price < ema20
     ):
+
         trend = "BEARISH"
 
     else:
+
         trend = "NEUTRAL"
+
 
     # --------------------------------------------------------
     # 1M ENTRY
@@ -887,16 +1410,20 @@ def analyze_asset(api, asset):
         ema9 > ema21
         and price > ema9
     ):
+
         entry = "BULLISH"
 
     elif (
         ema9 < ema21
         and price < ema9
     ):
+
         entry = "BEARISH"
 
     else:
+
         entry = "NEUTRAL"
+
 
     # --------------------------------------------------------
     # STRUCTURE
@@ -905,6 +1432,7 @@ def analyze_asset(api, asset):
     structure = market_structure(
         candles_5m
     )
+
 
     # --------------------------------------------------------
     # MACD
@@ -918,17 +1446,16 @@ def analyze_asset(api, asset):
             macd_5m[-1]
             > signal_5m[-1]
         ):
+
             macd_direction = "BULLISH"
 
         elif (
             macd_5m[-1]
             < signal_5m[-1]
         ):
+
             macd_direction = "BEARISH"
 
-    # --------------------------------------------------------
-    # 1M MACD
-    # --------------------------------------------------------
 
     macd1_direction = "NEUTRAL"
 
@@ -938,13 +1465,16 @@ def analyze_asset(api, asset):
             macd_1m[-1]
             > signal_1m[-1]
         ):
+
             macd1_direction = "BULLISH"
 
         elif (
             macd_1m[-1]
             < signal_1m[-1]
         ):
+
             macd1_direction = "BEARISH"
+
 
     # --------------------------------------------------------
     # CANDLE STRENGTH
@@ -955,19 +1485,23 @@ def analyze_asset(api, asset):
         20,
     )
 
+
     # --------------------------------------------------------
     # EXTENSION
     # --------------------------------------------------------
 
     extension = (
-        abs(price - ema20)
+        abs(
+            price - ema20
+        )
         / atr_value
         if atr_value > 0
         else 999
     )
 
+
     # --------------------------------------------------------
-    # SUPPORT / RESISTANCE ROOM
+    # ROOM
     # --------------------------------------------------------
 
     recent_high = max(
@@ -980,19 +1514,28 @@ def analyze_asset(api, asset):
         for c in candles_5m[-20:]
     )
 
+
     room_up = (
-        (recent_high - price)
+        (
+            recent_high
+            - price
+        )
         / atr_value
         if atr_value > 0
         else 0
     )
 
+
     room_down = (
-        (price - recent_low)
+        (
+            price
+            - recent_low
+        )
         / atr_value
         if atr_value > 0
         else 0
     )
+
 
     # --------------------------------------------------------
     # HARD FILTERS
@@ -1007,8 +1550,9 @@ def analyze_asset(api, asset):
     if strength < MIN_CANDLE_STRENGTH:
         return None
 
+
     # --------------------------------------------------------
-    # SCORES
+    # SCORE
     # --------------------------------------------------------
 
     call_score = 0
@@ -1017,68 +1561,90 @@ def analyze_asset(api, asset):
     call_confirmations = 0
     put_confirmations = 0
 
+
     # 5M trend
     if trend == "BULLISH":
+
         call_score += 20
         call_confirmations += 1
 
     elif trend == "BEARISH":
+
         put_score += 20
         put_confirmations += 1
 
+
     # 1M entry
     if entry == "BULLISH":
+
         call_score += 15
         call_confirmations += 1
 
     elif entry == "BEARISH":
+
         put_score += 15
         put_confirmations += 1
 
+
     # Structure
     if structure == "BULLISH":
+
         call_score += 15
         call_confirmations += 1
 
     elif structure == "BEARISH":
+
         put_score += 15
         put_confirmations += 1
 
+
     # DMI
     if plus_di > minus_di:
+
         call_score += 10
         call_confirmations += 1
 
     elif minus_di > plus_di:
+
         put_score += 10
         put_confirmations += 1
 
+
     # MACD
     if macd_direction == "BULLISH":
+
         call_score += 10
         call_confirmations += 1
 
     elif macd_direction == "BEARISH":
+
         put_score += 10
         put_confirmations += 1
 
+
     # 1M MACD
     if macd1_direction == "BULLISH":
+
         call_score += 5
 
     elif macd1_direction == "BEARISH":
+
         put_score += 5
+
 
     # RSI
     if 43 <= rsi5 <= 68:
+
         call_score += 10
         call_confirmations += 1
 
     elif 32 <= rsi5 <= 57:
+
         put_score += 10
         put_confirmations += 1
 
-    # Candle strength
+
+    # Candle
     if strength >= 0.40:
 
         if trend == "BULLISH":
@@ -1087,26 +1653,33 @@ def analyze_asset(api, asset):
         elif trend == "BEARISH":
             put_score += 10
 
+
     # ADX quality
     if adx_value >= 25:
 
         if call_score > put_score:
+
             call_score += 5
 
         elif put_score > call_score:
+
             put_score += 5
+
 
     # Extension penalty
     if extension >= 2.0:
 
         if call_score > put_score:
+
             call_score -= 8
 
         elif put_score > call_score:
+
             put_score -= 8
 
+
     # --------------------------------------------------------
-    # SELECT DIRECTION
+    # DIRECTION
     # --------------------------------------------------------
 
     if call_score > put_score:
@@ -1124,11 +1697,15 @@ def analyze_asset(api, asset):
         room = room_down
 
     else:
+
         return None
 
+
     score_gap = abs(
-        call_score - put_score
+        call_score
+        - put_score
     )
+
 
     # --------------------------------------------------------
     # FINAL QUALIFICATION
@@ -1146,15 +1723,18 @@ def analyze_asset(api, asset):
     if room < MIN_ROOM_ATR:
         return None
 
+
     timestamp = datetime.now(
         timezone.utc
     )
+
 
     signal_id = (
         f"{asset}-"
         f"{direction}-"
         f"{timestamp.strftime('%H%M%S')}"
     )
+
 
     return {
         "signal_id": signal_id,
@@ -1178,19 +1758,21 @@ def analyze_asset(api, asset):
 
 
 # ============================================================
-# SEND QUALIFIED SIGNAL
+# SEND SIGNAL
 # ============================================================
 
 def send_signal(signal):
 
-    direction = signal["direction"]
+    if signal["direction"] == "CALL":
 
-    if direction == "CALL":
         emoji = "🟢"
         direction_text = "CALL / UP"
+
     else:
+
         emoji = "🔴"
         direction_text = "PUT / DOWN"
+
 
     message = (
         f"{emoji} *NEW QUALIFIED OTC SIGNAL*\n"
@@ -1209,20 +1791,24 @@ def send_signal(signal):
         f"*RSI 1M:* {signal['rsi1']:.1f}\n"
         f"*+DI:* {signal['plus_di']:.1f}\n"
         f"*-DI:* {signal['minus_di']:.1f}\n"
-        f"*Extension:* {signal['extension']:.2f} ATR\n"
-        f"*Room:* {signal['room']:.2f} ATR\n"
+        f"*Extension:* "
+        f"{signal['extension']:.2f} ATR\n"
+        f"*Room:* "
+        f"{signal['room']:.2f} ATR\n"
         f"*Confirmations:* "
         f"{signal['confirmations']}\n"
-        f"*Signal ID:* `{signal['signal_id']}`\n"
+        f"*Signal ID:* "
+        f"`{signal['signal_id']}`\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"READ-ONLY — NO AUTO TRADE"
     )
+
 
     telegram_send(message)
 
 
 # ============================================================
-# NO TRADE MESSAGE
+# NO TRADE
 # ============================================================
 
 def send_no_trade(
@@ -1234,9 +1820,12 @@ def send_no_trade(
     message = (
         "🟡 *IQ OPTION OTC SCANNER*\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        f"*OTC assets discovered:* {discovered}\n"
-        f"*OTC candle feeds working:* {working}\n"
-        f"*Qualified signals:* {qualified}\n"
+        f"*OTC assets discovered:* "
+        f"{discovered}\n"
+        f"*OTC candle feeds working:* "
+        f"{working}\n"
+        f"*Qualified signals:* "
+        f"{qualified}\n"
         "\n"
         "The market data is available, "
         "but no setup reached the "
@@ -1246,25 +1835,48 @@ def send_no_trade(
         "━━━━━━━━━━━━━━━━━━"
     )
 
+
     telegram_send(message)
 
 
 # ============================================================
-# CONNECTION
+# CONNECT
 # ============================================================
 
 def connect_iq():
 
-    print("Connecting to IQ Option...")
+    print(
+        "Connecting to IQ Option..."
+    )
 
     api = IQ_Option(
         IQ_EMAIL,
         IQ_PASSWORD,
     )
 
-    check, reason = api.connect()
 
-    if not check:
+    try:
+
+        connected, reason = api.connect()
+
+    except Exception as e:
+
+        print(
+            "Connection exception:",
+            e,
+        )
+
+        telegram_send(
+            "🔴 *IQ OPTION SCANNER*\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "Connection/login failed.\n"
+            f"`{e}`"
+        )
+
+        return None
+
+
+    if not connected:
 
         print(
             "IQ Option connection failed:",
@@ -1280,9 +1892,14 @@ def connect_iq():
 
         return None
 
-    print("IQ Option connected.")
+
+    print(
+        "IQ Option connected."
+    )
+
 
     try:
+
         api.change_balance(
             BALANCE_MODE
         )
@@ -1299,11 +1916,12 @@ def connect_iq():
             e,
         )
 
+
     return api
 
 
 # ============================================================
-# RUN ONE SCAN CYCLE
+# RUN ONE SCAN
 # ============================================================
 
 def run_scan_cycle(api):
@@ -1314,20 +1932,24 @@ def run_scan_cycle(api):
     )
 
     print(
-        "NEW SCAN CYCLE:",
+        "NEW IQ OPTION OTC SCAN"
+    )
+
+    print(
         datetime.now(
             timezone.utc
         ).strftime(
             "%Y-%m-%d %H:%M:%S UTC"
-        ),
+        )
     )
 
     print(
         "=================================================="
     )
 
+
     # --------------------------------------------------------
-    # CHECK CONNECTION
+    # CONNECTION
     # --------------------------------------------------------
 
     try:
@@ -1335,12 +1957,15 @@ def run_scan_cycle(api):
         if not api.check_connect():
 
             print(
-                "IQ Option disconnected."
+                "Connection lost."
             )
 
             try:
+
                 api.connect()
+
             except Exception as e:
+
                 print(
                     "Reconnect error:",
                     e,
@@ -1352,7 +1977,7 @@ def run_scan_cycle(api):
                     "🔴 *IQ OPTION SCANNER*\n"
                     "━━━━━━━━━━━━━━━━━━\n"
                     "IQ Option connection lost.\n"
-                    "Waiting for the next cycle."
+                    "Retrying on the next cycle."
                 )
 
                 return
@@ -1366,11 +1991,15 @@ def run_scan_cycle(api):
 
         return
 
+
     # --------------------------------------------------------
-    # DISCOVER OTC
+    # DISCOVER REAL OTC ASSETS
     # --------------------------------------------------------
 
-    assets = discover_otc_assets(api)
+    assets = discover_otc_assets(
+        api
+    )
+
 
     if not assets:
 
@@ -1379,19 +2008,25 @@ def run_scan_cycle(api):
             "━━━━━━━━━━━━━━━━━━\n"
             "No currently open OTC "
             "instruments were discovered.\n"
+            "\n"
+            "The scanner will retry "
+            "on the next 5-minute cycle.\n"
+            "\n"
             "*NO TRADE*"
         )
 
         return
 
+
     # --------------------------------------------------------
-    # TEST CANDLE FEEDS
+    # TEST CANDLES
     # --------------------------------------------------------
 
     working_assets = test_candle_feed(
         api,
         assets,
     )
+
 
     if not working_assets:
 
@@ -1411,11 +2046,13 @@ def run_scan_cycle(api):
 
         return
 
+
     # --------------------------------------------------------
     # ANALYZE
     # --------------------------------------------------------
 
     qualified = []
+
 
     for asset in working_assets:
 
@@ -1426,6 +2063,7 @@ def run_scan_cycle(api):
                 asset,
             )
 
+
             if result is not None:
 
                 print(
@@ -1435,7 +2073,9 @@ def run_scan_cycle(api):
                     f"{result['score']}/100"
                 )
 
-                qualified.append(result)
+                qualified.append(
+                    result
+                )
 
             else:
 
@@ -1444,6 +2084,7 @@ def run_scan_cycle(api):
                     f"{asset}"
                 )
 
+
         except Exception as e:
 
             print(
@@ -1451,16 +2092,19 @@ def run_scan_cycle(api):
                 f"{asset}: {e}"
             )
 
+
     # --------------------------------------------------------
     # SEND SIGNALS
     # --------------------------------------------------------
 
     for signal in qualified:
 
-        send_signal(signal)
+        send_signal(
+            signal
+        )
 
-        # Small delay between Telegram messages.
         time.sleep(1)
+
 
     # --------------------------------------------------------
     # NO TRADE
@@ -1474,9 +2118,23 @@ def run_scan_cycle(api):
             0,
         )
 
+
     print(
-        f"Cycle complete. "
-        f"Qualified signals: {len(qualified)}"
+        "Cycle complete."
+    )
+
+    print(
+        f"Discovered: {len(assets)}"
+    )
+
+    print(
+        f"Working feeds: "
+        f"{len(working_assets)}"
+    )
+
+    print(
+        f"Qualified: "
+        f"{len(qualified)}"
     )
 
 
@@ -1495,6 +2153,7 @@ def main():
     )
 
     print(
+        "LIVE OTC DISCOVERY + "
         "CONTINUOUS 5-MINUTE MODE"
     )
 
@@ -1502,42 +2161,44 @@ def main():
         "=================================================="
     )
 
+
     # --------------------------------------------------------
     # CREDENTIAL CHECK
     # --------------------------------------------------------
 
     missing = []
 
+
     if not IQ_EMAIL:
-        missing.append("IQ_EMAIL")
+        missing.append(
+            "IQ_EMAIL"
+        )
 
     if not IQ_PASSWORD:
-        missing.append("IQ_PASSWORD")
+        missing.append(
+            "IQ_PASSWORD"
+        )
 
     if not TELEGRAM_TOKEN:
-        missing.append("TELEGRAM_TOKEN")
+        missing.append(
+            "TELEGRAM_TOKEN"
+        )
 
     if not TELEGRAM_CHAT_ID:
-        missing.append("TELEGRAM_CHAT_ID")
+        missing.append(
+            "TELEGRAM_CHAT_ID"
+        )
+
 
     if missing:
 
         print(
-            "Missing environment variables:",
-            ", ".join(missing),
-        )
-
-        telegram_send(
-            "🔴 *IQ OPTION SCANNER*\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "Missing required credentials:\n"
-            + "\n".join(
-                f"• `{x}`"
-                for x in missing
-            )
+            "Missing:",
+            ", ".join(missing)
         )
 
         return
+
 
     # --------------------------------------------------------
     # CONNECT
@@ -1545,8 +2206,10 @@ def main():
 
     api = connect_iq()
 
+
     if api is None:
         return
+
 
     # --------------------------------------------------------
     # CONTINUOUS LOOP
@@ -1558,9 +2221,13 @@ def main():
 
             cycle_started = time.time()
 
+
             try:
 
-                run_scan_cycle(api)
+                run_scan_cycle(
+                    api
+                )
+
 
             except Exception as e:
 
@@ -1571,17 +2238,19 @@ def main():
 
                 traceback.print_exc()
 
+
                 telegram_send(
                     "🟠 *IQ OPTION SCANNER*\n"
                     "━━━━━━━━━━━━━━━━━━\n"
                     "Scan cycle encountered "
                     "an error.\n"
-                    "The scanner will continue "
-                    "and retry in 5 minutes."
+                    "The scanner will retry "
+                    "in 5 minutes."
                 )
 
+
             # ------------------------------------------------
-            # WAIT EXACTLY UNTIL NEXT 5-MINUTE CYCLE
+            # NEXT CYCLE
             # ------------------------------------------------
 
             next_scan = (
@@ -1589,27 +2258,33 @@ def main():
                 + SCAN_INTERVAL_SECONDS
             )
 
+
             wait_seconds = max(
                 1,
                 int(
-                    next_scan - time.time()
+                    next_scan
+                    - time.time()
                 ),
             )
 
+
             print(
-                f"Next scan in "
+                f"Next OTC scan in "
                 f"{wait_seconds} seconds."
             )
+
 
             time.sleep(
                 wait_seconds
             )
 
+
     except KeyboardInterrupt:
 
         print(
-            "Scanner stopped manually."
+            "Scanner stopped."
         )
+
 
     except Exception as e:
 
@@ -1620,12 +2295,16 @@ def main():
 
         traceback.print_exc()
 
+
     finally:
 
         try:
+
             api.close()
+
         except Exception:
             pass
+
 
         print(
             "IQ Option connection closed."
@@ -1637,4 +2316,5 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
+
     main()
