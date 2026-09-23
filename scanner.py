@@ -5,18 +5,27 @@ import traceback
 from datetime import datetime, timezone
 
 import requests
-
 from iqoptionapi.stable_api import IQ_Option
-import iqoptionapi.constants as OP_code
 
 
 # ============================================================
-# PRECISION IQ OPTION OTC SCANNER V4
+# BACK TO TREND — IQ OPTION OTC SCANNER
 # ============================================================
+# READ-ONLY SCANNER
+# No automatic trading.
 #
-# READ-ONLY
-# NO automatic trading
+# STRATEGY:
+#   1. 5M trend context
+#   2. Price pulls back toward trend/level
+#   3. 1M reaches a meaningful level
+#   4. Confirmation candle triggers entry
+#   5. Enough room before opposing structure
 #
+# Primary trigger:
+#   CALL = Bullish Engulfing / Bullish Pin Bar
+#   PUT  = Bearish Engulfing / Bearish Pin Bar
+#
+# Reference expiry: 5 minutes
 # ============================================================
 
 
@@ -32,715 +41,103 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 
 # ============================================================
-# STRATEGY SETTINGS
+# SETTINGS
 # ============================================================
 
-MIN_SCORE = 80
-
-MIN_ADX = 18.0
-
-MIN_CANDLE_STRENGTH = 0.40
-
-MAX_EXTENSION_ATR = 2.80
-
-MIN_ROOM_ATR = 0.60
-
-MIN_CONFIRMATIONS = 4
-
-MIN_SCORE_GAP = 10
-
-
-# ============================================================
-# DATA SETTINGS
-# ============================================================
-
-CANDLE_COUNT_5M = 160
-CANDLE_COUNT_1M = 160
+PRACTICE = True
 
 MAX_OTC_ASSETS = 60
+
+CANDLES_5M = 160
+CANDLES_1M = 160
+
+TF_5M = 300
+TF_1M = 60
 
 EXPIRY_MINUTES = 5
 
 LOCK_SECONDS = 300
 
-BALANCE_MODE = "PRACTICE"
+# Trend
+EMA_FAST = 20
+EMA_SLOW = 50
+
+# RSI
+RSI_PERIOD = 14
+
+# ATR
+ATR_PERIOD = 14
+
+# Pullback tolerance
+PULLBACK_ATR = 0.45
+
+# Minimum room to opposing structure
+MIN_ROOM_ATR = 0.80
+
+# Recent structure
+SWING_LOOKBACK = 25
+
+# Trigger candle minimum body
+MIN_TRIGGER_BODY = 0.35
+
+# Do not signal if the candle is too extended
+MAX_TRIGGER_RANGE_ATR = 1.80
 
 
 # ============================================================
-# GENERAL HELPERS
+# RUNTIME
 # ============================================================
 
-def now_utc():
-    return datetime.now(timezone.utc).strftime(
-        "%Y-%m-%d %H:%M:%S UTC"
-    )
+iq = None
+last_signal_time = {}
+
+# Prevent repeated signals for the same candle
+last_signal_candle = {}
 
 
-def safe_float(value, default=0.0):
+# ============================================================
+# TELEGRAM
+# ============================================================
 
-    try:
-
-        value = float(value)
-
-        if math.isfinite(value):
-            return value
-
-    except Exception:
-        pass
-
-    return default
-
-
-def send_telegram(text):
-
+def telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-
-        print("\n[TELEGRAM DISABLED]")
-        print(text)
-
-        return False
-
-    url = (
-        "https://api.telegram.org/bot"
-        f"{TELEGRAM_TOKEN}/sendMessage"
-    )
-
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True,
-    }
+        print(message)
+        return
 
     try:
+        url = (
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        )
 
-        response = requests.post(
+        requests.post(
             url,
-            json=payload,
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message,
+                "parse_mode": "HTML",
+            },
             timeout=15,
         )
 
-        if response.ok:
-            return True
-
-        print(
-            "[TELEGRAM ERROR]",
-            response.status_code,
-            response.text[:500],
-        )
-
     except Exception as e:
-
-        print(
-            "[TELEGRAM EXCEPTION]",
-            repr(e),
-        )
-
-    return False
+        print("Telegram error:", e)
 
 
 # ============================================================
-# OTC NAME DETECTION
+# BASIC MATH
 # ============================================================
 
-def is_otc_name(name):
-
-    if not isinstance(name, str):
-        return False
-
-    upper = name.upper().strip()
-
-    return (
-        upper.endswith("-OTC")
-        or "-OTC." in upper
-        or "_OTC" in upper
-        or " OTC" in upper
-    )
-
-
-def clean_active_name(raw_name):
-
-    if raw_name is None:
-        return None
-
-    name = str(raw_name).strip()
-
-    if "." in name:
-
-        parts = name.split(".")
-
-        name = parts[-1]
-
-    return name.strip()
-
-
-# ============================================================
-# RAW INITIALIZATION DATA
-# ============================================================
-
-def get_raw_initialization(api):
-
-    print("\n" + "=" * 70)
-    print("RAW IQ OPTION INITIALIZATION")
-    print("=" * 70)
-
+def safe_float(value, default=0.0):
     try:
-
-        print(
-            "[RAW] Requesting "
-            "get-initialization-data..."
-        )
-
-        data = api.get_all_init_v2()
-
-        if data:
-
-            print(
-                "[RAW] Initialization received."
-            )
-
-            print(
-                "[RAW] Type:",
-                type(data).__name__,
-            )
-
-            return data
-
-    except Exception as e:
-
-        print(
-            "[RAW V2 ERROR]",
-            repr(e),
-        )
-
-    try:
-
-        print(
-            "[RAW] Trying legacy "
-            "api_option_init_all..."
-        )
-
-        data = api.get_all_init()
-
-        if data:
-
-            print(
-                "[RAW] Legacy initialization received."
-            )
-
-            return data
-
-    except Exception as e:
-
-        print(
-            "[RAW LEGACY ERROR]",
-            repr(e),
-        )
-
-    print(
-        "[RAW] IQ Option returned no initialization data."
-    )
-
-    return None
-
-
-# ============================================================
-# ACTIVE ID REGISTRATION
-# ============================================================
-
-def register_active_id(name, active_id):
-
-    if not name:
-        return False
-
-    try:
-
-        active_id = int(active_id)
-
+        return float(value)
     except Exception:
+        return default
 
-        return False
 
-    try:
-
-        OP_code.ACTIVES[name] = active_id
-
-        return True
-
-    except Exception as e:
-
-        print(
-            "[ACTIVE MAP ERROR]",
-            name,
-            active_id,
-            repr(e),
-        )
-
-        return False
-
-
-# ============================================================
-# RAW OTC DISCOVERY
-# ============================================================
-
-def discover_otc_from_initialization(data):
-
-    print("\n" + "=" * 70)
-    print("DIRECT OTC DISCOVERY")
-    print("=" * 70)
-
-    if not isinstance(data, dict):
-
-        print(
-            "[DISCOVERY] Unexpected initialization type:",
-            type(data).__name__,
-        )
-
-        return []
-
-    root = data
-
-    if isinstance(data.get("result"), dict):
-
-        print(
-            "[DISCOVERY] Legacy 'result' wrapper detected."
-        )
-
-        root = data["result"]
-
-    print(
-        "[DISCOVERY] Top-level keys:"
-    )
-
-    for key in root.keys():
-
-        print(
-            "  -",
-            key
-        )
-
-    found = []
-
-    seen = set()
-
-    for market_type in (
-        "binary",
-        "turbo",
-    ):
-
-        section = root.get(market_type)
-
-        if not isinstance(section, dict):
-
-            print(
-                f"\n[{market_type.upper()}] "
-                "section not found."
-            )
-
-            continue
-
-        actives = section.get("actives")
-
-        if not isinstance(actives, dict):
-
-            print(
-                f"\n[{market_type.upper()}] "
-                "No actives dictionary."
-            )
-
-            continue
-
-        print(
-            f"\n[{market_type.upper()}] "
-            f"Total raw actives: {len(actives)}"
-        )
-
-        otc_count = 0
-
-        open_count = 0
-
-        for active_id, active in actives.items():
-
-            if not isinstance(active, dict):
-                continue
-
-            raw_name = active.get("name")
-
-            name = clean_active_name(
-                raw_name
-            )
-
-            if not is_otc_name(name):
-                continue
-
-            otc_count += 1
-
-            enabled = (
-                active.get("enabled")
-                is True
-            )
-
-            suspended = (
-                active.get("is_suspended")
-                is True
-            )
-
-            is_open = (
-                enabled
-                and not suspended
-            )
-
-            print(
-                f"  OTC: {name} "
-                f"| ID={active_id} "
-                f"| enabled={enabled} "
-                f"| suspended={suspended} "
-                f"| open={is_open}"
-            )
-
-            if not is_open:
-                continue
-
-            open_count += 1
-
-            register_active_id(
-                name,
-                active_id,
-            )
-
-            unique_key = (
-                market_type,
-                name,
-            )
-
-            if unique_key in seen:
-                continue
-
-            seen.add(unique_key)
-
-            found.append(
-                {
-                    "asset": name,
-                    "market_type": market_type,
-                    "active_id": int(active_id),
-                    "enabled": enabled,
-                    "suspended": suspended,
-                }
-            )
-
-        print(
-            f"[{market_type.upper()}] "
-            f"OTC names={otc_count} "
-            f"| OPEN={open_count}"
-        )
-
-    digital_section = root.get(
-        "digital"
-    )
-
-    if isinstance(digital_section, dict):
-
-        print(
-            "\n[DIGITAL] Initialization section found."
-        )
-
-    else:
-
-        print(
-            "\n[DIGITAL] No direct initialization "
-            "section available."
-        )
-
-    found.sort(
-        key=lambda x: (
-            x["asset"],
-            x["market_type"],
-        )
-    )
-
-    print("\n" + "-" * 70)
-
-    print(
-        f"TOTAL OPEN OTC INSTRUMENTS: {len(found)}"
-    )
-
-    if found:
-
-        print(
-            "\n[REAL OTC ASSETS]"
-        )
-
-        for index, item in enumerate(
-            found,
-            start=1,
-        ):
-
-            print(
-                f"{index:02d}. "
-                f"{item['asset']:<20} "
-                f"{item['market_type']:<8} "
-                f"ID={item['active_id']}"
-            )
-
-    else:
-
-        print(
-            "\n[NO OPEN OTC ASSETS]"
-        )
-
-    return found[:MAX_OTC_ASSETS]
-
-
-# ============================================================
-# CANDLE NORMALIZATION
-# ============================================================
-
-def normalize_candles(raw):
-
-    if not raw:
-        return []
-
-    result = []
-
-    for candle in raw:
-
-        try:
-
-            item = {
-                "from": safe_float(
-                    candle.get("from")
-                ),
-
-                "open": safe_float(
-                    candle.get("open")
-                ),
-
-                "close": safe_float(
-                    candle.get("close")
-                ),
-
-                "low": safe_float(
-                    candle.get(
-                        "min",
-                        candle.get("low"),
-                    )
-                ),
-
-                "high": safe_float(
-                    candle.get(
-                        "max",
-                        candle.get("high"),
-                    )
-                ),
-
-                "volume": safe_float(
-                    candle.get("volume")
-                ),
-            }
-
-            if (
-                item["open"] > 0
-                and item["close"] > 0
-                and item["low"] > 0
-                and item["high"] > 0
-            ):
-
-                result.append(item)
-
-        except Exception:
-
-            continue
-
-    result.sort(
-        key=lambda x: x["from"]
-    )
-
-    return result
-
-
-# ============================================================
-# CLOSED CANDLES ONLY
-# ============================================================
-
-def remove_open_candle(
-    candles,
-    timeframe_seconds,
-):
-
-    if len(candles) < 3:
-        return candles
-
-    current_time = time.time()
-
-    completed = []
-
-    for candle in candles:
-
-        candle_start = candle["from"]
-
-        if (
-            candle_start
-            + timeframe_seconds
-            <= current_time
-        ):
-
-            completed.append(candle)
-
-    return completed
-
-
-# ============================================================
-# CANDLE FETCH
-# ============================================================
-
-def get_candles_safe(
-    api,
-    asset,
-    interval,
-    count,
-):
-
-    try:
-
-        end_time = time.time()
-
-        raw = api.get_candles(
-            asset,
-            interval,
-            count,
-            end_time,
-        )
-
-        candles = normalize_candles(raw)
-
-        candles = remove_open_candle(
-            candles,
-            interval,
-        )
-
-        return candles
-
-    except Exception as e:
-
-        print(
-            f"[CANDLE ERROR] "
-            f"{asset} "
-            f"{interval}s -> "
-            f"{repr(e)}"
-        )
-
-        return []
-
-
-# ============================================================
-# CANDLE ACCESS TEST
-# ============================================================
-
-def test_candle_access(
-    api,
-    otc_assets,
-):
-
-    print("\n" + "=" * 70)
-    print("REAL OTC CANDLE ACCESS TEST")
-    print("=" * 70)
-
-    working = []
-
-    for item in otc_assets:
-
-        asset = item["asset"]
-
-        active_id = item["active_id"]
-
-        market_type = item["market_type"]
-
-        print(
-            f"\n[TEST] {asset}"
-        )
-
-        print(
-            f"       market={market_type}"
-        )
-
-        print(
-            f"       active_id={active_id}"
-        )
-
-        mapped_id = OP_code.ACTIVES.get(
-            asset
-        )
-
-        print(
-            f"       mapped_id={mapped_id}"
-        )
-
-        if mapped_id is None:
-
-            print(
-                "       RESULT: NO ACTIVE ID MAPPING"
-            )
-
-            continue
-
-        candles = get_candles_safe(
-            api,
-            asset,
-            60,
-            10,
-        )
-
-        if len(candles) >= 5:
-
-            latest = candles[-1]
-
-            print(
-                "       RESULT: OK"
-            )
-
-            print(
-                f"       candles={len(candles)}"
-            )
-
-            print(
-                f"       last_close="
-                f"{latest['close']}"
-            )
-
-            working.append(item)
-
-        else:
-
-            print(
-                "       RESULT: FAILED"
-            )
-
-            print(
-                f"       candles={len(candles)}"
-            )
-
-    print("\n" + "-" * 70)
-
-    print(
-        f"WORKING OTC CANDLE FEEDS: "
-        f"{len(working)}"
-    )
-
-    if working:
-
-        print(
-            "\n[WORKING OTC ASSETS]"
-        )
-
-        for item in working:
-
-            print(
-                f"  {item['asset']} "
-                f"| {item['market_type']} "
-                f"| ID={item['active_id']}"
-            )
-
-    return working
+def mean(values):
+    if not values:
+        return 0.0
+    return sum(values) / len(values)
 
 
 # ============================================================
@@ -748,37 +145,22 @@ def test_candle_access(
 # ============================================================
 
 def ema(values, period):
-
     if len(values) < period:
         return []
 
-    multiplier = (
-        2.0 / (period + 1.0)
-    )
+    result = []
 
-    result = [None] * len(values)
+    multiplier = 2.0 / (period + 1.0)
 
-    seed = (
-        sum(values[:period])
-        / period
-    )
+    current = mean(values[:period])
+    result.append(current)
 
-    result[period - 1] = seed
-
-    previous = seed
-
-    for i in range(
-        period,
-        len(values),
-    ):
-
-        previous = (
-            (values[i] - previous)
-            * multiplier
-            + previous
+    for price in values[period:]:
+        current = (
+            (price - current) * multiplier
+            + current
         )
-
-        result[i] = previous
+        result.append(current)
 
     return result
 
@@ -788,95 +170,95 @@ def ema(values, period):
 # ============================================================
 
 def rsi(values, period=14):
-
-    if len(values) < period + 1:
+    if len(values) <= period:
         return []
 
     gains = []
     losses = []
 
-    for i in range(
-        1,
-        len(values),
-    ):
+    for i in range(1, period + 1):
+        change = values[i] - values[i - 1]
 
-        change = (
-            values[i]
-            - values[i - 1]
-        )
-
-        if change > 0:
-
+        if change >= 0:
             gains.append(change)
-            losses.append(0.0)
-
+            losses.append(0)
         else:
+            gains.append(0)
+            losses.append(abs(change))
 
-            gains.append(0.0)
-            losses.append(
-                abs(change)
-            )
+    avg_gain = mean(gains)
+    avg_loss = mean(losses)
 
-    avg_gain = (
-        sum(gains[:period])
-        / period
-    )
+    result = []
 
-    avg_loss = (
-        sum(losses[:period])
-        / period
-    )
+    if avg_loss == 0:
+        result.append(100.0)
+    else:
+        rs = avg_gain / avg_loss
+        result.append(100.0 - (100.0 / (1.0 + rs)))
 
-    result = [None] * len(values)
+    for i in range(period + 1, len(values)):
+        change = values[i] - values[i - 1]
 
-    def calculate(
-        gain,
-        loss,
-    ):
-
-        if loss == 0:
-            return 100.0
-
-        rs = gain / loss
-
-        return (
-            100.0
-            - (
-                100.0
-                / (1.0 + rs)
-            )
-        )
-
-    result[period] = calculate(
-        avg_gain,
-        avg_loss,
-    )
-
-    for i in range(
-        period,
-        len(gains),
-    ):
+        gain = max(change, 0)
+        loss = max(-change, 0)
 
         avg_gain = (
-            (
-                avg_gain
-                * (period - 1)
-            )
-            + gains[i]
-        ) / period
+            (avg_gain * (period - 1) + gain)
+            / period
+        )
 
         avg_loss = (
-            (
-                avg_loss
-                * (period - 1)
-            )
-            + losses[i]
-        ) / period
-
-        result[i + 1] = calculate(
-            avg_gain,
-            avg_loss,
+            (avg_loss * (period - 1) + loss)
+            / period
         )
+
+        if avg_loss == 0:
+            result.append(100.0)
+        else:
+            rs = avg_gain / avg_loss
+            result.append(
+                100.0 - (100.0 / (1.0 + rs))
+            )
+
+    return result
+
+
+# ============================================================
+# ATR
+# ============================================================
+
+def atr(candles, period=14):
+    if len(candles) <= period:
+        return []
+
+    trs = []
+
+    for i in range(1, len(candles)):
+        high = candles[i]["max"]
+        low = candles[i]["min"]
+        previous_close = candles[i - 1]["close"]
+
+        tr = max(
+            high - low,
+            abs(high - previous_close),
+            abs(low - previous_close),
+        )
+
+        trs.append(tr)
+
+    if len(trs) < period:
+        return []
+
+    current = mean(trs[:period])
+    result = [current]
+
+    for tr in trs[period:]:
+        current = (
+            (current * (period - 1) + tr)
+            / period
+        )
+        result.append(current)
 
     return result
 
@@ -885,1569 +267,1118 @@ def rsi(values, period=14):
 # MACD
 # ============================================================
 
-def macd(
-    values,
-    fast_period=12,
-    slow_period=26,
-    signal_period=9,
-):
+def macd(values):
+    if len(values) < 35:
+        return None
 
-    fast_line = ema(
-        values,
-        fast_period,
+    fast = ema(values, 12)
+    slow = ema(values, 26)
+
+    if not fast or not slow:
+        return None
+
+    # Align approximately to the slow EMA timeline
+    fast_aligned = fast[-len(slow):]
+
+    macd_line = [
+        a - b
+        for a, b in zip(fast_aligned, slow)
+    ]
+
+    if len(macd_line) < 9:
+        return None
+
+    signal_line = ema(macd_line, 9)
+
+    if not signal_line:
+        return None
+
+    macd_value = macd_line[-1]
+    signal_value = signal_line[-1]
+
+    return {
+        "macd": macd_value,
+        "signal": signal_value,
+        "histogram": macd_value - signal_value,
+    }
+
+
+# ============================================================
+# CANDLE HELPERS
+# ============================================================
+
+def candle_range(c):
+    return max(c["max"] - c["min"], 1e-12)
+
+
+def candle_body(c):
+    return abs(c["close"] - c["open"])
+
+
+def bullish(c):
+    return c["close"] > c["open"]
+
+
+def bearish(c):
+    return c["close"] < c["open"]
+
+
+# ============================================================
+# ENGULFING
+# ============================================================
+
+def bullish_engulfing(previous, current):
+    if not bearish(previous):
+        return False
+
+    if not bullish(current):
+        return False
+
+    previous_body_high = max(
+        previous["open"],
+        previous["close"],
     )
 
-    slow_line = ema(
-        values,
-        slow_period,
+    previous_body_low = min(
+        previous["open"],
+        previous["close"],
     )
 
-    macd_line = [None] * len(values)
-
-    valid_values = []
-
-    for i in range(
-        len(values)
-    ):
-
-        if (
-            fast_line[i] is not None
-            and slow_line[i] is not None
-        ):
-
-            value = (
-                fast_line[i]
-                - slow_line[i]
-            )
-
-            macd_line[i] = value
-
-            valid_values.append(value)
-
-    signal_values = ema(
-        valid_values,
-        signal_period,
+    current_body_high = max(
+        current["open"],
+        current["close"],
     )
 
-    signal_line = [None] * len(values)
-
-    valid_index = 0
-
-    for i in range(
-        len(values)
-    ):
-
-        if macd_line[i] is not None:
-
-            if (
-                valid_index
-                < len(signal_values)
-            ):
-
-                signal_line[i] = (
-                    signal_values[
-                        valid_index
-                    ]
-                )
-
-            valid_index += 1
-
-    histogram = [None] * len(values)
-
-    for i in range(
-        len(values)
-    ):
-
-        if (
-            macd_line[i] is not None
-            and signal_line[i] is not None
-        ):
-
-            histogram[i] = (
-                macd_line[i]
-                - signal_line[i]
-            )
+    current_body_low = min(
+        current["open"],
+        current["close"],
+    )
 
     return (
-        macd_line,
-        signal_line,
-        histogram,
+        current_body_high >= previous_body_high
+        and
+        current_body_low <= previous_body_low
+        and
+        candle_body(current) >= candle_body(previous)
+    )
+
+
+def bearish_engulfing(previous, current):
+    if not bullish(previous):
+        return False
+
+    if not bearish(current):
+        return False
+
+    previous_body_high = max(
+        previous["open"],
+        previous["close"],
+    )
+
+    previous_body_low = min(
+        previous["open"],
+        previous["close"],
+    )
+
+    current_body_high = max(
+        current["open"],
+        current["close"],
+    )
+
+    current_body_low = min(
+        current["open"],
+        current["close"],
+    )
+
+    return (
+        current_body_high >= previous_body_high
+        and
+        current_body_low <= previous_body_low
+        and
+        candle_body(current) >= candle_body(previous)
     )
 
 
 # ============================================================
-# ATR
+# PIN BAR
 # ============================================================
 
-def atr(
-    candles,
-    period=14,
+def bullish_pin_bar(c):
+    rng = candle_range(c)
+    body = candle_body(c)
+
+    upper_wick = c["max"] - max(c["open"], c["close"])
+    lower_wick = min(c["open"], c["close"]) - c["min"]
+
+    body_ratio = body / rng
+    lower_ratio = lower_wick / rng
+
+    return (
+        bullish(c)
+        and
+        lower_ratio >= 0.50
+        and
+        lower_wick >= body * 1.5
+        and
+        body_ratio <= 0.45
+    )
+
+
+def bearish_pin_bar(c):
+    rng = candle_range(c)
+    body = candle_body(c)
+
+    upper_wick = c["max"] - max(c["open"], c["close"])
+    lower_wick = min(c["open"], c["close"]) - c["min"]
+
+    body_ratio = body / rng
+    upper_ratio = upper_wick / rng
+
+    return (
+        bearish(c)
+        and
+        upper_ratio >= 0.50
+        and
+        upper_wick >= body * 1.5
+        and
+        body_ratio <= 0.45
+    )
+
+
+# ============================================================
+# STRUCTURE LEVELS
+# ============================================================
+
+def recent_support(candles, lookback=25):
+    data = candles[-lookback:]
+
+    if not data:
+        return None
+
+    lows = [c["min"] for c in data]
+
+    return min(lows)
+
+
+def recent_resistance(candles, lookback=25):
+    data = candles[-lookback:]
+
+    if not data:
+        return None
+
+    highs = [c["max"] for c in data]
+
+    return max(highs)
+
+
+# ============================================================
+# PULLBACK DETECTION
+# ============================================================
+
+def pullback_to_bullish_zone(
+    candles_1m,
+    ema20,
+    ema50,
+    current,
+    atr_value,
 ):
+    tolerance = atr_value * PULLBACK_ATR
 
-    if len(candles) < period + 1:
-        return []
+    lower_zone = min(ema20, ema50) - tolerance
+    upper_zone = max(ema20, ema50) + tolerance
 
-    true_ranges = []
-
-    for i in range(
-        1,
-        len(candles),
-    ):
-
-        high = candles[i]["high"]
-        low = candles[i]["low"]
-
-        previous_close = (
-            candles[i - 1]["close"]
-        )
-
-        tr = max(
-            high - low,
-            abs(
-                high
-                - previous_close
-            ),
-            abs(
-                low
-                - previous_close
-            ),
-        )
-
-        true_ranges.append(tr)
-
-    result = [None] * len(candles)
-
-    current = (
-        sum(true_ranges[:period])
-        / period
+    return (
+        current["min"] <= upper_zone
+        and
+        current["max"] >= lower_zone
     )
 
-    result[period] = current
 
-    for i in range(
-        period,
-        len(true_ranges),
-    ):
+def pullback_to_bearish_zone(
+    candles_1m,
+    ema20,
+    ema50,
+    current,
+    atr_value,
+):
+    tolerance = atr_value * PULLBACK_ATR
 
-        current = (
-            (
-                current
-                * (period - 1)
+    lower_zone = min(ema20, ema50) - tolerance
+    upper_zone = max(ema20, ema50) + tolerance
+
+    return (
+        current["min"] <= upper_zone
+        and
+        current["max"] >= lower_zone
+    )
+
+
+# ============================================================
+# OTC DISCOVERY
+# ============================================================
+
+def discover_otc_assets():
+    assets = set()
+
+    try:
+        data = None
+
+        # Newer method
+        try:
+            data = iq.get_all_init_v2()
+        except Exception:
+            data = None
+
+        # Legacy fallback
+        if not data:
+            try:
+                data = iq.get_all_open_time()
+            except Exception:
+                data = None
+
+        if not data:
+            return []
+
+        def recursive_scan(obj):
+            if isinstance(obj, dict):
+
+                name_candidates = []
+
+                for key in (
+                    "name",
+                    "active_name",
+                    "symbol",
+                    "instrument",
+                    "pair",
+                ):
+                    value = obj.get(key)
+
+                    if isinstance(value, str):
+                        name_candidates.append(value)
+
+                for name in name_candidates:
+                    if "-OTC" in name.upper():
+                        assets.add(name)
+
+                for key, value in obj.items():
+
+                    if isinstance(key, str):
+                        if "-OTC" in key.upper():
+                            assets.add(key)
+
+                    recursive_scan(value)
+
+            elif isinstance(obj, list):
+                for item in obj:
+                    recursive_scan(item)
+
+        recursive_scan(data)
+
+    except Exception as e:
+        print("OTC discovery error:", e)
+
+    # Remove obvious non-symbol junk
+    cleaned = []
+
+    for asset in assets:
+        if not isinstance(asset, str):
+            continue
+
+        asset = asset.strip()
+
+        if not asset:
+            continue
+
+        if "-OTC" not in asset.upper():
+            continue
+
+        cleaned.append(asset)
+
+    cleaned = sorted(set(cleaned))
+
+    return cleaned[:MAX_OTC_ASSETS]
+
+
+# ============================================================
+# CANDLE NORMALIZATION
+# ============================================================
+
+def normalize_candles(raw):
+    result = []
+
+    if not raw:
+        return result
+
+    for c in raw:
+        try:
+            result.append(
+                {
+                    "from": int(c.get("from", 0)),
+                    "open": safe_float(c.get("open")),
+                    "close": safe_float(c.get("close")),
+                    "min": safe_float(
+                        c.get("min", c.get("low"))
+                    ),
+                    "max": safe_float(
+                        c.get("max", c.get("high"))
+                    ),
+                }
             )
-            + true_ranges[i]
-        ) / period
+        except Exception:
+            continue
 
-        result[i + 1] = current
+    result.sort(key=lambda x: x["from"])
 
     return result
 
 
 # ============================================================
-# ADX / DMI
+# GET CLOSED CANDLES
 # ============================================================
 
-def adx_dmi(
-    candles,
-    period=14,
-):
+def get_closed_candles(asset, timeframe, count):
+    try:
+        now = int(time.time())
 
-    if len(candles) < (
-        period * 2 + 5
-    ):
-
-        return [], [], []
-
-    tr_values = []
-    plus_dm = []
-    minus_dm = []
-
-    for i in range(
-        1,
-        len(candles),
-    ):
-
-        high = candles[i]["high"]
-        low = candles[i]["low"]
-
-        previous_high = (
-            candles[i - 1]["high"]
+        raw = iq.get_candles(
+            asset,
+            timeframe,
+            count,
+            now,
         )
 
-        previous_low = (
-            candles[i - 1]["low"]
-        )
+        candles = normalize_candles(raw)
 
-        previous_close = (
-            candles[i - 1]["close"]
-        )
+        if not candles:
+            return []
 
-        up_move = (
-            high - previous_high
-        )
+        current_bucket = int(time.time() // timeframe) * timeframe
 
-        down_move = (
-            previous_low - low
-        )
-
-        plus = (
-            up_move
-            if (
-                up_move > down_move
-                and up_move > 0
-            )
-            else 0.0
-        )
-
-        minus = (
-            down_move
-            if (
-                down_move > up_move
-                and down_move > 0
-            )
-            else 0.0
-        )
-
-        tr = max(
-            high - low,
-            abs(
-                high
-                - previous_close
-            ),
-            abs(
-                low
-                - previous_close
-            ),
-        )
-
-        tr_values.append(tr)
-        plus_dm.append(plus)
-        minus_dm.append(minus)
-
-    if len(tr_values) < period:
-
-        return [], [], []
-
-    atr_smoothed = sum(
-        tr_values[:period]
-    )
-
-    plus_smoothed = sum(
-        plus_dm[:period]
-    )
-
-    minus_smoothed = sum(
-        minus_dm[:period]
-    )
-
-    dx_values = []
-
-    plus_di_values = []
-
-    minus_di_values = []
-
-    for i in range(
-        period,
-        len(tr_values),
-    ):
-
-        if i > period:
-
-            atr_smoothed = (
-                atr_smoothed
-                - (
-                    atr_smoothed
-                    / period
-                )
-                + tr_values[i]
-            )
-
-            plus_smoothed = (
-                plus_smoothed
-                - (
-                    plus_smoothed
-                    / period
-                )
-                + plus_dm[i]
-            )
-
-            minus_smoothed = (
-                minus_smoothed
-                - (
-                    minus_smoothed
-                    / period
-                )
-                + minus_dm[i]
-            )
-
-        if atr_smoothed == 0:
-
-            plus_di = 0.0
-            minus_di = 0.0
-
-        else:
-
-            plus_di = (
-                100.0
-                * plus_smoothed
-                / atr_smoothed
-            )
-
-            minus_di = (
-                100.0
-                * minus_smoothed
-                / atr_smoothed
-            )
-
-        denominator = (
-            plus_di
-            + minus_di
-        )
-
-        if denominator == 0:
-
-            dx = 0.0
-
-        else:
-
-            dx = (
-                100.0
-                * abs(
-                    plus_di
-                    - minus_di
-                )
-                / denominator
-            )
-
-        plus_di_values.append(
-            plus_di
-        )
-
-        minus_di_values.append(
-            minus_di
-        )
-
-        dx_values.append(dx)
-
-    if len(dx_values) < period:
-
-        return [], [], []
-
-    adx_values = [
-        None
-    ] * len(candles)
-
-    plus_result = [
-        None
-    ] * len(candles)
-
-    minus_result = [
-        None
-    ] * len(candles)
-
-    first_adx = (
-        sum(dx_values[:period])
-        / period
-    )
-
-    base_index = (
-        period
-        + period
-        - 1
-    )
-
-    if base_index < len(candles):
-
-        adx_values[
-            base_index
-        ] = first_adx
-
-        plus_result[
-            base_index
-        ] = plus_di_values[
-            period - 1
+        # Remove currently-forming candle
+        candles = [
+            c
+            for c in candles
+            if c["from"] < current_bucket
         ]
 
-        minus_result[
-            base_index
-        ] = minus_di_values[
-            period - 1
-        ]
+        return candles
 
-    current_adx = first_adx
-
-    for i in range(
-        period,
-        len(dx_values),
-    ):
-
-        current_adx = (
-            (
-                current_adx
-                * (period - 1)
-            )
-            + dx_values[i]
-        ) / period
-
-        candle_index = (
-            period + i
+    except Exception as e:
+        print(
+            f"Candle error {asset} "
+            f"{timeframe}s:",
+            e,
         )
 
-        if candle_index < len(candles):
-
-            adx_values[
-                candle_index
-            ] = current_adx
-
-            plus_result[
-                candle_index
-            ] = plus_di_values[i]
-
-            minus_result[
-                candle_index
-            ] = minus_di_values[i]
-
-    return (
-        adx_values,
-        plus_result,
-        minus_result,
-    )
+        return []
 
 
 # ============================================================
-# CANDLE STRENGTH
+# TREND ANALYSIS
 # ============================================================
 
-def candle_strength(candle):
+def analyze_5m(candles):
+    if len(candles) < EMA_SLOW + 10:
+        return None
 
-    high = candle["high"]
-    low = candle["low"]
+    closes = [c["close"] for c in candles]
 
-    open_price = candle["open"]
-    close = candle["close"]
+    ema20_values = ema(closes, EMA_FAST)
+    ema50_values = ema(closes, EMA_SLOW)
 
-    candle_range = (
-        high - low
+    if len(ema20_values) < 3 or len(ema50_values) < 3:
+        return None
+
+    e20 = ema20_values[-1]
+    e20_prev = ema20_values[-3]
+
+    e50 = ema50_values[-1]
+    e50_prev = ema50_values[-3]
+
+    rsi_values = rsi(
+        closes,
+        RSI_PERIOD,
     )
 
-    if candle_range <= 0:
-        return 0.0
-
-    body = abs(
-        close - open_price
+    rsi_value = (
+        rsi_values[-1]
+        if rsi_values
+        else 50.0
     )
 
-    return (
-        body / candle_range
+    macd_data = macd(closes)
+
+    current = candles[-1]
+
+    bullish_context = (
+        e20 > e50
+        and
+        e20 >= e20_prev
+        and
+        current["close"] >= e20
     )
+
+    bearish_context = (
+        e20 < e50
+        and
+        e20 <= e20_prev
+        and
+        current["close"] <= e20
+    )
+
+    if bullish_context:
+        trend = "BULLISH"
+    elif bearish_context:
+        trend = "BEARISH"
+    else:
+        trend = "NEUTRAL"
+
+    return {
+        "trend": trend,
+        "ema20": e20,
+        "ema50": e50,
+        "rsi": rsi_value,
+        "macd": macd_data,
+        "price": current["close"],
+    }
 
 
 # ============================================================
-# MARKET STRUCTURE
+# BACK TO TREND STRATEGY
 # ============================================================
 
-def market_structure(
-    candles,
-    lookback=20,
+def evaluate_back_to_trend(
+    candles_5m,
+    candles_1m,
 ):
+    trend_data = analyze_5m(candles_5m)
 
-    if len(candles) < lookback:
+    if not trend_data:
+        return None
 
-        return "NEUTRAL"
+    trend = trend_data["trend"]
 
-    recent = candles[
-        -lookback:
+    if trend not in ("BULLISH", "BEARISH"):
+        return None
+
+    closes_1m = [
+        c["close"]
+        for c in candles_1m
     ]
 
-    highs = [
-        c["high"]
-        for c in recent
-    ]
-
-    lows = [
-        c["low"]
-        for c in recent
-    ]
-
-    half = (
-        len(recent) // 2
+    ema20_1m_values = ema(
+        closes_1m,
+        EMA_FAST,
     )
 
-    first_high = max(
-        highs[:half]
+    ema50_1m_values = ema(
+        closes_1m,
+        EMA_SLOW,
     )
 
-    second_high = max(
-        highs[half:]
+    atr_values = atr(
+        candles_1m,
+        ATR_PERIOD,
     )
 
-    first_low = min(
-        lows[:half]
-    )
+    if not ema20_1m_values:
+        return None
 
-    second_low = min(
-        lows[half:]
-    )
+    if not ema50_1m_values:
+        return None
 
-    if (
-        second_high > first_high
-        and second_low > first_low
-    ):
+    if not atr_values:
+        return None
 
-        return "BULLISH"
+    ema20_1m = ema20_1m_values[-1]
+    ema50_1m = ema50_1m_values[-1]
 
-    if (
-        second_high < first_high
-        and second_low < first_low
-    ):
+    atr_value = atr_values[-1]
 
-        return "BEARISH"
+    if atr_value <= 0:
+        return None
 
-    return "NEUTRAL"
+    current = candles_1m[-1]
+    previous = candles_1m[-2]
 
+    current_range = candle_range(current)
 
-# ============================================================
-# LAST VALID VALUE
-# ============================================================
+    # Reject abnormally large trigger candles
+    if current_range > atr_value * MAX_TRIGGER_RANGE_ATR:
+        return None
 
-def last_valid(values):
+    # ========================================================
+    # BULLISH SETUP
+    # ========================================================
 
-    for value in reversed(values):
+    if trend == "BULLISH":
 
-        if value is not None:
+        # 1. Pullback toward trend zone
+        pullback = pullback_to_bullish_zone(
+            candles_1m,
+            ema20_1m,
+            ema50_1m,
+            current,
+            atr_value,
+        )
 
-            return value
+        if not pullback:
+            return None
+
+        # 2. Meaningful support
+        support = recent_support(
+            candles_1m[:-1],
+            SWING_LOOKBACK,
+        )
+
+        if support is None:
+            return None
+
+        level_distance = abs(
+            current["min"] - support
+        )
+
+        level_tolerance = atr_value * 0.60
+
+        level_ok = (
+            current["min"] <=
+            support + level_tolerance
+        )
+
+        if not level_ok:
+            return None
+
+        # 3. Confirmation trigger
+        engulfing = bullish_engulfing(
+            previous,
+            current,
+        )
+
+        pinbar = bullish_pin_bar(current)
+
+        trigger = (
+            "BULLISH ENGULFING"
+            if engulfing
+            else
+            "BULLISH PIN BAR"
+            if pinbar
+            else
+            None
+        )
+
+        if trigger is None:
+            return None
+
+        # 4. RSI confirmation
+        rsi_ok = (
+            trend_data["rsi"] >= 50
+            and
+            trend_data["rsi"] <= 70
+        )
+
+        # 5. MACD confirmation
+        macd_ok = False
+
+        if trend_data["macd"]:
+            macd_ok = (
+                trend_data["macd"]["histogram"] >= 0
+            )
+
+        # 6. Room to resistance
+        resistance = recent_resistance(
+            candles_1m[:-1],
+            SWING_LOOKBACK,
+        )
+
+        if resistance is None:
+            return None
+
+        room = resistance - current["close"]
+
+        if room <= 0:
+            return None
+
+        room_atr = room / atr_value
+
+        if room_atr < MIN_ROOM_ATR:
+            return None
+
+        # Quality score is informational only.
+        score = 0
+
+        score += 25
+        score += 25
+        score += 25
+
+        if rsi_ok:
+            score += 10
+
+        if macd_ok:
+            score += 5
+
+        if room_atr >= 1.20:
+            score += 10
+
+        return {
+            "direction": "CALL",
+            "trend": "BULLISH",
+            "trigger": trigger,
+            "level": "SUPPORT RETEST",
+            "score": min(score, 100),
+            "rsi": trend_data["rsi"],
+            "macd_hist": (
+                trend_data["macd"]["histogram"]
+                if trend_data["macd"]
+                else 0.0
+            ),
+            "ema20": trend_data["ema20"],
+            "ema50": trend_data["ema50"],
+            "entry": current["close"],
+            "support": support,
+            "resistance": resistance,
+            "room": room,
+            "room_atr": room_atr,
+            "candle_time": current["from"],
+        }
+
+    # ========================================================
+    # BEARISH SETUP
+    # ========================================================
+
+    if trend == "BEARISH":
+
+        # 1. Pullback toward trend zone
+        pullback = pullback_to_bearish_zone(
+            candles_1m,
+            ema20_1m,
+            ema50_1m,
+            current,
+            atr_value,
+        )
+
+        if not pullback:
+            return None
+
+        # 2. Meaningful resistance
+        resistance = recent_resistance(
+            candles_1m[:-1],
+            SWING_LOOKBACK,
+        )
+
+        if resistance is None:
+            return None
+
+        level_tolerance = atr_value * 0.60
+
+        level_ok = (
+            current["max"] >=
+            resistance - level_tolerance
+        )
+
+        if not level_ok:
+            return None
+
+        # 3. Confirmation trigger
+        engulfing = bearish_engulfing(
+            previous,
+            current,
+        )
+
+        pinbar = bearish_pin_bar(current)
+
+        trigger = (
+            "BEARISH ENGULFING"
+            if engulfing
+            else
+            "BEARISH PIN BAR"
+            if pinbar
+            else
+            None
+        )
+
+        if trigger is None:
+            return None
+
+        # 4. RSI confirmation
+        rsi_ok = (
+            trend_data["rsi"] <= 50
+            and
+            trend_data["rsi"] >= 30
+        )
+
+        # 5. MACD confirmation
+        macd_ok = False
+
+        if trend_data["macd"]:
+            macd_ok = (
+                trend_data["macd"]["histogram"] <= 0
+            )
+
+        # 6. Room to support
+        support = recent_support(
+            candles_1m[:-1],
+            SWING_LOOKBACK,
+        )
+
+        if support is None:
+            return None
+
+        room = current["close"] - support
+
+        if room <= 0:
+            return None
+
+        room_atr = room / atr_value
+
+        if room_atr < MIN_ROOM_ATR:
+            return None
+
+        score = 0
+
+        score += 25
+        score += 25
+        score += 25
+
+        if rsi_ok:
+            score += 10
+
+        if macd_ok:
+            score += 5
+
+        if room_atr >= 1.20:
+            score += 10
+
+        return {
+            "direction": "PUT",
+            "trend": "BEARISH",
+            "trigger": trigger,
+            "level": "RESISTANCE RETEST",
+            "score": min(score, 100),
+            "rsi": trend_data["rsi"],
+            "macd_hist": (
+                trend_data["macd"]["histogram"]
+                if trend_data["macd"]
+                else 0.0
+            ),
+            "ema20": trend_data["ema20"],
+            "ema50": trend_data["ema50"],
+            "entry": current["close"],
+            "support": support,
+            "resistance": resistance,
+            "room": room,
+            "room_atr": room_atr,
+            "candle_time": current["from"],
+        }
 
     return None
 
 
 # ============================================================
-# ANALYZE ONE OTC ASSET
+# SIGNAL ID
 # ============================================================
 
-def analyze_asset(
-    api,
-    asset,
-):
+def make_signal_id(asset, direction, candle_time):
+    timestamp = datetime.fromtimestamp(
+        candle_time,
+        tz=timezone.utc,
+    ).strftime("%H%M%S")
 
-    candles_5m = get_candles_safe(
-        api,
+    clean_asset = (
+        asset
+        .replace("/", "")
+        .replace("-", "")
+        .replace(" ", "")
+    )
+
+    return f"{clean_asset}-{direction}-{timestamp}"
+
+
+# ============================================================
+# SEND SIGNAL
+# ============================================================
+
+def send_signal(asset, setup):
+    candle_time = setup["candle_time"]
+
+    signal_id = make_signal_id(
         asset,
-        300,
-        CANDLE_COUNT_5M,
+        setup["direction"],
+        candle_time,
     )
 
-    candles_1m = get_candles_safe(
-        api,
-        asset,
-        60,
-        CANDLE_COUNT_1M,
-    )
-
-    if len(candles_5m) < 80:
-
-        return None, (
-            f"{asset}: insufficient 5M candles "
-            f"({len(candles_5m)})"
-        )
-
-    if len(candles_1m) < 80:
-
-        return None, (
-            f"{asset}: insufficient 1M candles "
-            f"({len(candles_1m)})"
-        )
-
-    close_5m = [
-        c["close"]
-        for c in candles_5m
-    ]
-
-    close_1m = [
-        c["close"]
-        for c in candles_1m
-    ]
-
-    ema20_5 = ema(
-        close_5m,
-        20,
-    )
-
-    ema50_5 = ema(
-        close_5m,
-        50,
-    )
-
-    rsi_5 = rsi(
-        close_5m,
-        14,
-    )
-
-    macd_5, signal_5, hist_5 = macd(
-        close_5m
-    )
-
-    adx_5, plus_di_5, minus_di_5 = adx_dmi(
-        candles_5m,
-        14,
-    )
-
-    atr_5 = atr(
-        candles_5m,
-        14,
-    )
-
-    ema9_1 = ema(
-        close_1m,
-        9,
-    )
-
-    ema21_1 = ema(
-        close_1m,
-        21,
-    )
-
-    rsi_1 = rsi(
-        close_1m,
-        14,
-    )
-
-    macd_1, signal_1, hist_1 = macd(
-        close_1m
-    )
-
-    e20 = last_valid(
-        ema20_5
-    )
-
-    e50 = last_valid(
-        ema50_5
-    )
-
-    e9_1 = last_valid(
-        ema9_1
-    )
-
-    e21_1 = last_valid(
-        ema21_1
-    )
-
-    r5 = last_valid(
-        rsi_5
-    )
-
-    r1 = last_valid(
-        rsi_1
-    )
-
-    m5 = last_valid(
-        macd_5
-    )
-
-    s5 = last_valid(
-        signal_5
-    )
-
-    h5 = last_valid(
-        hist_5
-    )
-
-    m1 = last_valid(
-        macd_1
-    )
-
-    s1 = last_valid(
-        signal_1
-    )
-
-    h1 = last_valid(
-        hist_1
-    )
-
-    adx = last_valid(
-        adx_5
-    )
-
-    plus_di = last_valid(
-        plus_di_5
-    )
-
-    minus_di = last_valid(
-        minus_di_5
-    )
-
-    current_atr = last_valid(
-        atr_5
-    )
-
-    required = (
-        e20,
-        e50,
-        e9_1,
-        e21_1,
-        r5,
-        r1,
-        m5,
-        s5,
-        h5,
-        m1,
-        s1,
-        h1,
-        adx,
-        plus_di,
-        minus_di,
-        current_atr,
-    )
-
-    if any(
-        x is None
-        for x in required
-    ):
-
-        return None, (
-            f"{asset}: indicator calculation incomplete"
-        )
-
-    current_price = (
-        candles_1m[-1]["close"]
-    )
-
-    latest_5m = (
-        candles_5m[-1]
-    )
-
-    latest_1m = (
-        candles_1m[-1]
-    )
-
-    strength_5 = candle_strength(
-        latest_5m
-    )
-
-    strength_1 = candle_strength(
-        latest_1m
-    )
-
-    average_strength = (
-        strength_5
-        + strength_1
-    ) / 2.0
-
-    trend_5 = (
-        "BULLISH"
-        if e20 > e50
-        else
-        "BEARISH"
-        if e20 < e50
-        else
-        "NEUTRAL"
-    )
-
-    entry_1 = (
-        "BULLISH"
-        if e9_1 > e21_1
-        else
-        "BEARISH"
-        if e9_1 < e21_1
-        else
-        "NEUTRAL"
-    )
-
-    structure = market_structure(
-        candles_5m,
-        20,
-    )
-
-    extension_atr = 0.0
-
-    if current_atr > 0:
-
-        extension_atr = (
-            abs(
-                current_price
-                - e20
-            )
-            / current_atr
-        )
-
-    lookback = (
-        candles_5m[-20:]
-    )
-
-    resistance = max(
-        c["high"]
-        for c in lookback
-    )
-
-    support = min(
-        c["low"]
-        for c in lookback
-    )
-
-    if current_atr > 0:
-
-        room_up = (
-            resistance
-            - current_price
-        ) / current_atr
-
-        room_down = (
-            current_price
-            - support
-        ) / current_atr
-
-    else:
-
-        room_up = 0.0
-        room_down = 0.0
-
-    if adx < MIN_ADX:
-
-        return None, (
-            f"{asset}: NO TRADE | "
-            f"ADX {adx:.1f} < {MIN_ADX:.1f}"
-        )
-
-    if extension_atr >= MAX_EXTENSION_ATR:
-
-        return None, (
-            f"{asset}: NO TRADE | "
-            f"extension "
-            f"{extension_atr:.2f} ATR"
-        )
-
-    if average_strength < MIN_CANDLE_STRENGTH:
-
-        return None, (
-            f"{asset}: NO TRADE | "
-            f"candle strength "
-            f"{average_strength:.2f}"
-        )
-
-    call_score = 0
-    put_score = 0
-
-    call_confirmations = 0
-    put_confirmations = 0
-
-    if trend_5 == "BULLISH":
-
-        call_score += 20
-        call_confirmations += 1
-
-    elif trend_5 == "BEARISH":
-
-        put_score += 20
-        put_confirmations += 1
-
-    if entry_1 == "BULLISH":
-
-        call_score += 15
-        call_confirmations += 1
-
-    elif entry_1 == "BEARISH":
-
-        put_score += 15
-        put_confirmations += 1
-
-    if structure == "BULLISH":
-
-        call_score += 15
-        call_confirmations += 1
-
-    elif structure == "BEARISH":
-
-        put_score += 15
-        put_confirmations += 1
-
-    if plus_di > minus_di:
-
-        call_score += 10
-        call_confirmations += 1
-
-    elif minus_di > plus_di:
-
-        put_score += 10
-        put_confirmations += 1
-
-    if (
-        m5 > s5
-        and h5 > 0
-        and m1 > s1
-        and h1 > 0
-    ):
-
-        call_score += 10
-        call_confirmations += 1
-
-    elif (
-        m5 < s5
-        and h5 < 0
-        and m1 < s1
-        and h1 < 0
-    ):
-
-        put_score += 10
-        put_confirmations += 1
-
-    if (
-        45 <= r5 <= 67
-        and 45 <= r1 <= 67
-    ):
-
-        call_score += 10
-        call_confirmations += 1
-
-    elif (
-        33 <= r5 <= 55
-        and 33 <= r1 <= 55
-    ):
-
-        put_score += 10
-        put_confirmations += 1
-
-    if (
-        latest_5m["close"]
-        > latest_5m["open"]
-        and
-        latest_1m["close"]
-        > latest_1m["open"]
-    ):
-
-        call_score += 10
-        call_confirmations += 1
-
-    elif (
-        latest_5m["close"]
-        < latest_5m["open"]
-        and
-        latest_1m["close"]
-        < latest_1m["open"]
-    ):
-
-        put_score += 10
-        put_confirmations += 1
-
-    if adx >= 25:
-
-        if call_score > put_score:
-
-            call_score += 5
-
-        elif put_score > call_score:
-
-            put_score += 5
-
-    if extension_atr >= 2.0:
-
-        if call_score > put_score:
-
-            call_score -= 8
-
-        elif put_score > call_score:
-
-            put_score -= 8
-
-    call_score = max(
-        0,
-        call_score
-    )
-
-    put_score = max(
-        0,
-        put_score
-    )
-
-    if call_score > put_score:
-
-        direction = "CALL"
-
-        score = call_score
-
-        confirmations = (
-            call_confirmations
-        )
-
-        room = room_up
-
-        opposite_score = put_score
-
-    elif put_score > call_score:
-
-        direction = "PUT"
-
-        score = put_score
-
-        confirmations = (
-            put_confirmations
-        )
-
-        room = room_down
-
-        opposite_score = call_score
-
-    else:
-
-        return None, (
-            f"{asset}: NO TRADE | "
-            f"CALL {call_score} / "
-            f"PUT {put_score}"
-        )
-
-    if score < MIN_SCORE:
-
-        return None, (
-            f"{asset}: NO TRADE | "
-            f"{direction} score {score} "
-            f"< {MIN_SCORE}"
-        )
-
-    if confirmations < MIN_CONFIRMATIONS:
-
-        return None, (
-            f"{asset}: NO TRADE | "
-            f"confirmations "
-            f"{confirmations} "
-            f"< {MIN_CONFIRMATIONS}"
-        )
-
-    if (
-        score - opposite_score
-        < MIN_SCORE_GAP
-    ):
-
-        return None, (
-            f"{asset}: NO TRADE | "
-            f"score gap "
-            f"{score - opposite_score} "
-            f"< {MIN_SCORE_GAP}"
-        )
-
-    if room < MIN_ROOM_ATR:
-
-        return None, (
-            f"{asset}: NO TRADE | "
-            f"room {room:.2f} ATR "
-            f"< {MIN_ROOM_ATR:.2f}"
-        )
-
-    signal_id = (
-        f"{asset.replace('-', '')}-"
-        f"{direction}-"
-        f"{datetime.now(timezone.utc).strftime('%H%M%S')}"
-    )
-
-    signal = {
-
-        "signal_id": signal_id,
-
-        "asset": asset,
-
-        "direction": direction,
-
-        "score": score,
-
-        "price": current_price,
-
-        "trend_5m": trend_5,
-
-        "entry_1m": entry_1,
-
-        "structure": structure,
-
-        "adx": adx,
-
-        "rsi_5m": r5,
-
-        "rsi_1m": r1,
-
-        "plus_di": plus_di,
-
-        "minus_di": minus_di,
-
-        "extension_atr": extension_atr,
-
-        "room_up": room_up,
-
-        "room_down": room_down,
-
-        "confirmations": confirmations,
-
-        "timestamp": now_utc(),
-    }
-
-    return signal, None
-
-
-# ============================================================
-# TELEGRAM SIGNAL FORMAT
-# ============================================================
-
-def format_signal(signal):
-
-    emoji = (
+    entry_time = datetime.fromtimestamp(
+        candle_time,
+        tz=timezone.utc,
+    ).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    direction_icon = (
         "🟢"
-        if signal["direction"] == "CALL"
-        else
-        "🔴"
+        if setup["direction"] == "CALL"
+        else "🔴"
     )
 
-    return (
-        f"{emoji} *NEW QUALIFIED OTC SIGNAL*\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"*Asset:* `{signal['asset']}`\n"
-        f"*Direction:* *"
-        f"{signal['direction']}"
-        f" / "
-        f"{'UP' if signal['direction'] == 'CALL' else 'DOWN'}"
-        f"*\n"
-        f"*Score:* *{signal['score']}/100*\n"
-        f"*Reference expiry:* "
-        f"*{EXPIRY_MINUTES} minutes*\n"
-        f"*Price:* `{signal['price']:.8f}`\n"
-        f"*5M Trend:* `{signal['trend_5m']}`\n"
-        f"*1M Entry:* `{signal['entry_1m']}`\n"
-        f"*Structure:* `{signal['structure']}`\n"
-        f"*ADX:* `{signal['adx']:.1f}`\n"
-        f"*RSI 5M:* `{signal['rsi_5m']:.1f}`\n"
-        f"*RSI 1M:* `{signal['rsi_1m']:.1f}`\n"
-        f"*DI+:* `{signal['plus_di']:.1f}`\n"
-        f"*DI-:* `{signal['minus_di']:.1f}`\n"
-        f"*Extension:* "
-        f"`{signal['extension_atr']:.2f} ATR`\n"
-        f"*Room Up:* "
-        f"`{signal['room_up']:.2f} ATR`\n"
-        f"*Room Down:* "
-        f"`{signal['room_down']:.2f} ATR`\n"
-        f"*Confirmations:* "
-        f"`{signal['confirmations']}`\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"*Signal ID:* "
-        f"`{signal['signal_id']}`\n"
-        f"*Time:* "
-        f"`{signal['timestamp']}`\n"
-        f"⚠️ *READ-ONLY — NO AUTO TRADE*"
-    )
+    message = f"""
+{direction_icon} <b>BACK TO TREND SIGNAL</b>
+━━━━━━━━━━━━━━━━━━
+<b>Asset:</b> {asset}
+<b>Direction:</b> <b>{setup["direction"]}</b>
+<b>Reference expiry:</b> {EXPIRY_MINUTES} minutes
+
+<b>Signal ID:</b> <code>{signal_id}</code>
+
+<b>5M CONTEXT</b>
+Trend: {setup["trend"]}
+EMA20: {setup["ema20"]:.6f}
+EMA50: {setup["ema50"]:.6f}
+
+<b>1M SETUP</b>
+Level: {setup["level"]}
+Trigger: <b>{setup["trigger"]}</b>
+
+RSI 14: {setup["rsi"]:.1f}
+MACD histogram: {setup["macd_hist"]:.6f}
+
+Entry: {setup["entry"]:.6f}
+Room: {setup["room_atr"]:.2f} ATR
+
+<b>SETUP READY</b>
+Context ✓
+Pullback ✓
+Level ✓
+Trigger ✓
+Room ✓
+
+<b>Quality:</b> {setup["score"]}/100
+
+<b>Signal candle:</b>
+{entry_time}
+━━━━━━━━━━━━━━━━━━
+READ-ONLY SIGNAL
+NO AUTOMATIC TRADE
+""".strip()
+
+    telegram(message)
+
+    return signal_id
 
 
 # ============================================================
-# MAIN
+# MAIN SCAN
 # ============================================================
 
-def main():
+def scan_asset(asset):
+    try:
+        candles_5m = get_closed_candles(
+            asset,
+            TF_5M,
+            CANDLES_5M,
+        )
 
-    print("=" * 70)
-    print("PRECISION IQ OPTION OTC SCANNER V4")
-    print("=" * 70)
+        candles_1m = get_closed_candles(
+            asset,
+            TF_1M,
+            CANDLES_1M,
+        )
 
-    print(
-        "Started:",
-        now_utc()
-    )
+        if len(candles_5m) < 70:
+            return None
 
-    print(
-        "Mode:",
-        BALANCE_MODE
-    )
+        if len(candles_1m) < 70:
+            return None
 
-    print(
-        "Automatic trading:",
-        "DISABLED"
-    )
+        setup = evaluate_back_to_trend(
+            candles_5m,
+            candles_1m,
+        )
 
-    print("=" * 70)
+        if not setup:
+            return None
+
+        candle_time = setup["candle_time"]
+
+        # Do not repeat same setup candle
+        if last_signal_candle.get(asset) == candle_time:
+            return None
+
+        # Per-asset lock
+        now = time.time()
+
+        if (
+            asset in last_signal_time
+            and
+            now - last_signal_time[asset]
+            < LOCK_SECONDS
+        ):
+            return None
+
+        last_signal_time[asset] = now
+        last_signal_candle[asset] = candle_time
+
+        return send_signal(
+            asset,
+            setup,
+        )
+
+    except Exception:
+        print(
+            f"Scan error: {asset}"
+        )
+        traceback.print_exc()
+        return None
+
+
+# ============================================================
+# LOGIN
+# ============================================================
+
+def connect():
+    global iq
 
     if not IQ_EMAIL or not IQ_PASSWORD:
-
-        message = (
-            "🔴 *IQ OPTION SCANNER*\n"
+        telegram(
+            "🔴 <b>BACK TO TREND SCANNER</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
             "IQ_EMAIL or IQ_PASSWORD is missing."
         )
-
-        print(message)
-
-        send_telegram(message)
-
-        return
-
-    api = None
+        return False
 
     try:
-
-        print(
-            "\n[1/6] Connecting to IQ Option..."
-        )
-
-        api = IQ_Option(
+        iq = IQ_Option(
             IQ_EMAIL,
             IQ_PASSWORD,
         )
 
-        check, reason = api.connect()
+        iq.connect()
 
-        print(
-            "[LOGIN]",
-            check,
-            reason
-        )
+        time.sleep(3)
 
-        if not check:
-
-            send_telegram(
-                "🔴 *IQ OPTION SCANNER*\n"
+        if not iq.check_connect():
+            telegram(
+                "🔴 <b>BACK TO TREND SCANNER</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
-                "Connection/login failed.\n\n"
-                f"`{reason}`"
+                "IQ Option connection failed."
             )
+            return False
 
-            return
-
-        print(
-            "[LOGIN] Successful."
-        )
-
-        if hasattr(
-            api,
-            "check_connect",
-        ):
-
-            if not api.check_connect():
-
-                send_telegram(
-                    "🔴 *IQ OPTION SCANNER*\n"
-                    "━━━━━━━━━━━━━━━━━━\n"
-                    "IQ Option connection is not active."
-                )
-
-                return
-
-        print(
-            "\n[2/6] Switching to PRACTICE..."
-        )
-
+        # Practice/demo mode
         try:
-
-            api.change_balance(
-                BALANCE_MODE
+            iq.change_balance(
+                "PRACTICE"
+                if PRACTICE
+                else "REAL"
             )
+        except Exception:
+            pass
 
-            print(
-                "[BALANCE]",
-                BALANCE_MODE
-            )
-
-        except Exception as e:
-
-            print(
-                "[BALANCE WARNING]",
-                repr(e)
-            )
-
-        print(
-            "\n[3/6] Requesting raw "
-            "IQ Option market initialization..."
-        )
-
-        raw_data = get_raw_initialization(
-            api
-        )
-
-        if not raw_data:
-
-            send_telegram(
-                "🔴 *IQ OPTION SCANNER*\n"
-                "━━━━━━━━━━━━━━━━━━\n"
-                "IQ Option connected, but "
-                "raw market initialization "
-                "returned no data."
-            )
-
-            return
-
-        print(
-            "\n[4/6] Extracting real OTC "
-            "instruments and IDs..."
-        )
-
-        otc_assets = (
-            discover_otc_from_initialization(
-                raw_data
-            )
-        )
-
-        if not otc_assets:
-
-            send_telegram(
-                "🟡 *IQ OPTION OTC SCANNER*\n"
-                "━━━━━━━━━━━━━━━━━━\n"
-                "Raw IQ Option initialization "
-                "was received successfully, "
-                "but it contained *0 OPEN OTC "
-                "binary/turbo instruments*.\n\n"
-                "The scanner did not invent "
-                "any symbols and did not "
-                "generate a signal.\n"
-                "━━━━━━━━━━━━━━━━━━\n"
-                "READ-ONLY"
-            )
-
-            return
-
-        print(
-            "\n[5/6] Testing real OTC "
-            "candle feeds..."
-        )
-
-        working_assets = (
-            test_candle_access(
-                api,
-                otc_assets
-            )
-        )
-
-        if not working_assets:
-
-            send_telegram(
-                "🟡 *IQ OPTION OTC SCANNER*\n"
-                "━━━━━━━━━━━━━━━━━━\n"
-                f"Found *{len(otc_assets)}* "
-                "open OTC instruments.\n\n"
-                "However, none returned enough "
-                "candle data for scanning.\n"
-                "━━━━━━━━━━━━━━━━━━\n"
-                "No strategy signals generated."
-            )
-
-            return
-
-        print(
-            "\n[6/6] Running precision strategy..."
-        )
-
-        locks = {}
-
-        qualified = 0
-
-        rejected = 0
-
-        errors = 0
-
-        for item in working_assets:
-
-            asset = item["asset"]
-
-            last_scan = locks.get(
-                asset,
-                0
-            )
-
-            if (
-                time.time()
-                - last_scan
-                < LOCK_SECONDS
-            ):
-
-                continue
-
-            locks[asset] = (
-                time.time()
-            )
-
-            print(
-                "\n" + "-" * 70
-            )
-
-            print(
-                "[SCAN]",
-                asset
-            )
-
-            print(
-                "Market type:",
-                item["market_type"]
-            )
-
-            print(
-                "Active ID:",
-                item["active_id"]
-            )
-
-            try:
-
-                signal, reason = (
-                    analyze_asset(
-                        api,
-                        asset
-                    )
-                )
-
-                if signal:
-
-                    qualified += 1
-
-                    print(
-                        "[QUALIFIED]",
-                        signal["direction"],
-                        "score=",
-                        signal["score"]
-                    )
-
-                    send_telegram(
-                        format_signal(
-                            signal
-                        )
-                    )
-
-                else:
-
-                    rejected += 1
-
-                    print(
-                        "[NO TRADE]",
-                        reason
-                    )
-
-            except Exception as e:
-
-                errors += 1
-
-                print(
-                    "[SCAN ERROR]",
-                    asset,
-                    repr(e)
-                )
-
-                traceback.print_exc()
-
-        print(
-            "\n" + "=" * 70
-        )
-
-        print(
-            "SCAN COMPLETE"
-        )
-
-        print(
-            "=" * 70
-        )
-
-        print(
-            "Working OTC assets:",
-            len(working_assets)
-        )
-
-        print(
-            "Qualified signals:",
-            qualified
-        )
-
-        print(
-            "NO TRADE:",
-            rejected
-        )
-
-        print(
-            "Errors:",
-            errors
-        )
-
-        print(
-            "Finished:",
-            now_utc()
-        )
-
-        print(
-            "=" * 70
-        )
-
-        if qualified == 0:
-
-            send_telegram(
-                "🟡 *IQ OPTION OTC SCANNER*\n"
-                "━━━━━━━━━━━━━━━━━━\n"
-                f"OTC candle feeds working: "
-                f"*{len(working_assets)}*\n"
-                f"Qualified signals: *0*\n\n"
-                "The market data is available, "
-                "but no setup reached the "
-                f"*{MIN_SCORE}/100* threshold.\n"
-                "━━━━━━━━━━━━━━━━━━\n"
-                "NO TRADE"
-            )
+        return True
 
     except Exception as e:
-
-        print(
-            "\n[FATAL ERROR]",
-            repr(e)
-        )
-
-        traceback.print_exc()
-
-        send_telegram(
-            "🔴 *IQ OPTION SCANNER*\n"
+        telegram(
+            "🔴 <b>BACK TO TREND SCANNER</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            "Fatal scanner error:\n"
-            f"`{str(e)[:800]}`"
+            "Connection/login failed.\n\n"
+            f"<code>{str(e)}</code>"
         )
 
-    finally:
-
-        if api is not None:
-
-            try:
-                api.close()
-            except Exception:
-                pass
-
-        print(
-            "\nScanner cycle stopped safely."
-        )
+        return False
 
 
 # ============================================================
-# START — RUN AGAIN EVERY 5 MINUTES
+# MAIN LOOP
 # ============================================================
 
-if __name__ == "__main__":
+def main():
+    print(
+        "=========================================="
+    )
+    print(
+        "BACK TO TREND — IQ OPTION OTC SCANNER"
+    )
+    print(
+        "=========================================="
+    )
+
+    if not connect():
+        return
+
+    telegram(
+        "🟡 <b>BACK TO TREND SCANNER ONLINE</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "IQ Option OTC connection: <b>OK</b>\n"
+        "Strategy: <b>Back to Trend</b>\n"
+        "Context: 5M\n"
+        "Entry: 1M\n"
+        "Expiry: 5 minutes\n"
+        "Mode: READ-ONLY\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "Scanning for trend pullback setups..."
+    )
 
     while True:
 
-        cycle_start = time.time()
-
         try:
-
-            main()
-
-        except Exception as e:
+            assets = discover_otc_assets()
 
             print(
-                "\n[LOOP ERROR]",
-                repr(e)
+                f"OTC assets discovered: "
+                f"{len(assets)}"
             )
 
+            if not assets:
+                telegram(
+                    "🟡 <b>BACK TO TREND SCANNER</b>\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "No currently open OTC instruments "
+                    "were discovered."
+                )
+
+                time.sleep(300)
+                continue
+
+            signals = 0
+
+            for asset in assets:
+
+                result = scan_asset(asset)
+
+                if result:
+                    signals += 1
+
+                time.sleep(0.25)
+
+            print(
+                f"Qualified Back to Trend signals: "
+                f"{signals}"
+            )
+
+            if signals == 0:
+                telegram(
+                    "🟡 <b>BACK TO TREND SCANNER</b>\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    f"OTC candle feeds working: "
+                    f"<b>{len(assets)}</b>\n"
+                    "Qualified setups: <b>0</b>\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "NO TRADE"
+                )
+
+            time.sleep(300)
+
+        except Exception:
             traceback.print_exc()
 
-        elapsed = time.time() - cycle_start
+            try:
+                if iq and not iq.check_connect():
+                    connect()
+            except Exception:
+                pass
 
-        wait_time = max(
-            0,
-            300 - elapsed
-        )
+            time.sleep(30)
 
-        print(
-            "\n"
-            + "=" * 70
-        )
 
-        print(
-            "NEXT SCAN IN:",
-            round(wait_time),
-            "SECONDS"
-        )
+# ============================================================
+# START
+# ============================================================
 
-        print(
-            "=" * 70
-        )
-
-        time.sleep(wait_time)
+if __name__ == "__main__":
+    main()
