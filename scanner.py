@@ -694,10 +694,6 @@ def trigger_quality(
 def evaluate_asset(asset):
     try:
 
-        # =========================
-        # 30M PRIMARY TREND
-        # =========================
-
         candles_30m = get_closed_candles(
             asset,
             TF_30M,
@@ -724,10 +720,6 @@ def evaluate_asset(asset):
             return None
 
         direction = trend_30m["direction"]
-
-        # =========================
-        # 5M PULLBACK
-        # =========================
 
         candles_5m = get_closed_candles(
             asset,
@@ -765,10 +757,6 @@ def evaluate_asset(asset):
         if not pullback_ok:
             return None
 
-        # =========================
-        # 1M ENTRY
-        # =========================
-
         candles_1m = get_closed_candles(
             asset,
             TF_1M,
@@ -788,10 +776,6 @@ def evaluate_asset(asset):
 
         if not trigger_ok:
             return None
-
-        # =========================
-        # ROOM CHECK
-        # =========================
 
         levels = structure(
             candles_5m
@@ -823,10 +807,6 @@ def evaluate_asset(asset):
         if room_atr < MIN_ROOM_ATR:
             return None
 
-        # =========================
-        # EXTENSION CHECK
-        # =========================
-
         extension = (
             abs(
                 price
@@ -837,10 +817,6 @@ def evaluate_asset(asset):
 
         if extension > MAX_EXTENSION_ATR:
             return None
-
-        # =========================
-        # RSI CHECK
-        # =========================
 
         if trend_5m["rsi"] is None:
             return None
@@ -856,10 +832,6 @@ def evaluate_asset(asset):
             and trend_5m["rsi"] <= 28
         ):
             return None
-
-        # =========================
-        # SCORE
-        # =========================
 
         score = 25
 
@@ -1312,4 +1284,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main())
+    main()
