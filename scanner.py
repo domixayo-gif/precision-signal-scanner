@@ -1,13 +1,18 @@
 # ============================================================
-# BACK TO TREND — IQ OPTION OTC DEMO AUTO-TESTER
+# BACK TO TREND — IQ OPTION OTC DEMO AUTO-TESTER V2
 # ============================================================
 #
 # 30M TREND -> 5M PULLBACK -> 1M ENTRY
-# REFERENCE EXPIRY: 3 MINUTES
+# EXPIRY: 3 MINUTES
 #
-# PRACTICE / DEMO ONLY
-# AUTOMATIC TRADING ENABLED ON PRACTICE ACCOUNT
-# REAL ACCOUNT IS HARD-BLOCKED
+# REAL IQ OPTION OTC ASSETS ONLY
+#
+# PRACTICE ACCOUNT ONLY
+# AUTOMATIC DEMO TRADING ENABLED
+#
+# IMPORTANT:
+# This version does NOT depend on get_all_open_time()
+# for OTC discovery.
 #
 # ============================================================
 
@@ -22,7 +27,7 @@ from iqoptionapi.stable_api import IQ_Option
 
 
 # ============================================================
-# IQ OPTION / TELEGRAM
+# CREDENTIALS
 # ============================================================
 
 IQ_EMAIL = os.getenv("IQ_EMAIL", "")
@@ -37,26 +42,16 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 # ============================================================
 
 PRACTICE = True
-
 AUTO_TRADE = True
-
-# HARD SAFETY LOCK
 DEMO_ONLY_LOCK = True
 
-# Fixed demo stake
 STAKE = 1.0
 
-# Maximum demo trades in one session
 MAX_AUTO_TRADES = 30
 
-# One trade at a time
-MAX_OPEN_TRADES = 1
-
-# Minimum time between entries
-TRADE_COOLDOWN = 180
-
-# Stop automatic trading after consecutive losses
 MAX_CONSECUTIVE_LOSSES = 4
+
+TRADE_COOLDOWN = 180
 
 
 # ============================================================
@@ -69,6 +64,11 @@ TF_1M = 60
 
 EXPIRY_MINUTES = 3
 
+
+# ============================================================
+# CANDLE SETTINGS
+# ============================================================
+
 CANDLES_30M = 180
 CANDLES_5M = 180
 CANDLES_1M = 180
@@ -79,18 +79,14 @@ CANDLES_1M = 180
 # ============================================================
 
 SCAN_INTERVAL = 60
-
 STATUS_INTERVAL = 300
-
-OTC_DIAGNOSTIC_INTERVAL = 300
-
 RECONNECT_INTERVAL = 30
 
 MAX_RUNTIME = 24 * 60 * 60
 
 
 # ============================================================
-# STRATEGY SETTINGS
+# STRATEGY
 # ============================================================
 
 EMA_FAST = 20
@@ -116,22 +112,22 @@ MAX_5M_DISTANCE_ATR = 0.65
 
 MIN_TRIGGER_BODY = 0.35
 
-PULLBACK_ATR = 0.45
-
 
 # ============================================================
-# GLOBAL STATE
+# GLOBALS
 # ============================================================
 
 iq = None
 
+active_trade = None
+
 seen_signal_keys = set()
 
-last_otc_diagnostic = 0
+last_trade_time = 0
 
 last_status_time = 0
 
-last_trade_time = 0
+session_started = 0
 
 trade_count = 0
 
@@ -144,10 +140,6 @@ draws = 0
 total_profit = 0.0
 
 consecutive_losses = 0
-
-active_trade = None
-
-session_started = time.time()
 
 telegram_offset = None
 
@@ -163,26 +155,23 @@ def safe_float(value, default=0.0):
         if value is None:
             return default
 
-        number = float(value)
+        value = float(value)
 
-        if not math.isfinite(number):
+        if not math.isfinite(value):
             return default
 
-        return number
+        return value
 
     except Exception:
 
         return default
 
 
-def now_utc():
-
-    return datetime.now(timezone.utc)
-
-
 def utc_text():
 
-    return now_utc().strftime(
+    return datetime.now(
+        timezone.utc
+    ).strftime(
         "%Y-%m-%d %H:%M:%S UTC"
     )
 
@@ -193,10 +182,12 @@ def utc_text():
 
 def telegram(message):
 
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+    print(message)
 
-        print(message)
+    if not TELEGRAM_TOKEN:
+        return False
 
+    if not TELEGRAM_CHAT_ID:
         return False
 
     try:
@@ -239,23 +230,25 @@ def ema(values, period):
     if len(values) < period:
         return []
 
-    result = []
-
-    multiplier = 2.0 / (period + 1)
+    multiplier = (
+        2.0 / (period + 1)
+    )
 
     seed = (
         sum(values[:period])
         / period
     )
 
-    result.append(seed)
+    result = [seed]
 
     previous = seed
 
-    for price in values[period:]:
+    for value in values[period:]:
 
         current = (
-            (price - previous)
+            (
+                value - previous
+            )
             * multiplier
             + previous
         )
@@ -277,7 +270,6 @@ def rsi(values, period=14):
         return []
 
     gains = []
-
     losses_ = []
 
     for i in range(1, len(values)):
@@ -311,42 +303,28 @@ def rsi(values, period=14):
 
     result = []
 
-    if avg_loss == 0:
-
-        result.append(100.0)
-
-    else:
-
-        rs = avg_gain / avg_loss
-
-        result.append(
-            100.0
-            - (
-                100.0
-                / (1.0 + rs)
-            )
-        )
-
     for i in range(
-        period,
+        period - 1,
         len(gains),
     ):
 
-        avg_gain = (
-            (
-                avg_gain
-                * (period - 1)
-            )
-            + gains[i]
-        ) / period
+        if i >= period:
 
-        avg_loss = (
-            (
-                avg_loss
-                * (period - 1)
-            )
-            + losses_[i]
-        ) / period
+            avg_gain = (
+                (
+                    avg_gain
+                    * (period - 1)
+                )
+                + gains[i]
+            ) / period
+
+            avg_loss = (
+                (
+                    avg_loss
+                    * (period - 1)
+                )
+                + losses_[i]
+            ) / period
 
         if avg_loss == 0:
 
@@ -381,10 +359,7 @@ def atr(candles, period=14):
 
     trs = []
 
-    for i in range(
-        1,
-        len(candles),
-    ):
+    for i in range(1, len(candles)):
 
         high = safe_float(
             candles[i]["max"]
@@ -424,14 +399,14 @@ def atr(candles, period=14):
 
     previous = first
 
-    for tr in trs[period:]:
+    for value in trs[period:]:
 
         current = (
             (
                 previous
                 * (period - 1)
             )
-            + tr
+            + value
         ) / period
 
         result.append(current)
@@ -459,10 +434,7 @@ def adx(candles, period=14):
 
     minus_dm = []
 
-    for i in range(
-        1,
-        len(candles),
-    ):
+    for i in range(1, len(candles)):
 
         high = safe_float(
             candles[i]["max"]
@@ -496,46 +468,31 @@ def adx(candles, period=14):
             ),
         )
 
-        up_move = (
+        up = (
             high
             - previous_high
         )
 
-        down_move = (
+        down = (
             previous_low
             - low
         )
 
-        if (
-            up_move > down_move
-            and up_move > 0
-        ):
+        plus = (
+            up
+            if up > down and up > 0
+            else 0.0
+        )
 
-            plus = up_move
-
-        else:
-
-            plus = 0.0
-
-        if (
-            down_move > up_move
-            and down_move > 0
-        ):
-
-            minus = down_move
-
-        else:
-
-            minus = 0.0
+        minus = (
+            down
+            if down > up and down > 0
+            else 0.0
+        )
 
         trs.append(tr)
-
         plus_dm.append(plus)
-
         minus_dm.append(minus)
-
-    if len(trs) < period:
-        return []
 
     tr_sum = sum(
         trs[:period]
@@ -569,8 +526,7 @@ def adx(candles, period=14):
         tr_sum = (
             tr_sum
             - (
-                tr_sum
-                / period
+                tr_sum / period
             )
             + trs[i]
         )
@@ -578,8 +534,7 @@ def adx(candles, period=14):
         plus_sum = (
             plus_sum
             - (
-                plus_sum
-                / period
+                plus_sum / period
             )
             + plus_dm[i]
         )
@@ -587,8 +542,7 @@ def adx(candles, period=14):
         minus_sum = (
             minus_sum
             - (
-                minus_sum
-                / period
+                minus_sum / period
             )
             + minus_dm[i]
         )
@@ -629,12 +583,12 @@ def adx(candles, period=14):
             / atr_values[i]
         )
 
-        denominator = (
+        total = (
             plus_di
             + minus_di
         )
 
-        if denominator <= 0:
+        if total <= 0:
 
             dx.append(0.0)
 
@@ -646,20 +600,20 @@ def adx(candles, period=14):
                     plus_di
                     - minus_di
                 )
-                / denominator
+                / total
             )
 
     if len(dx) < period:
         return []
 
-    first_adx = (
+    first = (
         sum(dx[:period])
         / period
     )
 
-    result = [first_adx]
+    result = [first]
 
-    previous = first_adx
+    previous = first
 
     for value in dx[period:]:
 
@@ -679,7 +633,7 @@ def adx(candles, period=14):
 
 
 # ============================================================
-# CANDLE HELPERS
+# CANDLE FUNCTIONS
 # ============================================================
 
 def candle_body(candle):
@@ -725,65 +679,65 @@ def candle_direction(candle):
     return "NEUTRAL"
 
 
-def is_bullish_engulfing(
+def bullish_engulfing(
     previous,
     current,
 ):
 
-    prev_open = safe_float(
+    po = safe_float(
         previous["open"]
     )
 
-    prev_close = safe_float(
+    pc = safe_float(
         previous["close"]
     )
 
-    cur_open = safe_float(
+    co = safe_float(
         current["open"]
     )
 
-    cur_close = safe_float(
+    cc = safe_float(
         current["close"]
     )
 
     return (
-        prev_close < prev_open
-        and cur_close > cur_open
-        and cur_open <= prev_close
-        and cur_close >= prev_open
+        pc < po
+        and cc > co
+        and co <= pc
+        and cc >= po
     )
 
 
-def is_bearish_engulfing(
+def bearish_engulfing(
     previous,
     current,
 ):
 
-    prev_open = safe_float(
+    po = safe_float(
         previous["open"]
     )
 
-    prev_close = safe_float(
+    pc = safe_float(
         previous["close"]
     )
 
-    cur_open = safe_float(
+    co = safe_float(
         current["open"]
     )
 
-    cur_close = safe_float(
+    cc = safe_float(
         current["close"]
     )
 
     return (
-        prev_close > prev_open
-        and cur_close < cur_open
-        and cur_open >= prev_close
-        and cur_close <= prev_open
+        pc > po
+        and cc < co
+        and co >= pc
+        and cc <= po
     )
 
 
-def is_bullish_pin(candle):
+def bullish_pin(candle):
 
     opening = safe_float(
         candle["open"]
@@ -805,12 +759,12 @@ def is_bullish_pin(candle):
         closing - opening
     )
 
-    lower_wick = (
+    lower = (
         min(opening, closing)
         - low
     )
 
-    upper_wick = (
+    upper = (
         high
         - max(opening, closing)
     )
@@ -821,14 +775,14 @@ def is_bullish_pin(candle):
         return False
 
     return (
-        lower_wick >= body * 1.5
-        and lower_wick > upper_wick
+        lower >= body * 1.5
+        and lower > upper
         and closing
         >= low + rng * 0.55
     )
 
 
-def is_bearish_pin(candle):
+def bearish_pin(candle):
 
     opening = safe_float(
         candle["open"]
@@ -850,12 +804,12 @@ def is_bearish_pin(candle):
         closing - opening
     )
 
-    lower_wick = (
+    lower = (
         min(opening, closing)
         - low
     )
 
-    upper_wick = (
+    upper = (
         high
         - max(opening, closing)
     )
@@ -866,8 +820,8 @@ def is_bearish_pin(candle):
         return False
 
     return (
-        upper_wick >= body * 1.5
-        and upper_wick > lower_wick
+        upper >= body * 1.5
+        and upper > lower
         and closing
         <= low + rng * 0.45
     )
@@ -894,11 +848,13 @@ def server_now():
     except Exception:
         pass
 
-    return int(time.time())
+    return int(
+        time.time()
+    )
 
 
 # ============================================================
-# GET CLOSED CANDLES
+# CLOSED CANDLES
 # ============================================================
 
 def get_closed_candles(
@@ -924,7 +880,10 @@ def get_closed_candles(
         candles = sorted(
             candles,
             key=lambda x: safe_float(
-                x.get("from", 0)
+                x.get(
+                    "from",
+                    0,
+                )
             ),
         )
 
@@ -946,9 +905,14 @@ def get_closed_candles(
                 )
             )
 
-            if candle_time < current_bucket:
+            if (
+                candle_time
+                < current_bucket
+            ):
 
-                closed.append(candle)
+                closed.append(
+                    candle
+                )
 
         return closed[-count:]
 
@@ -964,15 +928,347 @@ def get_closed_candles(
 
 
 # ============================================================
-# TREND ANALYSIS
+# DIRECT OTC DISCOVERY
+# ============================================================
+#
+# We intentionally do NOT use get_all_open_time().
+#
+# This avoids the NoneType/polling problem seen in the
+# installed API build.
+#
+# ============================================================
+
+def discover_otc_assets():
+
+    binary_assets = set()
+
+    turbo_assets = set()
+
+    digital_assets = set()
+
+    try:
+
+        # ----------------------------------------------------
+        # PRIMARY SOURCE
+        # ----------------------------------------------------
+
+        data = None
+
+        if hasattr(
+            iq,
+            "get_all_init_v2",
+        ):
+
+            data = (
+                iq.get_all_init_v2()
+            )
+
+        if not data:
+
+            telegram(
+                "🔴 OTC INIT DATA EMPTY\n"
+                "IQ Option connected, but "
+                "get_all_init_v2() returned "
+                "no market data."
+            )
+
+            return []
+
+        # ----------------------------------------------------
+        # BINARY / TURBO
+        # ----------------------------------------------------
+
+        for market_type, target in (
+            (
+                "binary",
+                binary_assets,
+            ),
+            (
+                "turbo",
+                turbo_assets,
+            ),
+        ):
+
+            market = data.get(
+                market_type,
+                {},
+            )
+
+            if not isinstance(
+                market,
+                dict,
+            ):
+
+                continue
+
+            actives = market.get(
+                "actives",
+                {},
+            )
+
+            if not isinstance(
+                actives,
+                dict,
+            ):
+
+                continue
+
+            for active_id, info in (
+                actives.items()
+            ):
+
+                if not isinstance(
+                    info,
+                    dict,
+                ):
+
+                    continue
+
+                name = (
+                    info.get("name")
+                    or info.get(
+                        "underlying"
+                    )
+                    or ""
+                )
+
+                name = str(
+                    name
+                )
+
+                if not name:
+                    continue
+
+                # Some versions return names
+                # like "1.EURUSD-OTC".
+                if "." in name:
+
+                    name = (
+                        name.split(
+                            ".",
+                            1,
+                        )[1]
+                    )
+
+                if (
+                    "OTC"
+                    not in name.upper()
+                ):
+
+                    continue
+
+                enabled = info.get(
+                    "enabled",
+                    True,
+                )
+
+                suspended = info.get(
+                    "is_suspended",
+                    False,
+                )
+
+                if (
+                    enabled
+                    and not suspended
+                ):
+
+                    target.add(
+                        name
+                    )
+
+        # ----------------------------------------------------
+        # DIGITAL
+        # ----------------------------------------------------
+
+        try:
+
+            if hasattr(
+                iq,
+                "get_digital_underlying_list_data",
+            ):
+
+                digital_data = (
+                    iq.get_digital_underlying_list_data()
+                )
+
+                if isinstance(
+                    digital_data,
+                    dict,
+                ):
+
+                    underlying = (
+                        digital_data.get(
+                            "underlying",
+                            [],
+                        )
+                    )
+
+                    if isinstance(
+                        underlying,
+                        list,
+                    ):
+
+                        current = time.time()
+
+                        for item in underlying:
+
+                            if not isinstance(
+                                item,
+                                dict,
+                            ):
+
+                                continue
+
+                            name = str(
+                                item.get(
+                                    "underlying",
+                                    "",
+                                )
+                            )
+
+                            if (
+                                "OTC"
+                                not in name.upper()
+                            ):
+
+                                continue
+
+                            schedule = (
+                                item.get(
+                                    "schedule",
+                                    [],
+                                )
+                            )
+
+                            open_now = False
+
+                            if isinstance(
+                                schedule,
+                                list,
+                            ):
+
+                                for row in schedule:
+
+                                    if not isinstance(
+                                        row,
+                                        dict,
+                                    ):
+
+                                        continue
+
+                                    start = safe_float(
+                                        row.get(
+                                            "open",
+                                            0,
+                                        )
+                                    )
+
+                                    close = safe_float(
+                                        row.get(
+                                            "close",
+                                            0,
+                                        )
+                                    )
+
+                                    if (
+                                        start
+                                        < current
+                                        < close
+                                    ):
+
+                                        open_now = True
+
+                                        break
+
+                            if open_now:
+
+                                digital_assets.add(
+                                    name
+                                )
+
+        except Exception as exc:
+
+            print(
+                "Digital discovery warning:",
+                exc,
+            )
+
+        # ----------------------------------------------------
+        # BUILD REAL TRADING LIST
+        # ----------------------------------------------------
+        #
+        # Automatic trading uses binary/turbo only.
+        # Digital is reported but not automatically
+        # traded by this version because its order API
+        # is different.
+        #
+        trading_assets = sorted(
+            binary_assets
+            | turbo_assets
+        )
+
+        all_otc = sorted(
+            set(trading_assets)
+            | digital_assets
+        )
+
+        telegram(
+            "🟢 OTC DISCOVERY SUCCESS\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"Binary OTC: "
+            f"{len(binary_assets)}\n"
+            f"Turbo OTC: "
+            f"{len(turbo_assets)}\n"
+            f"Digital OTC: "
+            f"{len(digital_assets)}\n"
+            f"Tradable by this bot: "
+            f"{len(trading_assets)}\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            + (
+                "Sample: "
+                + ", ".join(
+                    trading_assets[:12]
+                )
+                if trading_assets
+                else "No binary/turbo OTC assets."
+            )
+        )
+
+        if not trading_assets:
+
+            telegram(
+                "🟠 NO BINARY/TURBO OTC ASSETS\n"
+                "Digital OTC may exist, but this "
+                "demo auto-trader is waiting for "
+                "a binary/turbo OTC instrument."
+            )
+
+        return trading_assets
+
+    except Exception as exc:
+
+        print(
+            traceback.format_exc()
+        )
+
+        telegram(
+            "🔴 OTC DISCOVERY ERROR\n"
+            f"{type(exc).__name__}: {exc}\n"
+            "\n"
+            "Direct OTC discovery failed.\n"
+            "Scanner will retry automatically."
+        )
+
+        return []
+
+
+# ============================================================
+# TREND
 # ============================================================
 
 def analyze_trend(candles):
 
-    if len(candles) < (
-        EMA_SLOW + 10
-    ):
-
+    if len(candles) < 70:
         return None
 
     closes = [
@@ -982,12 +1278,12 @@ def analyze_trend(candles):
         for c in candles
     ]
 
-    ema_fast_values = ema(
+    fast_values = ema(
         closes,
         EMA_FAST,
     )
 
-    ema_slow_values = ema(
+    slow_values = ema(
         closes,
         EMA_SLOW,
     )
@@ -997,34 +1293,34 @@ def analyze_trend(candles):
         RSI_PERIOD,
     )
 
-    adx_values = adx(
-        candles,
-        ADX_PERIOD,
-    )
-
     atr_values = atr(
         candles,
         ATR_PERIOD,
     )
 
-    if not ema_fast_values:
+    adx_values = adx(
+        candles,
+        ADX_PERIOD,
+    )
+
+    if not fast_values:
         return None
 
-    if not ema_slow_values:
+    if not slow_values:
         return None
 
     if not rsi_values:
         return None
 
-    if not adx_values:
-        return None
-
     if not atr_values:
         return None
 
-    fast = ema_fast_values[-1]
+    if not adx_values:
+        return None
 
-    slow = ema_slow_values[-1]
+    fast = fast_values[-1]
+
+    slow = slow_values[-1]
 
     price = closes[-1]
 
@@ -1046,12 +1342,12 @@ def analyze_trend(candles):
 
     return {
         "trend": trend,
+        "price": price,
         "ema_fast": fast,
         "ema_slow": slow,
-        "price": price,
         "rsi": rsi_values[-1],
-        "adx": adx_values[-1],
         "atr": atr_values[-1],
+        "adx": adx_values[-1],
     }
 
 
@@ -1059,12 +1355,9 @@ def analyze_trend(candles):
 # STRUCTURE
 # ============================================================
 
-def structure(candles):
+def get_structure(candles):
 
-    if len(candles) < (
-        SWING_LOOKBACK + 5
-    ):
-
+    if len(candles) < 35:
         return None
 
     recent = candles[
@@ -1091,112 +1384,113 @@ def structure(candles):
 
     return {
         "price": price,
-        "swing_high": max(highs),
-        "swing_low": min(lows),
+        "high": max(highs),
+        "low": min(lows),
     }
 
 
 # ============================================================
-# PULLBACK QUALITY
+# PULLBACK
 # ============================================================
 
-def pullback_quality(
+def check_pullback(
     trend,
-    candles_5m,
-    atr_5m,
+    candles,
 ):
 
-    if len(candles_5m) < 6:
-        return None
+    if len(candles) < 6:
+        return False
 
-    last = candles_5m[-1]
+    atr_value = trend["atr"]
 
-    previous = candles_5m[-2]
+    if atr_value <= 0:
+        return False
 
-    price = safe_float(
-        last["close"]
-    )
+    recent = candles[-5:]
 
-    distance = abs(
-        price
-        - trend["ema_fast"]
-    )
+    bullish = 0
+    bearish = 0
 
-    if atr_5m <= 0:
-        return None
+    for candle in recent:
 
-    distance_atr = (
-        distance
-        / atr_5m
-    )
+        direction = (
+            candle_direction(
+                candle
+            )
+        )
 
-    recent = candles_5m[-5:]
+        if direction == "BULLISH":
+            bullish += 1
 
-    bullish_count = sum(
-        1
-        for candle in recent
-        if candle_direction(candle)
-        == "BULLISH"
-    )
+        elif direction == "BEARISH":
+            bearish += 1
 
-    bearish_count = sum(
-        1
-        for candle in recent
-        if candle_direction(candle)
-        == "BEARISH"
-    )
+    last = candles[-1]
+
+    previous = candles[-2]
 
     if trend["trend"] == "BULLISH":
 
-        pullback_seen = (
-            bearish_count >= 1
-            or safe_float(
+        touched = (
+            safe_float(
                 previous["min"]
             )
             <= trend["ema_fast"]
+            + (
+                atr_value
+                * 0.45
+            )
         )
 
-        return {
-            "valid": pullback_seen,
-            "distance_atr": distance_atr,
-            "direction": "CALL",
-        }
+        had_pullback = (
+            bearish >= 1
+        )
+
+        return (
+            touched
+            or had_pullback
+        )
 
     if trend["trend"] == "BEARISH":
 
-        pullback_seen = (
-            bullish_count >= 1
-            or safe_float(
+        touched = (
+            safe_float(
                 previous["max"]
             )
             >= trend["ema_fast"]
+            - (
+                atr_value
+                * 0.45
+            )
         )
 
-        return {
-            "valid": pullback_seen,
-            "distance_atr": distance_atr,
-            "direction": "PUT",
-        }
+        had_pullback = (
+            bullish >= 1
+        )
 
-    return None
+        return (
+            touched
+            or had_pullback
+        )
+
+    return False
 
 
 # ============================================================
-# 1M TRIGGER
+# TRIGGER
 # ============================================================
 
-def trigger_quality(
-    candles_1m,
+def get_trigger(
+    candles,
     direction,
-    atr_1m,
 ):
 
-    if len(candles_1m) < 4:
+    if len(candles) < 4:
         return None
 
-    previous = candles_1m[-2]
+    previous = candles[-2]
 
-    current = candles_1m[-1]
+    current = candles[-1]
 
     rng = candle_range(
         current
@@ -1213,11 +1507,21 @@ def trigger_quality(
         body / rng
     )
 
-    if atr_1m <= 0:
+    atr_values = atr(
+        candles,
+        ATR_PERIOD,
+    )
+
+    if not atr_values:
+        return None
+
+    atr_value = atr_values[-1]
+
+    if atr_value <= 0:
         return None
 
     range_atr = (
-        rng / atr_1m
+        rng / atr_value
     )
 
     if (
@@ -1227,107 +1531,105 @@ def trigger_quality(
 
         return None
 
-    bullish_engulf = (
-        is_bullish_engulfing(
-            previous,
-            current,
-        )
-    )
-
-    bearish_engulf = (
-        is_bearish_engulfing(
-            previous,
-            current,
-        )
-    )
-
-    bullish_pin = (
-        is_bullish_pin(
-            current
-        )
-    )
-
-    bearish_pin = (
-        is_bearish_pin(
-            current
-        )
-    )
-
     if direction == "CALL":
 
-        if (
-            (
-                body_ratio
-                >= MIN_TRIGGER_BODY
-                and candle_direction(
-                    current
-                ) == "BULLISH"
-            )
-            or bullish_engulf
-            or bullish_pin
+        if bullish_engulfing(
+            previous,
+            current,
         ):
 
-            if bullish_engulf:
+            return {
+                "name":
+                    "BULLISH ENGULFING",
+                "range_atr":
+                    range_atr,
+                "body_ratio":
+                    body_ratio,
+            }
 
-                trigger = (
-                    "BULLISH ENGULFING"
-                )
-
-            elif bullish_pin:
-
-                trigger = "BULLISH PIN"
-
-            else:
-
-                trigger = "BULLISH BODY"
+        if bullish_pin(
+            current
+        ):
 
             return {
-                "valid": True,
-                "trigger": trigger,
-                "range_atr": range_atr,
-                "body_ratio": body_ratio,
+                "name":
+                    "BULLISH PIN",
+                "range_atr":
+                    range_atr,
+                "body_ratio":
+                    body_ratio,
+            }
+
+        if (
+            candle_direction(
+                current
+            )
+            == "BULLISH"
+            and body_ratio
+            >= MIN_TRIGGER_BODY
+        ):
+
+            return {
+                "name":
+                    "BULLISH BODY",
+                "range_atr":
+                    range_atr,
+                "body_ratio":
+                    body_ratio,
             }
 
     if direction == "PUT":
 
-        if (
-            (
-                body_ratio
-                >= MIN_TRIGGER_BODY
-                and candle_direction(
-                    current
-                ) == "BEARISH"
-            )
-            or bearish_engulf
-            or bearish_pin
+        if bearish_engulfing(
+            previous,
+            current,
         ):
 
-            if bearish_engulf:
+            return {
+                "name":
+                    "BEARISH ENGULFING",
+                "range_atr":
+                    range_atr,
+                "body_ratio":
+                    body_ratio,
+            }
 
-                trigger = (
-                    "BEARISH ENGULFING"
-                )
-
-            elif bearish_pin:
-
-                trigger = "BEARISH PIN"
-
-            else:
-
-                trigger = "BEARISH BODY"
+        if bearish_pin(
+            current
+        ):
 
             return {
-                "valid": True,
-                "trigger": trigger,
-                "range_atr": range_atr,
-                "body_ratio": body_ratio,
+                "name":
+                    "BEARISH PIN",
+                "range_atr":
+                    range_atr,
+                "body_ratio":
+                    body_ratio,
+            }
+
+        if (
+            candle_direction(
+                current
+            )
+            == "BEARISH"
+            and body_ratio
+            >= MIN_TRIGGER_BODY
+        ):
+
+            return {
+                "name":
+                    "BEARISH BODY",
+                "range_atr":
+                    range_atr,
+                "body_ratio":
+                    body_ratio,
             }
 
     return None
 
 
 # ============================================================
-# ASSET EVALUATION
+# EVALUATE ASSET
 # ============================================================
 
 def evaluate_asset(asset):
@@ -1358,184 +1660,138 @@ def evaluate_asset(asset):
             )
         )
 
-        if (
-            len(candles_30m) < 70
-            or len(candles_5m) < 70
-            or len(candles_1m) < 40
-        ):
-
-            return None
-
-        trend = analyze_trend(
+        if len(
             candles_30m
-        )
+        ) < 70:
 
-        trend_5m = analyze_trend(
+            return None
+
+        if len(
             candles_5m
-        )
-
-        if not trend or not trend_5m:
-            return None
-
-        if trend["trend"] not in (
-            "BULLISH",
-            "BEARISH",
-        ):
+        ) < 70:
 
             return None
 
-        if trend_5m["trend"] not in (
-            "BULLISH",
-            "BEARISH",
-        ):
+        if len(
+            candles_1m
+        ) < 40:
 
             return None
 
-        direction = (
-            "CALL"
-            if trend["trend"]
-            == "BULLISH"
-            else "PUT"
-        )
-
-        score = 0
-
-        reasons = []
-
-        # ----------------------------------------------------
-        # 30M + 5M ALIGNMENT
-        # ----------------------------------------------------
-
-        if (
-            trend["trend"]
-            == trend_5m["trend"]
-        ):
-
-            score += 25
-
-            reasons.append(
-                "30M/5M trend aligned"
+        trend_30m = (
+            analyze_trend(
+                candles_30m
             )
+        )
+
+        trend_5m = (
+            analyze_trend(
+                candles_5m
+            )
+        )
+
+        if not trend_30m:
+            return None
+
+        if not trend_5m:
+            return None
+
+        # ----------------------------------------------------
+        # 30M DIRECTION
+        # ----------------------------------------------------
+
+        if trend_30m["trend"] == "BULLISH":
+
+            direction = "CALL"
+
+        elif trend_30m["trend"] == "BEARISH":
+
+            direction = "PUT"
 
         else:
 
             return None
+
+        # ----------------------------------------------------
+        # 5M MUST AGREE
+        # ----------------------------------------------------
+
+        if (
+            trend_5m["trend"]
+            != trend_30m["trend"]
+        ):
+
+            return None
+
+        score = 25
 
         # ----------------------------------------------------
         # ADX
         # ----------------------------------------------------
 
         if (
-            trend["adx"]
-            >= MIN_ADX
+            trend_30m["adx"]
+            < MIN_ADX
         ):
-
-            score += 15
-
-            reasons.append(
-                "ADX strong"
-            )
-
-        else:
 
             return None
 
+        score += 15
+
         # ----------------------------------------------------
-        # 5M EMA
+        # 5M EMA DISTANCE
         # ----------------------------------------------------
 
-        price_5m = (
-            trend_5m["price"]
-        )
-
-        atr_5m = (
-            trend_5m["atr"]
-        )
+        atr_5m = trend_5m["atr"]
 
         if atr_5m <= 0:
             return None
 
-        distance_5m = abs(
-            price_5m
+        distance = abs(
+            trend_5m["price"]
             - trend_5m["ema_fast"]
         )
 
-        distance_5m_atr = (
-            distance_5m
+        distance_atr = (
+            distance
             / atr_5m
         )
 
         if (
-            distance_5m_atr
-            <= MAX_5M_DISTANCE_ATR
+            distance_atr
+            > MAX_5M_DISTANCE_ATR
         ):
 
-            score += 15
-
-            reasons.append(
-                "5M near EMA"
-            )
-
-        else:
-
             return None
+
+        score += 15
 
         # ----------------------------------------------------
         # PULLBACK
         # ----------------------------------------------------
 
-        pullback = (
-            pullback_quality(
-                trend_5m,
-                candles_5m,
-                atr_5m,
-            )
-        )
+        if not check_pullback(
+            trend_5m,
+            candles_5m,
+        ):
 
-        if not pullback:
-            return None
-
-        if not pullback["valid"]:
             return None
 
         score += 15
-
-        reasons.append(
-            "5M pullback"
-        )
 
         # ----------------------------------------------------
         # 1M TRIGGER
         # ----------------------------------------------------
 
-        atr_1m_values = atr(
+        trigger = get_trigger(
             candles_1m,
-            ATR_PERIOD,
-        )
-
-        if not atr_1m_values:
-            return None
-
-        atr_1m = (
-            atr_1m_values[-1]
-        )
-
-        trigger = (
-            trigger_quality(
-                candles_1m,
-                direction,
-                atr_1m,
-            )
+            direction,
         )
 
         if not trigger:
             return None
 
         score += 20
-
-        reasons.append(
-            trigger["trigger"]
-        )
 
         # ----------------------------------------------------
         # 1M RSI
@@ -1548,79 +1804,68 @@ def evaluate_asset(asset):
             for c in candles_1m
         ]
 
-        rsi_1m_values = rsi(
+        rsi_values = rsi(
             closes_1m,
             RSI_PERIOD,
         )
 
-        if not rsi_1m_values:
+        if not rsi_values:
             return None
 
-        rsi_1m = (
-            rsi_1m_values[-1]
-        )
+        rsi_1m = rsi_values[-1]
 
         if direction == "CALL":
 
-            if 45 <= rsi_1m <= 70:
-
-                score += 5
-
-                reasons.append(
-                    "1M RSI supportive"
-                )
-
-            else:
+            if not (
+                45
+                <= rsi_1m
+                <= 70
+            ):
 
                 return None
 
         else:
 
-            if 30 <= rsi_1m <= 55:
-
-                score += 5
-
-                reasons.append(
-                    "1M RSI supportive"
-                )
-
-            else:
+            if not (
+                30
+                <= rsi_1m
+                <= 55
+            ):
 
                 return None
 
+        score += 5
+
         # ----------------------------------------------------
-        # STRUCTURE / ROOM
+        # ROOM
         # ----------------------------------------------------
 
-        struct = structure(
+        structure = get_structure(
             candles_5m
         )
 
-        if not struct:
+        if not structure:
             return None
 
-        current_price = (
-            struct["price"]
-        )
+        price = structure["price"]
 
         if direction == "CALL":
 
             room = (
-                struct["swing_high"]
-                - current_price
+                structure["high"]
+                - price
             )
 
         else:
 
             room = (
-                current_price
-                - struct["swing_low"]
+                price
+                - structure["low"]
             )
 
         room_atr = (
-            room / atr_5m
-            if atr_5m > 0
-            else 0
+            room
+            / atr_5m
         )
 
         if (
@@ -1632,23 +1877,17 @@ def evaluate_asset(asset):
 
         score += 5
 
-        reasons.append(
-            "Room available"
-        )
-
         # ----------------------------------------------------
         # EXTENSION
         # ----------------------------------------------------
 
-        extension = (
-            distance_5m
+        extension_atr = (
+            distance
             / atr_5m
-            if atr_5m > 0
-            else 0
         )
 
         if (
-            extension
+            extension_atr
             > MAX_EXTENSION_ATR
         ):
 
@@ -1658,26 +1897,25 @@ def evaluate_asset(asset):
             "asset": asset,
             "direction": direction,
             "score": score,
-            "price": current_price,
-            "trend_30m": trend["trend"],
-            "trend_5m": trend_5m["trend"],
-            "rsi_30m": trend["rsi"],
-            "rsi_5m": trend_5m["rsi"],
-            "rsi_1m": rsi_1m,
-            "adx_30m": trend["adx"],
-            "adx_5m": trend_5m["adx"],
-            "room_atr": room_atr,
-            "extension_atr": extension,
-            "pullback_atr": pullback[
-                "distance_atr"
-            ],
-            "trigger": trigger[
-                "trigger"
-            ],
-            "trigger_range_atr": trigger[
-                "range_atr"
-            ],
-            "reasons": reasons,
+            "price": price,
+            "trend_30m":
+                trend_30m["trend"],
+            "trend_5m":
+                trend_5m["trend"],
+            "rsi_30m":
+                trend_30m["rsi"],
+            "rsi_5m":
+                trend_5m["rsi"],
+            "rsi_1m":
+                rsi_1m,
+            "adx":
+                trend_30m["adx"],
+            "room_atr":
+                room_atr,
+            "extension_atr":
+                extension_atr,
+            "trigger":
+                trigger["name"],
         }
 
     except Exception as exc:
@@ -1691,385 +1929,35 @@ def evaluate_asset(asset):
 
 
 # ============================================================
-# OTC DISCOVERY DIAGNOSTIC
-# ============================================================
-
-def otc_diagnostic(
-    opened,
-    reason="",
-):
-
-    global last_otc_diagnostic
-
-    current = time.time()
-
-    if (
-        current
-        - last_otc_diagnostic
-        < OTC_DIAGNOSTIC_INTERVAL
-    ):
-
-        return
-
-    last_otc_diagnostic = current
-
-    lines = []
-
-    lines.append(
-        "🧪 IQ OPTION OTC DISCOVERY"
-    )
-
-    lines.append(
-        "━━━━━━━━━━━━━━━━━━"
-    )
-
-    if reason:
-
-        lines.append(
-            f"Reason: {reason}"
-        )
-
-    if not isinstance(
-        opened,
-        dict,
-    ):
-
-        lines.append(
-            "IQ Option returned invalid "
-            "market data."
-        )
-
-        telegram(
-            "\n".join(lines)
-        )
-
-        return
-
-    keys = list(
-        opened.keys()
-    )
-
-    lines.append(
-        "Market types: "
-        + ", ".join(
-            map(str, keys)
-        )
-    )
-
-    for market_type in (
-        "binary",
-        "turbo",
-        "digital",
-    ):
-
-        market = opened.get(
-            market_type,
-            {},
-        )
-
-        if not isinstance(
-            market,
-            dict,
-        ):
-
-            lines.append(
-                f"\n{market_type.upper()}: "
-                "invalid data"
-            )
-
-            continue
-
-        total = len(market)
-
-        open_assets = []
-
-        otc_assets = []
-
-        for asset, info in market.items():
-
-            if not isinstance(
-                info,
-                dict,
-            ):
-
-                continue
-
-            if info.get(
-                "open",
-                False,
-            ):
-
-                name = str(asset)
-
-                open_assets.append(
-                    name
-                )
-
-                if "OTC" in name.upper():
-
-                    otc_assets.append(
-                        name
-                    )
-
-        lines.append(
-            f"\n{market_type.upper()}"
-        )
-
-        lines.append(
-            f"Total: {total}"
-        )
-
-        lines.append(
-            f"Open: {len(open_assets)}"
-        )
-
-        lines.append(
-            f"OTC: {len(otc_assets)}"
-        )
-
-        if otc_assets:
-
-            lines.append(
-                "OTC sample: "
-                + ", ".join(
-                    otc_assets[:15]
-                )
-            )
-
-        elif open_assets:
-
-            lines.append(
-                "Open sample: "
-                + ", ".join(
-                    open_assets[:15]
-                )
-            )
-
-        else:
-
-            lines.append(
-                "No open assets returned."
-            )
-
-    telegram(
-        "\n".join(lines)
-    )
-
-
-# ============================================================
-# REAL OTC DISCOVERY
-# ============================================================
-
-def discover_otc_assets():
-
-    try:
-
-        # IMPORTANT:
-        # This API version requires the
-        # polling argument.
-        opened = (
-            iq.get_all_open_time(300)
-        )
-
-        if not opened:
-
-            otc_diagnostic(
-                {},
-                "get_all_open_time returned empty",
-            )
-
-            return []
-
-        assets = set()
-
-        for market_type in (
-            "binary",
-            "turbo",
-            "digital",
-        ):
-
-            market = opened.get(
-                market_type,
-                {},
-            )
-
-            if not isinstance(
-                market,
-                dict,
-            ):
-
-                continue
-
-            for asset, info in market.items():
-
-                if not isinstance(
-                    info,
-                    dict,
-                ):
-
-                    continue
-
-                if not info.get(
-                    "open",
-                    False,
-                ):
-
-                    continue
-
-                name = str(asset)
-
-                # Only accept actual OTC names
-                # returned by IQ Option.
-                if "OTC" in name.upper():
-
-                    assets.add(name)
-
-        if not assets:
-
-            otc_diagnostic(
-                opened,
-                "No open OTC symbols matched",
-            )
-
-        return sorted(
-            assets
-        )
-
-    except Exception as exc:
-
-        print(
-            "OTC discovery error:",
-            exc,
-        )
-
-        telegram(
-            "🔴 OTC DISCOVERY ERROR\n"
-            f"{type(exc).__name__}: {exc}"
-        )
-
-        return []
-
-
-# ============================================================
-# CONNECT
-# ============================================================
-
-def connect():
-
-    global iq
-
-    if not IQ_EMAIL or not IQ_PASSWORD:
-
-        telegram(
-            "🔴 IQ OPTION CREDENTIALS MISSING\n"
-            "Set IQ_EMAIL and IQ_PASSWORD."
-        )
-
-        return False
-
-    # --------------------------------------------------------
-    # HARD DEMO SAFETY
-    # --------------------------------------------------------
-
-    if AUTO_TRADE:
-
-        if PRACTICE is not True:
-
-            telegram(
-                "🛑 AUTO-TRADE BLOCKED\n"
-                "PRACTICE must be True."
-            )
-
-            return False
-
-        if DEMO_ONLY_LOCK is not True:
-
-            telegram(
-                "🛑 AUTO-TRADE BLOCKED\n"
-                "DEMO_ONLY_LOCK must remain True."
-            )
-
-            return False
-
-    try:
-
-        iq = IQ_Option(
-            IQ_EMAIL,
-            IQ_PASSWORD,
-        )
-
-        ok = iq.connect()
-
-        if not ok:
-
-            telegram(
-                "🔴 IQ OPTION CONNECTION FAILED"
-            )
-
-            return False
-
-        if not iq.check_connect():
-
-            telegram(
-                "🔴 IQ OPTION LOGIN FAILED"
-            )
-
-            return False
-
-        # ----------------------------------------------------
-        # FORCE PRACTICE ACCOUNT
-        # ----------------------------------------------------
-
-        iq.change_balance(
-            "PRACTICE"
-        )
-
-        time.sleep(2)
-
-        telegram(
-            "🟢 IQ OPTION CONNECTED\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "Account: PRACTICE\n"
-            "Automatic trading: ENABLED\n"
-            "Stake: $1.00\n"
-            "Expiry: 3 minutes\n"
-            "Mode: DEMO TEST ONLY\n"
-            "━━━━━━━━━━━━━━━━━━"
-        )
-
-        return True
-
-    except Exception as exc:
-
-        telegram(
-            "🔴 CONNECTION ERROR\n"
-            f"{type(exc).__name__}: {exc}"
-        )
-
-        return False
-
-
-# ============================================================
 # SIGNAL ID
 # ============================================================
 
-def signal_id(signal):
+def make_signal_id(
+    signal
+):
+
+    asset = (
+        signal["asset"]
+        .replace(
+            "/",
+            "",
+        )
+        .replace(
+            "-",
+            "",
+        )
+    )
 
     timestamp = (
         datetime.now(
             timezone.utc
-        ).strftime("%H%M%S")
-    )
-
-    asset = (
-        signal["asset"]
-        .replace("/", "")
-        .replace("-", "")
-        .upper()
+        ).strftime(
+            "%H%M%S"
+        )
     )
 
     return (
-        f"{asset}-"
+        f"{asset.upper()}-"
         f"{signal['direction']}-"
         f"{timestamp}"
     )
@@ -2084,15 +1972,18 @@ def send_signal(
     sid,
 ):
 
-    message = (
-        "🟢 BACK TO TREND SIGNAL\n"
+    telegram(
+        "🟢 QUALIFIED BACK TO TREND SIGNAL\n"
         "━━━━━━━━━━━━━━━━━━\n"
         f"Asset: {signal['asset']}\n"
-        f"Direction: {signal['direction']}\n"
-        f"Score: {signal['score']}/100\n"
-        f"Reference expiry: "
+        f"Direction: "
+        f"{signal['direction']}\n"
+        f"Score: "
+        f"{signal['score']}/100\n"
+        f"Expiry: "
         f"{EXPIRY_MINUTES} minutes\n"
-        f"Price: {signal['price']}\n"
+        f"Price: "
+        f"{signal['price']}\n"
         "\n"
         f"30M Trend: "
         f"{signal['trend_30m']}\n"
@@ -2107,7 +1998,7 @@ def send_signal(
         f"1M RSI: "
         f"{signal['rsi_1m']:.1f}\n"
         f"ADX: "
-        f"{signal['adx_30m']:.1f}\n"
+        f"{signal['adx']:.1f}\n"
         f"Room: "
         f"{signal['room_atr']:.2f} ATR\n"
         f"Extension: "
@@ -2118,13 +2009,9 @@ def send_signal(
         "🤖 DEMO AUTO-TRADE"
     )
 
-    telegram(
-        message
-    )
-
 
 # ============================================================
-# EXECUTE DEMO TRADE
+# PLACE DEMO TRADE
 # ============================================================
 
 def execute_demo_trade(
@@ -2132,37 +2019,32 @@ def execute_demo_trade(
     sid,
 ):
 
-    global last_trade_time
-    global trade_count
     global active_trade
+    global trade_count
+    global last_trade_time
 
     if not AUTO_TRADE:
         return False
 
-    # --------------------------------------------------------
-    # HARD DEMO LOCK
-    # --------------------------------------------------------
-
-    if not PRACTICE:
+    if PRACTICE is not True:
 
         telegram(
             "🛑 TRADE BLOCKED\n"
-            "PRACTICE is not True."
+            "PRACTICE safety lock failed."
         )
 
         return False
 
-    if not DEMO_ONLY_LOCK:
+    if DEMO_ONLY_LOCK is not True:
 
         telegram(
             "🛑 TRADE BLOCKED\n"
-            "DEMO_ONLY_LOCK is disabled."
+            "DEMO_ONLY_LOCK failed."
         )
 
         return False
 
     if active_trade is not None:
-
         return False
 
     if (
@@ -2190,26 +2072,35 @@ def execute_demo_trade(
     try:
 
         # ----------------------------------------------------
-        # VERIFY ASSET IS STILL OPEN
+        # VERIFY BINARY/TURBO ACTIVE
         # ----------------------------------------------------
 
-        opened = (
-            iq.get_all_open_time(
-                300
-            )
+        market_data = (
+            iq.get_all_init_v2()
         )
 
-        is_open = False
+        if not market_data:
+
+            telegram(
+                "🟠 DEMO TRADE SKIPPED\n"
+                "Market initialization data "
+                "is unavailable."
+            )
+
+            return False
+
+        found = False
 
         for market_type in (
             "binary",
             "turbo",
-            "digital",
         ):
 
-            market = opened.get(
-                market_type,
-                {},
+            market = (
+                market_data.get(
+                    market_type,
+                    {},
+                )
             )
 
             if not isinstance(
@@ -2219,36 +2110,84 @@ def execute_demo_trade(
 
                 continue
 
-            info = market.get(
-                asset
+            actives = (
+                market.get(
+                    "actives",
+                    {},
+                )
             )
 
-            if (
-                isinstance(
-                    info,
-                    dict,
-                )
-                and info.get(
-                    "open",
-                    False,
-                )
+            if not isinstance(
+                actives,
+                dict,
             ):
 
-                is_open = True
+                continue
 
-                break
+            for active_id, info in (
+                actives.items()
+            ):
 
-        if not is_open:
+                if not isinstance(
+                    info,
+                    dict,
+                ):
+
+                    continue
+
+                name = str(
+                    info.get(
+                        "name",
+                        "",
+                    )
+                )
+
+                if "." in name:
+
+                    name = (
+                        name.split(
+                            ".",
+                            1,
+                        )[1]
+                    )
+
+                if (
+                    name
+                    == asset
+                ):
+
+                    enabled = info.get(
+                        "enabled",
+                        True,
+                    )
+
+                    suspended = info.get(
+                        "is_suspended",
+                        False,
+                    )
+
+                    if (
+                        enabled
+                        and not suspended
+                    ):
+
+                        found = True
+
+                    break
+
+        if not found:
 
             telegram(
                 "⏭ DEMO TRADE SKIPPED\n"
-                f"{asset} is no longer open."
+                f"Asset: {asset}\n"
+                "Asset is no longer confirmed "
+                "as an open binary/turbo OTC."
             )
 
             return False
 
         # ----------------------------------------------------
-        # TRADE MESSAGE
+        # PLACE ORDER
         # ----------------------------------------------------
 
         telegram(
@@ -2274,9 +2213,9 @@ def execute_demo_trade(
             EXPIRY_MINUTES,
         )
 
-        order_id = None
+        status = False
 
-        status = True
+        order_id = None
 
         if isinstance(
             result,
@@ -2291,18 +2230,13 @@ def execute_demo_trade(
 
                 order_id = result[1]
 
-            elif len(result) == 1:
+        elif result:
 
-                order_id = result[0]
-
-        else:
+            status = True
 
             order_id = result
 
-        if (
-            not status
-            or not order_id
-        ):
+        if not status:
 
             telegram(
                 "🔴 DEMO ORDER FAILED\n"
@@ -2316,33 +2250,32 @@ def execute_demo_trade(
             return False
 
         active_trade = {
-            "id": order_id,
+            "order_id": order_id,
             "asset": asset,
-            "direction": (
-                direction.upper()
-            ),
+            "direction":
+                direction.upper(),
             "signal_id": sid,
-            "stake": STAKE,
-            "score": signal["score"],
-            "opened_at": time.time(),
+            "opened_at":
+                time.time(),
         }
+
+        trade_count += 1
 
         last_trade_time = (
             time.time()
         )
 
-        trade_count += 1
-
         telegram(
             "🟢 DEMO TRADE OPENED\n"
             "━━━━━━━━━━━━━━━━━━\n"
+            f"Trade #: "
+            f"{trade_count}\n"
             f"Asset: {asset}\n"
             f"Direction: "
             f"{direction.upper()}\n"
             f"Stake: ${STAKE:.2f}\n"
             f"Expiry: "
             f"{EXPIRY_MINUTES} minutes\n"
-            f"Trade #: {trade_count}\n"
             f"Signal ID: {sid}\n"
             f"Order ID: {order_id}\n"
             "━━━━━━━━━━━━━━━━━━"
@@ -2363,10 +2296,10 @@ def execute_demo_trade(
 
 
 # ============================================================
-# MONITOR ACTIVE TRADE
+# CHECK DEMO TRADE RESULT
 # ============================================================
 
-def monitor_active_trade():
+def monitor_trade():
 
     global active_trade
     global wins
@@ -2378,54 +2311,65 @@ def monitor_active_trade():
     if active_trade is None:
         return
 
-    order_id = active_trade["id"]
+    order_id = (
+        active_trade[
+            "order_id"
+        ]
+    )
 
     try:
 
-        telegram(
-            "⏳ DEMO TRADE WAITING\n"
-            f"{active_trade['asset']} "
-            f"{active_trade['direction']}\n"
-            f"Signal: "
-            f"{active_trade['signal_id']}\n"
-            "Waiting for expiry/result..."
-        )
-
-        profit = None
+        # ----------------------------------------------------
+        # Preferred v3
+        # ----------------------------------------------------
 
         if hasattr(
             iq,
             "check_win_v3",
         ):
 
-            profit = iq.check_win_v3(
-                order_id
+            profit = (
+                iq.check_win_v3(
+                    order_id
+                )
             )
+
+        # ----------------------------------------------------
+        # Fallback v2
+        # ----------------------------------------------------
 
         elif hasattr(
             iq,
             "check_win_v2",
         ):
 
-            profit = iq.check_win_v2(
-                order_id,
-                2,
+            profit = (
+                iq.check_win_v2(
+                    order_id,
+                    3,
+                )
             )
+
+        # ----------------------------------------------------
+        # Fallback
+        # ----------------------------------------------------
 
         elif hasattr(
             iq,
             "check_win",
         ):
 
-            profit = iq.check_win(
-                order_id
+            profit = (
+                iq.check_win(
+                    order_id
+                )
             )
 
         else:
 
             raise RuntimeError(
-                "No supported result-check "
-                "method found."
+                "No supported result "
+                "function found."
             )
 
         profit = safe_float(
@@ -2441,7 +2385,7 @@ def monitor_active_trade():
 
             consecutive_losses = 0
 
-            result_text = "WIN 🟢"
+            result = "WIN 🟢"
 
         elif profit < 0:
 
@@ -2449,15 +2393,15 @@ def monitor_active_trade():
 
             consecutive_losses += 1
 
-            result_text = "LOSS 🔴"
+            result = "LOSS 🔴"
 
         else:
 
             draws += 1
 
-            result_text = "DRAW 🟡"
+            result = "DRAW 🟡"
 
-        total = (
+        completed = (
             wins
             + losses
             + draws
@@ -2484,25 +2428,25 @@ def monitor_active_trade():
         telegram(
             "📊 DEMO TRADE RESULT\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            f"Result: {result_text}\n"
+            f"Result: {result}\n"
             f"Asset: "
             f"{active_trade['asset']}\n"
             f"Direction: "
             f"{active_trade['direction']}\n"
-            f"Profit: ${profit:.2f}\n"
+            f"Profit: "
+            f"${profit:.2f}\n"
             f"Signal ID: "
             f"{active_trade['signal_id']}\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            f"Trades: {total}\n"
+            f"Completed: "
+            f"{completed}\n"
             f"Wins: {wins}\n"
             f"Losses: {losses}\n"
             f"Draws: {draws}\n"
             f"Win rate: "
             f"{win_rate:.2f}%\n"
             f"Net demo P/L: "
-            f"${total_profit:.2f}\n"
-            f"Consecutive losses: "
-            f"{consecutive_losses}"
+            f"${total_profit:.2f}"
         )
 
         active_trade = None
@@ -2510,16 +2454,17 @@ def monitor_active_trade():
     except Exception as exc:
 
         print(
-            "Result monitoring error:",
-            exc,
+            traceback.format_exc()
         )
 
         telegram(
-            "⚠️ RESULT CHECK ERROR\n"
-            f"Signal: "
-            f"{active_trade['signal_id']}\n"
+            "⚠️ TRADE RESULT ERROR\n"
             f"{type(exc).__name__}: {exc}"
         )
+
+        # Do not immediately place another
+        # trade while result state is unknown.
+        time.sleep(10)
 
 
 # ============================================================
@@ -2527,7 +2472,7 @@ def monitor_active_trade():
 # ============================================================
 
 def send_status(
-    assets,
+    assets
 ):
 
     global last_status_time
@@ -2542,12 +2487,6 @@ def send_status(
 
     last_status_time = (
         time.time()
-    )
-
-    total = (
-        wins
-        + losses
-        + draws
     )
 
     if (
@@ -2610,33 +2549,33 @@ def send_status(
 
 
 # ============================================================
-# TELEGRAM UPDATES
+# TELEGRAM COMMANDS
 # ============================================================
 
-def telegram_updates(
-    offset=None,
-):
+def poll_telegram():
+
+    global telegram_offset
 
     if not TELEGRAM_TOKEN:
-        return []
+        return
 
     try:
-
-        url = (
-            "https://api.telegram.org/bot"
-            f"{TELEGRAM_TOKEN}/getUpdates"
-        )
 
         params = {
             "timeout": 1,
         }
 
-        if offset is not None:
+        if telegram_offset is not None:
 
-            params["offset"] = offset
+            params["offset"] = (
+                telegram_offset
+            )
 
         response = requests.get(
-            url,
+            (
+                "https://api.telegram.org/bot"
+                f"{TELEGRAM_TOKEN}/getUpdates"
+            ),
             params=params,
             timeout=5,
         )
@@ -2644,172 +2583,115 @@ def telegram_updates(
         data = response.json()
 
         if not data.get(
-            "ok"
+            "ok",
+            False,
         ):
 
-            return []
+            return
 
-        return data.get(
+        for update in data.get(
             "result",
             [],
-        )
-
-    except Exception:
-
-        return []
-
-
-# ============================================================
-# TELEGRAM COMMANDS
-# ============================================================
-
-def handle_command(
-    text,
-):
-
-    text = text.strip()
-
-    if text == "/stats":
-
-        total = (
-            wins
-            + losses
-            + draws
-        )
-
-        if (
-            wins + losses
-            > 0
         ):
 
-            rate = (
-                wins
-                / (
-                    wins
-                    + losses
+            telegram_offset = (
+                update["update_id"]
+                + 1
+            )
+
+            message = update.get(
+                "message",
+                {},
+            )
+
+            text = message.get(
+                "text",
+                "",
+            )
+
+            if text == "/stats":
+
+                if (
+                    wins + losses
+                    > 0
+                ):
+
+                    rate = (
+                        wins
+                        / (
+                            wins
+                            + losses
+                        )
+                        * 100
+                    )
+
+                else:
+
+                    rate = 0.0
+
+                telegram(
+                    "📊 DEMO STATISTICS\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    f"Trades: "
+                    f"{trade_count}\n"
+                    f"Wins: {wins}\n"
+                    f"Losses: {losses}\n"
+                    f"Draws: {draws}\n"
+                    f"Win rate: "
+                    f"{rate:.2f}%\n"
+                    f"Net P/L: "
+                    f"${total_profit:.2f}\n"
+                    f"Active trade: "
+                    f"{'YES' if active_trade else 'NO'}\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "PRACTICE ACCOUNT"
                 )
-                * 100
-            )
 
-        else:
+            elif text == "/scan":
 
-            rate = 0.0
+                telegram(
+                    "🔎 SCANNER ACTIVE\n"
+                    "30M Trend → 5M Pullback "
+                    "→ 1M Entry\n"
+                    "Expiry: 3 minutes\n"
+                    "Auto-trade: PRACTICE only"
+                )
 
-        telegram(
-            "📊 DEMO STATISTICS\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            f"Total: {total}\n"
-            f"Wins: {wins}\n"
-            f"Losses: {losses}\n"
-            f"Draws: {draws}\n"
-            f"Win rate: "
-            f"{rate:.2f}%\n"
-            f"Net P/L: "
-            f"${total_profit:.2f}\n"
-            f"Trades this session: "
-            f"{trade_count}\n"
-            f"Consecutive losses: "
-            f"{consecutive_losses}\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "PRACTICE ACCOUNT"
-        )
+            elif text == "/help":
 
-    elif text == "/scan":
+                telegram(
+                    "🤖 COMMANDS\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "/stats\n"
+                    "/scan\n"
+                    "/help\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "Automatic trading is locked "
+                    "to PRACTICE."
+                )
 
-        telegram(
-            "🔎 SCANNER STATUS\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "Back to Trend is running.\n"
-            "30M trend → 5M pullback → "
-            "1M entry\n"
-            "Expiry: 3 minutes\n"
-            "Auto-trade: PRACTICE only"
-        )
-
-    elif text == "/help":
-
-        telegram(
-            "🤖 BACK TO TREND COMMANDS\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "/stats — statistics\n"
-            "/scan — scanner status\n"
-            "/help — commands\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "Automatic trading is locked "
-            "to PRACTICE."
-        )
-
-
-def poll_telegram_commands():
-
-    global telegram_offset
-
-    updates = telegram_updates(
-        telegram_offset
-    )
-
-    for update in updates:
-
-        telegram_offset = (
-            update["update_id"]
-            + 1
-        )
-
-        message = update.get(
-            "message",
-            {},
-        )
-
-        text = message.get(
-            "text",
-            "",
-        )
-
-        if text:
-
-            handle_command(
-                text
-            )
+    except Exception:
+        pass
 
 
 # ============================================================
-# CLEAN SIGNAL MEMORY
-# ============================================================
-
-def cleanup_signal_keys():
-
-    if len(
-        seen_signal_keys
-    ) > 500:
-
-        items = list(
-            seen_signal_keys
-        )
-
-        seen_signal_keys.clear()
-
-        seen_signal_keys.update(
-            items[-250:]
-        )
-
-
-# ============================================================
-# RUN SESSION
+# SESSION
 # ============================================================
 
 def run_session():
 
     global session_started
-    global trade_count
     global last_status_time
 
     session_started = (
         time.time()
     )
 
-    trade_count = 0
-
     last_status_time = 0
+
+    # --------------------------------------------------------
+    # CONNECT
+    # --------------------------------------------------------
 
     if not connect():
 
@@ -2828,11 +2710,9 @@ def run_session():
         "Entry: 1M\n"
         "Expiry: 3 minutes\n"
         "Scan interval: 60 seconds\n"
-        "Status interval: 5 minutes\n"
         "Automatic demo trading: ON\n"
         "Stake: $1.00\n"
-        f"Max trades/session: "
-        f"{MAX_AUTO_TRADES}\n"
+        "Max trades/session: 30\n"
         "━━━━━━━━━━━━━━━━━━\n"
         "PRACTICE ACCOUNT ONLY"
     )
@@ -2845,22 +2725,22 @@ def run_session():
 
         try:
 
-            poll_telegram_commands()
+            poll_telegram()
 
             # ------------------------------------------------
-            # EXISTING TRADE
+            # ACTIVE TRADE
             # ------------------------------------------------
 
             if active_trade is not None:
 
-                monitor_active_trade()
+                monitor_trade()
 
                 time.sleep(5)
 
                 continue
 
             # ------------------------------------------------
-            # CONSECUTIVE LOSS STOP
+            # STOP AFTER 4 CONSECUTIVE LOSSES
             # ------------------------------------------------
 
             if (
@@ -2869,45 +2749,12 @@ def run_session():
             ):
 
                 telegram(
-                    "🛑 DEMO AUTO-TRADING PAUSED\n"
+                    "🛑 DEMO AUTO-TRADING STOPPED\n"
                     "━━━━━━━━━━━━━━━━━━\n"
                     f"Consecutive losses: "
                     f"{consecutive_losses}\n"
                     f"Limit: "
                     f"{MAX_CONSECUTIVE_LOSSES}\n"
-                    "\n"
-                    "Scanner remains connected "
-                    "but will not place more "
-                    "automatic trades this session."
-                )
-
-                while True:
-
-                    poll_telegram_commands()
-
-                    send_status([])
-
-                    time.sleep(30)
-
-            # ------------------------------------------------
-            # TRADE LIMIT
-            # ------------------------------------------------
-
-            if (
-                trade_count
-                >= MAX_AUTO_TRADES
-            ):
-
-                telegram(
-                    "🏁 DEMO TEST SESSION COMPLETE\n"
-                    "━━━━━━━━━━━━━━━━━━\n"
-                    f"Trades: "
-                    f"{trade_count}\n"
-                    f"Wins: {wins}\n"
-                    f"Losses: {losses}\n"
-                    f"Draws: {draws}\n"
-                    f"Net P/L: "
-                    f"${total_profit:.2f}\n"
                     "\n"
                     "No more automatic trades "
                     "will be placed this session."
@@ -2915,14 +2762,61 @@ def run_session():
 
                 while True:
 
-                    poll_telegram_commands()
+                    poll_telegram()
 
-                    send_status([])
+                    time.sleep(30)
+
+            # ------------------------------------------------
+            # STOP AFTER 30 TRADES
+            # ------------------------------------------------
+
+            if (
+                trade_count
+                >= MAX_AUTO_TRADES
+            ):
+
+                if (
+                    wins + losses
+                    > 0
+                ):
+
+                    final_rate = (
+                        wins
+                        / (
+                            wins
+                            + losses
+                        )
+                        * 100
+                    )
+
+                else:
+
+                    final_rate = 0.0
+
+                telegram(
+                    "🏁 30-TRADE DEMO TEST COMPLETE\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    f"Trades: "
+                    f"{trade_count}\n"
+                    f"Wins: {wins}\n"
+                    f"Losses: {losses}\n"
+                    f"Draws: {draws}\n"
+                    f"Win rate: "
+                    f"{final_rate:.2f}%\n"
+                    f"Net demo P/L: "
+                    f"${total_profit:.2f}\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "PRACTICE ACCOUNT ONLY"
+                )
+
+                while True:
+
+                    poll_telegram()
 
                     time.sleep(60)
 
             # ------------------------------------------------
-            # REAL OTC DISCOVERY
+            # DISCOVER OTC
             # ------------------------------------------------
 
             assets = (
@@ -2932,7 +2826,7 @@ def run_session():
             if not assets:
 
                 telegram(
-                    "🟠 NO OTC ASSETS FOUND\n"
+                    "🟠 NO TRADABLE OTC ASSETS FOUND\n"
                     "Scanner remains active.\n"
                     "Retrying automatically."
                 )
@@ -2955,13 +2849,9 @@ def run_session():
             # SCAN
             # ------------------------------------------------
 
-            found_signal = False
-
             for asset in assets:
 
                 try:
-
-                    poll_telegram_commands()
 
                     signal = (
                         evaluate_asset(
@@ -2979,13 +2869,19 @@ def run_session():
 
                         continue
 
+                    # ------------------------------------------------
+                    # PREVENT DUPLICATE SIGNALS
+                    # ------------------------------------------------
+
+                    candle_slot = int(
+                        server_now()
+                        / TF_1M
+                    )
+
                     key = (
                         signal["asset"],
                         signal["direction"],
-                        int(
-                            server_now()
-                            / TF_1M
-                        ),
+                        candle_slot,
                     )
 
                     if (
@@ -2999,10 +2895,10 @@ def run_session():
                         key
                     )
 
-                    cleanup_signal_keys()
-
-                    sid = signal_id(
-                        signal
+                    sid = (
+                        make_signal_id(
+                            signal
+                        )
                     )
 
                     send_signal(
@@ -3010,39 +2906,33 @@ def run_session():
                         sid,
                     )
 
-                    found_signal = True
-
                     # ------------------------------------------------
                     # AUTOMATIC DEMO TRADE
                     # ------------------------------------------------
 
-                    execute_demo_trade(
-                        signal,
-                        sid,
+                    placed = (
+                        execute_demo_trade(
+                            signal,
+                            sid,
+                        )
                     )
 
-                    if (
-                        active_trade
-                        is not None
-                    ):
+                    if placed:
 
                         break
 
                 except Exception as exc:
 
                     print(
-                        f"Asset scan error "
+                        f"Asset error "
                         f"{asset}: {exc}"
                     )
 
-            if not found_signal:
+            if len(
+                seen_signal_keys
+            ) > 500:
 
-                print(
-                    f"[{utc_text()}] "
-                    f"No qualified signal. "
-                    f"OTC assets: "
-                    f"{len(assets)}"
-                )
+                seen_signal_keys.clear()
 
             time.sleep(
                 SCAN_INTERVAL
@@ -3051,7 +2941,7 @@ def run_session():
         except KeyboardInterrupt:
 
             telegram(
-                "🛑 SCANNER STOPPED"
+                "🛑 BACK TO TREND STOPPED"
             )
 
             return
@@ -3074,44 +2964,144 @@ def run_session():
 
 
 # ============================================================
+# CONNECT
+# ============================================================
+
+def connect():
+
+    global iq
+
+    if not IQ_EMAIL:
+
+        telegram(
+            "🔴 IQ_EMAIL is missing."
+        )
+
+        return False
+
+    if not IQ_PASSWORD:
+
+        telegram(
+            "🔴 IQ_PASSWORD is missing."
+        )
+
+        return False
+
+    # --------------------------------------------------------
+    # HARD DEMO SAFETY
+    # --------------------------------------------------------
+
+    if PRACTICE is not True:
+
+        telegram(
+            "🛑 START BLOCKED\n"
+            "PRACTICE must be True."
+        )
+
+        return False
+
+    if DEMO_ONLY_LOCK is not True:
+
+        telegram(
+            "🛑 START BLOCKED\n"
+            "DEMO_ONLY_LOCK must be True."
+        )
+
+        return False
+
+    try:
+
+        iq = IQ_Option(
+            IQ_EMAIL,
+            IQ_PASSWORD,
+        )
+
+        connected = (
+            iq.connect()
+        )
+
+        if not connected:
+
+            telegram(
+                "🔴 IQ OPTION CONNECTION FAILED"
+            )
+
+            return False
+
+        if not iq.check_connect():
+
+            telegram(
+                "🔴 IQ OPTION LOGIN FAILED"
+            )
+
+            return False
+
+        # ----------------------------------------------------
+        # FORCE PRACTICE
+        # ----------------------------------------------------
+
+        iq.change_balance(
+            "PRACTICE"
+        )
+
+        time.sleep(2)
+
+        telegram(
+            "🟢 IQ OPTION CONNECTED\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "Account: PRACTICE\n"
+            "Automatic trading: ENABLED\n"
+            "Stake: $1.00\n"
+            "Expiry: 3 minutes\n"
+            "Mode: DEMO TEST ONLY\n"
+            "━━━━━━━━━━━━━━━━━━"
+        )
+
+        return True
+
+    except Exception as exc:
+
+        telegram(
+            "🔴 CONNECTION ERROR\n"
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return False
+
+
+# ============================================================
 # MAIN
 # ============================================================
 
 def main():
 
     # --------------------------------------------------------
-    # FINAL SAFETY CHECK
+    # ABSOLUTE SAFETY CHECK
     # --------------------------------------------------------
 
-    if AUTO_TRADE:
+    if PRACTICE is not True:
 
-        if PRACTICE is not True:
+        print(
+            "FATAL: PRACTICE must be True."
+        )
 
-            print(
-                "FATAL: PRACTICE must be True."
-            )
+        return
 
-            return
+    if DEMO_ONLY_LOCK is not True:
 
-        if (
-            DEMO_ONLY_LOCK
-            is not True
-        ):
+        print(
+            "FATAL: DEMO_ONLY_LOCK must be True."
+        )
 
-            print(
-                "FATAL: DEMO_ONLY_LOCK "
-                "must be True."
-            )
-
-            return
+        return
 
     telegram(
-        "🚀 BACK TO TREND DEMO TESTER STARTING\n"
+        "🚀 BACK TO TREND V2 STARTING\n"
         "━━━━━━━━━━━━━━━━━━\n"
         "30M Trend → 5M Pullback → 1M Entry\n"
         "Expiry: 3 minutes\n"
         "Stake: $1\n"
-        "Automatic trading: ON\n"
+        "Automatic demo trading: ON\n"
         "Account: PRACTICE\n"
         "Real account: HARD BLOCKED\n"
         "━━━━━━━━━━━━━━━━━━"
@@ -3126,7 +3116,7 @@ def main():
         except KeyboardInterrupt:
 
             telegram(
-                "🛑 BACK TO TREND STOPPED"
+                "🛑 BOT STOPPED"
             )
 
             break
@@ -3138,9 +3128,9 @@ def main():
             )
 
             telegram(
-                "🔴 FATAL SESSION ERROR\n"
+                "🔴 SESSION CRASH\n"
                 f"{type(exc).__name__}: {exc}\n"
-                "Restarting..."
+                "Restarting automatically..."
             )
 
             time.sleep(
@@ -3153,4 +3143,5 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
+
     main()
