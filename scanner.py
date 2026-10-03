@@ -10,25 +10,29 @@ import iqoptionapi.constants as OP_code
 
 
 # ============================================================
-# ZETA V3
-# 3EMA + RSI + TREND PRICE ACTION
+# ZETA V3 — 3EMA + RSI + TREND-BASED PRICE ACTION
+# REAL IQ OPTION OTC DISCOVERY
+# PRACTICE / DEMO ONLY
 #
-# COMBINED FROM:
-#   1. 3(Three)EMA + RSI Strategy v3
+# STRATEGY SOURCES:
+#   1. 3EMA + RSI Strategy v3
 #   2. Trend-based Price Action Strategy
 #
-# PRACTICE / DEMO ONLY
-# REAL IQ OPTION OTC DISCOVERY
-# CLOSED CANDLES ONLY
+# STRUCTURE:
+#   5M = trend / momentum context
+#   1M = price-action entry
+#   EXPIRY = 10 MINUTES
+#
+# RESULT TRACKING:
+#   MANUAL IN IQ OPTION
 # ============================================================
 
 
 # ============================================================
-# ACCOUNT / EXECUTION
+# ACCOUNT / TRADE SETTINGS
 # ============================================================
 
 BALANCE_MODE = "PRACTICE"
-
 STAKE = 1.0
 
 EXPIRY_MINUTES = 10
@@ -43,184 +47,143 @@ TARGET_TRADES = 50
 TF5 = 300
 TF1 = 60
 
-
-# ============================================================
-# DATA
-# ============================================================
-
-# 5M data for:
-# - 5M RSI(20)
-# - 5M trend/slope context
-# - ADX
 CANDLE_COUNT_5M = 220
-
-# 1M data for:
-# - EMA 3/21/50/200
-# - EMA 200/600/1000
-# - RSI14
-# - price action
-# - strong candle
-#
-# 1100 gives enough history for EMA1000.
-CANDLE_COUNT_1M = 1100
+CANDLE_COUNT_1M = 220
 
 
 # ============================================================
-# OTC
+# OTC DISCOVERY
 # ============================================================
 
 MAX_OTC_ASSETS = 70
 
-
-# ============================================================
-# LOOP / CONNECTION
-# ============================================================
-
-SCAN_INTERVAL = 15
-
-STATUS_INTERVAL = 300
-
+DISCOVERY_INTERVAL = 1800
 RECONNECT_INTERVAL = 30
 
-DISCOVERY_INTERVAL = 1800
+
+# ============================================================
+# SCANNING
+# ============================================================
+
+SCAN_INTERVAL = 5
+STATUS_INTERVAL = 300
+
+ASSET_LOCK_SECONDS = 300
+SIGNAL_COOLDOWN_SECONDS = 180
 
 
 # ============================================================
-# TRADE LOCKS
-# ============================================================
-
-ASSET_LOCK_SECONDS = 600
-
-SIGNAL_LOCK_SECONDS = 180
-
-
-# ============================================================
-# ZETA V3 — 3EMA STRATEGY
+# ZETA V3 — PRIMARY 3EMA STRUCTURE
 # ============================================================
 
 EMA_FAST = 3
-
 EMA_MEDIUM = 21
-
 EMA_SLOW_MEDIUM = 50
-
 EMA_SLOW = 200
 
 
 # ============================================================
-# ZETA V3 — MACRO PRICE ACTION EMAS
+# ZETA V3 — 5M RSI
+#
+# Based on the Pine strategy:
+# RSI period = 20
+# Long threshold = 55
+# Short threshold = 45
+# Lookback = 3 HTF bars
+# ============================================================
+
+RSI_PERIOD_5M = 20
+
+RSI_LONG_THRESHOLD = 55
+RSI_SHORT_THRESHOLD = 45
+
+RSI_HTF_LOOKBACK = 3
+
+
+# ============================================================
+# ZETA V3 — EMA SLOPE
+#
+# Based on Pine strategy:
+# slope lookback = 3 HTF periods
+# long >= +0.05%
+# short <= -0.05%
+# flat < 0.02%
+# ============================================================
+
+SLOPE_LOOKBACK_5M = 3
+
+LONG_SLOPE_MIN = 0.05
+SHORT_SLOPE_MAX = -0.05
+
+FLAT_SLOPE_THRESHOLD = 0.02
+
+
+# ============================================================
+# ZETA V3 — STRONG CANDLE
+#
+# Based on Pine strategy:
+# body > average body * 1.5
+# body >= 50% of range
+# average lookback = 20
+# ============================================================
+
+STRONG_CANDLE_LOOKBACK = 20
+STRONG_CANDLE_MULTIPLIER = 1.50
+STRONG_CANDLE_BODY_RATIO = 0.50
+
+
+# ============================================================
+# ZETA V3 — TREND PRICE ACTION
+#
+# Based on Strategy #4
+# ============================================================
+
+PRICE_ACTION_LOOKBACK = 3
+
+
+# ============================================================
+# ZETA V3 — MACRO TREND FILTER
+#
+# Strategy #4 uses:
+# EMA 200 / 600 / 1000
+#
+# We calculate these on 5M candles.
+# This means they represent approximately:
+#   200 x 5m
+#   600 x 5m
+#   1000 x 5m
+#
+# They are used as a secondary macro filter,
+# not as the primary entry engine.
 # ============================================================
 
 MACRO_EMA_FAST = 200
-
 MACRO_EMA_MEDIUM = 600
-
 MACRO_EMA_SLOW = 1000
 
-
-# ============================================================
-# RSI
-# ============================================================
-
-# Pine #3
-RSI_MTF_PERIOD = 20
-
-RSI_MTF_LONG = 55
-
-RSI_MTF_SHORT = 45
-
-RSI_MTF_LOOKBACK = 3
-
-
-# Pine #4
-RSI_PRICE_ACTION_PERIOD = 14
-
-RSI_OVERBOUGHT = 70
-
-RSI_OVERSOLD = 30
-
-RSI_PULLBACK_LOOKBACK = 3
+USE_MACRO_TREND = True
 
 
 # ============================================================
-# EMA SLOPE
-# ============================================================
-
-SLOPE_LOOKBACK = 3
-
-MIN_BULL_SLOPE_PERCENT = 0.05
-
-MIN_BEAR_SLOPE_PERCENT = -0.05
-
-FLAT_SLOPE_PERCENT = 0.02
-
-RANGE_CONFIRM_BARS = 3
-
-
-# ============================================================
-# STRONG CANDLE
-# ============================================================
-
-STRONG_CANDLE_AVG_LOOKBACK = 20
-
-STRONG_CANDLE_MULTIPLIER = 1.50
-
-MIN_STRONG_BODY_RANGE = 0.50
-
-
-# ============================================================
-# ATR / ADX
-# ============================================================
-
-ATR_PERIOD = 14
-
-ADX_PERIOD = 14
-
-MIN_ADX = 18
-
-
-# ============================================================
-# ROOM
-# ============================================================
-
-MIN_ROOM_ATR = 0.80
-
-
-# ============================================================
-# PULLBACK
-# ============================================================
-
-MIN_PULLBACK_ATR = 0.10
-
-MAX_PULLBACK_ATR = 1.80
-
-MAX_EXTENSION_ATR = 2.20
-
-
-# ============================================================
-# ZONE
-# ============================================================
-
-ZONE_TOLERANCE_ATR = 0.35
-
-
-# ============================================================
-# SCORE
+# ZETA V3 — PRICE ACTION RSI
 #
-# Maximum = 100
+# Strategy #4:
+# RSI 14
+# oversold 30
+# overbought 70
+# lookback 3 bars
 #
-# 20 primary EMA trend
-# 15 macro trend
-# 15 RSI
-# 10 EMA slope
-# 15 price action
-# 10 strong candle
-# 5 pullback
-# 5 room
-# 5 ADX
+# This is used as a recent pullback/reversal confirmation.
+# It is NOT required simultaneously with RSI 5M >=55
+# or <=45 because that would create a contradictory filter.
 # ============================================================
 
-MIN_SCORE = 80
+PRICE_ACTION_RSI_PERIOD = 14
+
+PRICE_ACTION_RSI_OVERBOUGHT = 70
+PRICE_ACTION_RSI_OVERSOLD = 30
+
+PRICE_ACTION_RSI_LOOKBACK = 3
 
 
 # ============================================================
@@ -257,7 +220,6 @@ api = None
 otc_assets = []
 
 last_signal_time = {}
-
 last_trade_time = {}
 
 total_trades = 0
@@ -265,18 +227,8 @@ total_trades = 0
 start_time = time.time()
 
 last_status_time = 0
-
 last_discovery_time = 0
-
 last_connection_check = 0
-
-scan_cycles = 0
-
-signals_found = 0
-
-no_trade_cycles = 0
-
-rejection_counts = {}
 
 
 # ============================================================
@@ -302,11 +254,9 @@ def safe_float(
         value = float(value)
 
         if math.isfinite(value):
-
             return value
 
     except Exception:
-
         pass
 
     return default
@@ -318,14 +268,14 @@ def server_now():
 
         if api is not None:
 
-            value = api.get_server_timestamp()
+            value = (
+                api.get_server_timestamp()
+            )
 
             if value:
-
                 return int(value)
 
     except Exception:
-
         pass
 
     return int(time.time())
@@ -346,21 +296,6 @@ def runtime_string():
 
     return (
         f"{hours}h {minutes}m"
-    )
-
-
-def remember_rejection(
-    reason
-):
-
-    rejection_counts[
-        reason
-    ] = (
-        rejection_counts.get(
-            reason,
-            0
-        )
-        + 1
     )
 
 
@@ -404,7 +339,6 @@ def send_telegram(text):
         )
 
         if response.ok:
-
             return True
 
         print(
@@ -433,7 +367,6 @@ def is_otc_name(name):
         name,
         str,
     ):
-
         return False
 
     upper = (
@@ -442,27 +375,18 @@ def is_otc_name(name):
     )
 
     return (
-        upper.endswith(
-            "-OTC"
-        )
-        or upper.endswith(
-            "_OTC"
-        )
-        or upper.endswith(
-            " OTC"
-        )
+        upper.endswith("-OTC")
+        or upper.endswith("_OTC")
+        or upper.endswith(" OTC")
         or "-OTC." in upper
         or "_OTC." in upper
         or " OTC." in upper
     )
 
 
-def clean_active_name(
-    raw_name
-):
+def clean_active_name(raw_name):
 
     if raw_name is None:
-
         return None
 
     name = str(
@@ -481,7 +405,7 @@ def clean_active_name(
 
 
 # ============================================================
-# ACTIVE ID
+# ACTIVE ID REGISTRATION
 # ============================================================
 
 def register_active_id(
@@ -490,17 +414,14 @@ def register_active_id(
 ):
 
     if not name:
-
         return False
 
     try:
-
         active_id = int(
             active_id
         )
 
     except Exception:
-
         return False
 
     try:
@@ -530,7 +451,6 @@ def register_active_id(
 def get_raw_initialization():
 
     if api is None:
-
         return None
 
     print(
@@ -560,8 +480,8 @@ def get_raw_initialization():
         if data:
 
             print(
-                "[RAW] "
-                "get_all_init_v2 received."
+                "[RAW] get_all_init_v2 "
+                "received."
             )
 
             print(
@@ -592,8 +512,8 @@ def get_raw_initialization():
         if data:
 
             print(
-                "[RAW] "
-                "get_all_init received."
+                "[RAW] get_all_init "
+                "received."
             )
 
             print(
@@ -644,15 +564,14 @@ def discover_otc_from_initialization(
     ):
 
         print(
-            "[DISCOVERY] "
-            "Unexpected root type:",
+            "[DISCOVERY] Unexpected "
+            "root type:",
             type(data).__name__,
         )
 
         return []
 
     found = []
-
     seen = set()
 
     def walk(
@@ -660,11 +579,9 @@ def discover_otc_from_initialization(
         market_type="unknown",
     ):
 
-        if (
-            len(found)
-            >= MAX_OTC_ASSETS
+        if len(found) >= (
+            MAX_OTC_ASSETS
         ):
-
             return
 
         if isinstance(
@@ -688,18 +605,15 @@ def discover_otc_from_initialization(
                         active,
                     ) in actives.items():
 
-                        if (
-                            len(found)
-                            >= MAX_OTC_ASSETS
+                        if len(found) >= (
+                            MAX_OTC_ASSETS
                         ):
-
                             return
 
                         if not isinstance(
                             active,
                             dict,
                         ):
-
                             continue
 
                         raw_name = (
@@ -717,7 +631,6 @@ def discover_otc_from_initialization(
                         if not is_otc_name(
                             name
                         ):
-
                             continue
 
                         enabled = bool(
@@ -735,11 +648,9 @@ def discover_otc_from_initialization(
                         )
 
                         if not enabled:
-
                             continue
 
                         if suspended:
-
                             continue
 
                         try:
@@ -763,7 +674,6 @@ def discover_otc_from_initialization(
                         )
 
                         if key in seen:
-
                             continue
 
                         seen.add(key)
@@ -802,10 +712,7 @@ def discover_otc_from_initialization(
 
                 if isinstance(
                     value,
-                    (
-                        dict,
-                        list,
-                    ),
+                    (dict, list),
                 ):
 
                     walk(
@@ -820,11 +727,9 @@ def discover_otc_from_initialization(
 
             for item in node:
 
-                if (
-                    len(found)
-                    >= MAX_OTC_ASSETS
+                if len(found) >= (
+                    MAX_OTC_ASSETS
                 ):
-
                     return
 
                 walk(
@@ -840,8 +745,8 @@ def discover_otc_from_initialization(
     ):
 
         print(
-            "[DISCOVERY] "
-            "result wrapper detected."
+            "[DISCOVERY] result "
+            "wrapper detected."
         )
 
         root = data[
@@ -849,8 +754,7 @@ def discover_otc_from_initialization(
         ]
 
     print(
-        "[DISCOVERY] "
-        "Top-level keys:"
+        "[DISCOVERY] Top-level keys:"
     )
 
     for key in root.keys():
@@ -896,8 +800,8 @@ def discover_otc_from_initialization(
     else:
 
         print(
-            "[DISCOVERY] No enabled OTC "
-            "instruments found."
+            "\n[DISCOVERY] No enabled "
+            "OTC instruments found."
         )
 
     return found[
@@ -912,7 +816,6 @@ def discover_otc_from_initialization(
 def normalize_candles(raw):
 
     if not raw:
-
         return []
 
     result = []
@@ -923,19 +826,13 @@ def normalize_candles(raw):
 
             item = {
                 "from": safe_float(
-                    candle.get(
-                        "from"
-                    )
+                    candle.get("from")
                 ),
                 "open": safe_float(
-                    candle.get(
-                        "open"
-                    )
+                    candle.get("open")
                 ),
                 "close": safe_float(
-                    candle.get(
-                        "close"
-                    )
+                    candle.get("close")
                 ),
                 "low": safe_float(
                     candle.get(
@@ -972,7 +869,6 @@ def normalize_candles(raw):
                 )
 
         except Exception:
-
             continue
 
     result.sort(
@@ -983,7 +879,7 @@ def normalize_candles(raw):
 
 
 # ============================================================
-# CLOSED CANDLES
+# CLOSED CANDLES ONLY
 # ============================================================
 
 def remove_open_candle(
@@ -992,7 +888,6 @@ def remove_open_candle(
 ):
 
     if len(candles) < 2:
-
         return candles
 
     current_time = (
@@ -1021,7 +916,7 @@ def remove_open_candle(
 
 
 # ============================================================
-# CANDLE FETCH
+# SAFE CANDLE FETCH
 # ============================================================
 
 def get_candles_safe(
@@ -1031,7 +926,6 @@ def get_candles_safe(
 ):
 
     if api is None:
-
         return []
 
     try:
@@ -1039,34 +933,28 @@ def get_candles_safe(
         raw = api.get_candles(
             asset,
             interval,
-            count + 10,
+            count + 5,
             server_now(),
         )
 
-        candles = (
-            normalize_candles(
-                raw
-            )
+        candles = normalize_candles(
+            raw
         )
 
-        candles = (
-            remove_open_candle(
-                candles,
-                interval,
-            )
+        candles = remove_open_candle(
+            candles,
+            interval,
         )
 
-        return candles[
-            -count:
-        ]
+        return candles[-count:]
 
     except Exception as e:
 
         print(
-            "[CANDLE ERROR]",
-            asset,
-            interval,
-            repr(e),
+            f"[CANDLE ERROR] "
+            f"{asset} "
+            f"{interval}s -> "
+            f"{repr(e)}"
         )
 
         return []
@@ -1085,7 +973,8 @@ def ema(
 
         return [
             None
-        ] * len(values)
+            for _ in values
+        ]
 
     multiplier = (
         2.0
@@ -1097,7 +986,8 @@ def ema(
 
     result = [
         None
-    ] * len(values)
+        for _ in values
+    ]
 
     seed = (
         sum(
@@ -1148,24 +1038,21 @@ def atr_values(
 
         return [
             None
-        ] * len(candles)
+            for _ in candles
+        ]
 
     trs = [
         None
-    ] * len(candles)
+        for _ in candles
+    ]
 
     for i in range(
         1,
         len(candles),
     ):
 
-        high = candles[i][
-            "high"
-        ]
-
-        low = candles[i][
-            "low"
-        ]
+        high = candles[i]["high"]
+        low = candles[i]["low"]
 
         previous_close = (
             candles[
@@ -1187,7 +1074,8 @@ def atr_values(
 
     result = [
         None
-    ] * len(candles)
+        for _ in candles
+    ]
 
     seed = [
         x
@@ -1196,7 +1084,6 @@ def atr_values(
     ]
 
     if len(seed) < period:
-
         return result
 
     current = (
@@ -1208,9 +1095,7 @@ def atr_values(
         / period
     )
 
-    result[
-        period
-    ] = current
+    result[period] = current
 
     for i in range(
         period + 1,
@@ -1218,15 +1103,12 @@ def atr_values(
     ):
 
         if trs[i] is None:
-
             continue
 
         current = (
             (
                 current
-                * (
-                    period - 1
-                )
+                * (period - 1)
             )
             + trs[i]
         ) / period
@@ -1247,15 +1129,14 @@ def rsi_values(
 
     result = [
         None
-    ] * len(closes)
+        for _ in closes
+    ]
 
     if len(closes) <= period:
-
         return result
 
     gains = []
-
-    losses_list = []
+    losses = []
 
     for i in range(
         1,
@@ -1264,22 +1145,20 @@ def rsi_values(
 
         change = (
             closes[i]
-            - closes[
-                i - 1
-            ]
+            - closes[i - 1]
         )
 
         gains.append(
             max(
                 change,
-                0.0
+                0.0,
             )
         )
 
-        losses_list.append(
+        losses.append(
             max(
                 -change,
-                0.0
+                0.0,
             )
         )
 
@@ -1294,7 +1173,7 @@ def rsi_values(
 
     avg_loss = (
         sum(
-            losses_list[
+            losses[
                 :period
             ]
         )
@@ -1332,9 +1211,7 @@ def rsi_values(
         avg_gain = (
             (
                 avg_gain
-                * (
-                    period - 1
-                )
+                * (period - 1)
             )
             + gains[j]
         ) / period
@@ -1342,11 +1219,9 @@ def rsi_values(
         avg_loss = (
             (
                 avg_loss
-                * (
-                    period - 1
-                )
+                * (period - 1)
             )
-            + losses_list[j]
+            + losses[j]
         ) / period
 
         index = j + 1
@@ -1376,260 +1251,10 @@ def rsi_values(
 
 
 # ============================================================
-# ADX
-# ============================================================
-
-def adx_values(
-    candles,
-    period=14,
-):
-
-    length = len(candles)
-
-    result = [
-        None
-    ] * length
-
-    if length < (
-        period * 2
-        + 2
-    ):
-
-        return result
-
-    tr = [
-        0.0
-    ] * length
-
-    plus_dm = [
-        0.0
-    ] * length
-
-    minus_dm = [
-        0.0
-    ] * length
-
-    for i in range(
-        1,
-        length,
-    ):
-
-        high = candles[i][
-            "high"
-        ]
-
-        low = candles[i][
-            "low"
-        ]
-
-        prev_high = (
-            candles[
-                i - 1
-            ]["high"]
-        )
-
-        prev_low = (
-            candles[
-                i - 1
-            ]["low"]
-        )
-
-        prev_close = (
-            candles[
-                i - 1
-            ]["close"]
-        )
-
-        tr[i] = max(
-            high - low,
-            abs(
-                high
-                - prev_close
-            ),
-            abs(
-                low
-                - prev_close
-            ),
-        )
-
-        up_move = (
-            high
-            - prev_high
-        )
-
-        down_move = (
-            prev_low
-            - low
-        )
-
-        if (
-            up_move
-            > down_move
-            and up_move > 0
-        ):
-
-            plus_dm[i] = (
-                up_move
-            )
-
-        if (
-            down_move
-            > up_move
-            and down_move > 0
-        ):
-
-            minus_dm[i] = (
-                down_move
-            )
-
-    atr = (
-        sum(
-            tr[
-                1:period + 1
-            ]
-        )
-        / period
-    )
-
-    plus = (
-        sum(
-            plus_dm[
-                1:period + 1
-            ]
-        )
-        / period
-    )
-
-    minus = (
-        sum(
-            minus_dm[
-                1:period + 1
-            ]
-        )
-        / period
-    )
-
-    dx_values = []
-
-    for i in range(
-        period + 1,
-        length,
-    ):
-
-        atr = (
-            (
-                atr
-                * (
-                    period - 1
-                )
-            )
-            + tr[i]
-        ) / period
-
-        plus = (
-            (
-                plus
-                * (
-                    period - 1
-                )
-            )
-            + plus_dm[i]
-        ) / period
-
-        minus = (
-            (
-                minus
-                * (
-                    period - 1
-                )
-            )
-            + minus_dm[i]
-        ) / period
-
-        if atr <= 0:
-
-            continue
-
-        plus_di = (
-            100.0
-            * plus
-            / atr
-        )
-
-        minus_di = (
-            100.0
-            * minus
-            / atr
-        )
-
-        denominator = (
-            plus_di
-            + minus_di
-        )
-
-        if denominator <= 0:
-
-            continue
-
-        dx = (
-            100.0
-            * abs(
-                plus_di
-                - minus_di
-            )
-            / denominator
-        )
-
-        dx_values.append(
-            dx
-        )
-
-        if len(
-            dx_values
-        ) >= period:
-
-            if (
-                result[
-                    i - 1
-                ]
-                is None
-            ):
-
-                adx = (
-                    sum(
-                        dx_values[
-                            :period
-                        ]
-                    )
-                    / period
-                )
-
-            else:
-
-                adx = (
-                    (
-                        result[
-                            i - 1
-                        ]
-                        * (
-                            period - 1
-                        )
-                    )
-                    + dx
-                ) / period
-
-            result[i] = adx
-
-    return result
-
-
-# ============================================================
 # CANDLE HELPERS
 # ============================================================
 
-def candle_body(
-    candle
-):
+def candle_body(candle):
 
     return abs(
         candle["close"]
@@ -1637,9 +1262,7 @@ def candle_body(
     )
 
 
-def candle_range(
-    candle
-):
+def candle_range(candle):
 
     return (
         candle["high"]
@@ -1647,9 +1270,7 @@ def candle_range(
     )
 
 
-def is_bullish(
-    candle
-):
+def is_bullish(candle):
 
     return (
         candle["close"]
@@ -1657,9 +1278,7 @@ def is_bullish(
     )
 
 
-def is_bearish(
-    candle
-):
+def is_bearish(candle):
 
     return (
         candle["close"]
@@ -1667,138 +1286,175 @@ def is_bearish(
     )
 
 
-def body_ratio(
-    candle
-):
+def body_ratio(candle):
 
     rng = candle_range(
         candle
     )
 
     if rng <= 0:
-
         return 0.0
 
     return (
-        candle_body(
-            candle
-        )
+        candle_body(candle)
         / rng
     )
 
 
 # ============================================================
-# STRONG CANDLE — PINE #3
+# STRONG CANDLE
 # ============================================================
 
-def average_body(
+def is_strong_bullish_candle(
     candles,
-    lookback=20,
+    index,
 ):
 
-    if not candles:
-
-        return 0.0
-
-    subset = candles[
-        -lookback:
-    ]
-
-    bodies = [
-        candle_body(c)
-        for c in subset
-    ]
-
-    if not bodies:
-
-        return 0.0
-
-    return (
-        sum(bodies)
-        / len(bodies)
-    )
-
-
-def is_strong_bullish(
-    candles,
-):
-
-    if not candles:
+    if index < (
+        STRONG_CANDLE_LOOKBACK
+        + 1
+    ):
 
         return False
 
     current = candles[
-        -1
+        index
     ]
 
-    avg = average_body(
-        candles[
-            :-1
-        ],
-        STRONG_CANDLE_AVG_LOOKBACK,
-    )
-
-    if avg <= 0:
+    if not is_bullish(
+        current
+    ):
 
         return False
 
-    return (
-        is_bullish(current)
-        and candle_body(
-            current
+    current_body = (
+        candle_body(current)
+    )
+
+    current_ratio = (
+        body_ratio(current)
+    )
+
+    if (
+        current_ratio
+        < STRONG_CANDLE_BODY_RATIO
+    ):
+
+        return False
+
+    previous_bodies = []
+
+    start = max(
+        0,
+        index
+        - STRONG_CANDLE_LOOKBACK,
+    )
+
+    for i in range(
+        start,
+        index,
+    ):
+
+        previous_bodies.append(
+            candle_body(
+                candles[i]
+            )
         )
+
+    if not previous_bodies:
+        return False
+
+    average_body = (
+        sum(previous_bodies)
+        / len(previous_bodies)
+    )
+
+    return (
+        current_body
         > (
-            avg
+            average_body
             * STRONG_CANDLE_MULTIPLIER
         )
-        and body_ratio(
-            current
-        )
-        >= MIN_STRONG_BODY_RANGE
     )
 
 
-def is_strong_bearish(
+def is_strong_bearish_candle(
     candles,
+    index,
 ):
 
-    if not candles:
+    if index < (
+        STRONG_CANDLE_LOOKBACK
+        + 1
+    ):
 
         return False
 
     current = candles[
-        -1
+        index
     ]
 
-    avg = average_body(
-        candles[
-            :-1
-        ],
-        STRONG_CANDLE_AVG_LOOKBACK,
-    )
-
-    if avg <= 0:
+    if not is_bearish(
+        current
+    ):
 
         return False
 
-    return (
-        is_bearish(current)
-        and candle_body(
-            current
+    current_body = (
+        candle_body(current)
+    )
+
+    current_ratio = (
+        body_ratio(current)
+    )
+
+    if (
+        current_ratio
+        < STRONG_CANDLE_BODY_RATIO
+    ):
+
+        return False
+
+    previous_bodies = []
+
+    start = max(
+        0,
+        index
+        - STRONG_CANDLE_LOOKBACK,
+    )
+
+    for i in range(
+        start,
+        index,
+    ):
+
+        previous_bodies.append(
+            candle_body(
+                candles[i]
+            )
         )
+
+    if not previous_bodies:
+        return False
+
+    average_body = (
+        sum(previous_bodies)
+        / len(previous_bodies)
+    )
+
+    return (
+        current_body
         > (
-            avg
+            average_body
             * STRONG_CANDLE_MULTIPLIER
         )
-        and body_ratio(
-            current
-        )
-        >= MIN_STRONG_BODY_RANGE
     )
 
 
 # ============================================================
-# ENGULFING — PINE #4
+# ENGULFING
+#
+# Based on Strategy #4, with full engulfing structure.
 # ============================================================
 
 def bullish_engulfing(
@@ -1807,22 +1463,12 @@ def bullish_engulfing(
 ):
 
     return (
-        is_bearish(
-            previous
-        )
-        and is_bullish(
-            current
-        )
-        and current[
-            "open"
-        ] <= previous[
-            "close"
-        ]
-        and current[
-            "close"
-        ] >= previous[
-            "open"
-        ]
+        is_bearish(previous)
+        and is_bullish(current)
+        and current["open"]
+        <= previous["close"]
+        and current["close"]
+        >= previous["open"]
     )
 
 
@@ -1832,121 +1478,113 @@ def bearish_engulfing(
 ):
 
     return (
-        is_bullish(
-            previous
-        )
-        and is_bearish(
-            current
-        )
-        and current[
-            "open"
-        ] >= previous[
-            "close"
-        ]
-        and current[
-            "close"
-        ] <= previous[
-            "open"
-        ]
+        is_bullish(previous)
+        and is_bearish(current)
+        and current["open"]
+        >= previous["close"]
+        and current["close"]
+        <= previous["open"]
     )
 
 
 # ============================================================
-# MORNING / EVENING STAR — PINE #4
+# MORNING STAR
+#
+# Translation of Strategy #4.
 # ============================================================
 
 def morning_star(
-    candles
+    candles,
+    index,
 ):
 
-    if len(candles) < 3:
-
+    if index < 2:
         return False
 
-    c2 = candles[-3]
+    first = candles[
+        index - 2
+    ]
 
-    c1 = candles[-2]
+    middle = candles[
+        index - 1
+    ]
 
-    c0 = candles[-1]
+    current = candles[
+        index
+    ]
+
+    first_body = (
+        candle_body(first)
+    )
+
+    middle_body = (
+        candle_body(middle)
+    )
 
     return (
-        c2["low"]
-        > c1["low"]
-        and c1["low"]
-        < c0["low"]
-        and c2["close"]
-        < c2["open"]
-        and c1["close"]
-        > c1["open"]
-        and c0["close"]
+        first["low"]
+        > middle["low"]
+        and middle["low"]
+        < current["low"]
+        and is_bearish(first)
+        and is_bullish(middle)
+        and current["close"]
         > max(
-            c0["open"],
-            c0["close"],
+            current["open"],
+            current["close"],
         )
-        if False
-        else (
-            c2["low"]
-            > c1["low"]
-            and c1["low"]
-            < c0["low"]
-            and c2["close"]
-            < c2["open"]
-            and c1["close"]
-            > c1["open"]
-            and c0["close"]
-            > max(
-                c1["open"],
-                c1["close"],
-            )
-            and candle_body(
-                c1
-            )
-            < candle_body(
-                c2
-            )
-        )
+        and middle_body
+        < first_body
     )
 
 
 def evening_star(
-    candles
+    candles,
+    index,
 ):
 
-    if len(candles) < 3:
-
+    if index < 2:
         return False
 
-    c2 = candles[-3]
+    first = candles[
+        index - 2
+    ]
 
-    c1 = candles[-2]
+    middle = candles[
+        index - 1
+    ]
 
-    c0 = candles[-1]
+    current = candles[
+        index
+    ]
+
+    first_body = (
+        candle_body(first)
+    )
+
+    middle_body = (
+        candle_body(middle)
+    )
 
     return (
-        c2["high"]
-        < c1["high"]
-        and c1["high"]
-        > c0["high"]
-        and c2["close"]
-        > c2["open"]
-        and c1["close"]
-        < c1["open"]
-        and c0["close"]
-        < max(
-            c1["open"],
-            c1["close"],
+        first["high"]
+        < middle["high"]
+        and middle["high"]
+        > current["high"]
+        and is_bullish(first)
+        and is_bearish(middle)
+        and current["close"]
+        < min(
+            current["open"],
+            current["close"],
         )
-        and candle_body(
-            c1
-        )
-        < candle_body(
-            c2
-        )
+        and middle_body
+        < first_body
     )
 
 
 # ============================================================
-# REJECTION
+# REJECTION CANDLES
 # ============================================================
 
 def bullish_rejection(
@@ -1958,7 +1596,6 @@ def bullish_rejection(
     )
 
     if rng <= 0:
-
         return False
 
     lower_wick = (
@@ -1976,9 +1613,7 @@ def bullish_rejection(
     return (
         lower_wick
         >= body
-        and candle[
-            "close"
-        ]
+        and candle["close"]
         >= (
             candle["low"]
             + rng * 0.55
@@ -1995,7 +1630,6 @@ def bearish_rejection(
     )
 
     if rng <= 0:
-
         return False
 
     upper_wick = (
@@ -2013,9 +1647,7 @@ def bearish_rejection(
     return (
         upper_wick
         >= body
-        and candle[
-            "close"
-        ]
+        and candle["close"]
         <= (
             candle["high"]
             - rng * 0.55
@@ -2024,301 +1656,135 @@ def bearish_rejection(
 
 
 # ============================================================
-# SUPPORT / RESISTANCE
+# EMA SLOPE
 # ============================================================
 
-def recent_support(
-    candles,
-    lookback=30,
+def percentage_slope(
+    current,
+    previous,
 ):
 
-    subset = candles[
-        -lookback:
-    ]
-
-    if not subset:
+    if (
+        current is None
+        or previous is None
+        or previous == 0
+    ):
 
         return None
 
-    return min(
-        c["low"]
-        for c in subset
-    )
-
-
-def recent_resistance(
-    candles,
-    lookback=30,
-):
-
-    subset = candles[
-        -lookback:
-    ]
-
-    if not subset:
-
-        return None
-
-    return max(
-        c["high"]
-        for c in subset
-    )
+    return (
+        (
+            current
+            - previous
+        )
+        / abs(previous)
+    ) * 100.0
 
 
 # ============================================================
-# RSI MULTI-BAR CONFIRMATION
+# 5M RSI MULTI-BAR CONFIRMATION
 # ============================================================
 
 def average_recent_values(
     values,
+    end_index,
     lookback,
 ):
 
-    valid = [
-        x
-        for x in values[
-            -lookback:
-        ]
-        if x is not None
-    ]
+    start = (
+        end_index
+        - lookback
+        + 1
+    )
 
-    if len(valid) < lookback:
-
+    if start < 0:
         return None
 
-    return (
-        sum(valid)
-        / len(valid)
-    )
-
-
-def recent_rsi_extreme(
-    rsi,
-    threshold,
-    direction,
-    lookback=3,
-):
-
-    values = [
-        x
-        for x in rsi[
-            -lookback:
-        ]
-        if x is not None
-    ]
-
-    if not values:
-
-        return False
-
-    if direction == "LOW":
-
-        return any(
-            x <= threshold
-            for x in values
-        )
-
-    return any(
-        x >= threshold
-        for x in values
-    )
-
-
-# ============================================================
-# EMA SLOPE
-# ============================================================
-
-def sampled_slope_percent(
-    values,
-    lookback=3,
-):
-
-    valid = [
-        x
-        for x in values[
-            -lookback:
-        ]
-        if x is not None
-    ]
-
-    if len(valid) < 2:
-
-        return None
-
-    start = valid[0]
-
-    end = valid[-1]
-
-    if start == 0:
-
-        return 0.0
-
-    return (
-        (
-            end
-            - start
-        )
-        / abs(start)
-    ) * 100.0
-
-
-def calculate_5m_sampled_ema50_slope(
-    candles_1m
-):
-
-    if len(
-        candles_1m
-    ) < 30:
-
-        return None
-
-    closes = [
-        c["close"]
-        for c in candles_1m
-    ]
-
-    ema50 = ema(
-        closes,
-        EMA_SLOW_MEDIUM,
-    )
-
-    # Sample the 1M EMA50 at the
-    # closes of the latest 5M candles.
-    sampled = []
-
-    current_bucket = None
-
-    bucket_last_index = None
-
-    for i, candle in enumerate(
-        candles_1m
-    ):
-
-        bucket = int(
-            candle["from"]
-            // TF5
-        )
-
-        if (
-            current_bucket
-            is None
-            or bucket
-            != current_bucket
-        ):
-
-            if (
-                bucket_last_index
-                is not None
-            ):
-
-                value = ema50[
-                    bucket_last_index
-                ]
-
-                if value is not None:
-
-                    sampled.append(
-                        value
-                    )
-
-            current_bucket = bucket
-
-        bucket_last_index = i
-
-    if (
-        bucket_last_index
-        is not None
-    ):
-
-        value = ema50[
-            bucket_last_index
-        ]
-
-        if value is not None:
-
-            sampled.append(
-                value
-            )
-
-    return sampled_slope_percent(
-        sampled,
-        SLOPE_LOOKBACK,
-    )
-
-
-# ============================================================
-# RANGE DETECTION
-# ============================================================
-
-def is_ranging_from_slope(
-    candles_1m
-):
-
-    closes = [
-        c["close"]
-        for c in candles_1m
-    ]
-
-    ema50 = ema(
-        closes,
-        EMA_SLOW_MEDIUM,
-    )
-
-    valid = [
-        x
-        for x in ema50[
-            -RANGE_CONFIRM_BARS:
-        ]
-        if x is not None
-    ]
-
-    if len(valid) < (
-        RANGE_CONFIRM_BARS
-    ):
-
-        return False
-
-    changes = []
+    selected = []
 
     for i in range(
-        1,
-        len(valid),
+        start,
+        end_index + 1,
     ):
 
-        previous = valid[
-            i - 1
-        ]
+        if values[i] is None:
+            return None
 
-        current = valid[i]
-
-        if previous == 0:
-
-            continue
-
-        changes.append(
-            (
-                (
-                    current
-                    - previous
-                )
-                / abs(previous)
-            )
-            * 100.0
+        selected.append(
+            values[i]
         )
 
-    if not changes:
+    if len(selected) != lookback:
+        return None
 
-        return False
-
-    return all(
-        abs(x)
-        < FLAT_SLOPE_PERCENT
-        for x in changes
+    return (
+        sum(selected)
+        / len(selected)
     )
 
 
 # ============================================================
-# MAIN ZETA V3 ENGINE
+# PRICE-ACTION RSI PULLBACK
+# ============================================================
+
+def recent_oversold(
+    rsi,
+    index,
+):
+
+    start = max(
+        0,
+        index
+        - PRICE_ACTION_RSI_LOOKBACK
+        + 1,
+    )
+
+    for i in range(
+        start,
+        index + 1,
+    ):
+
+        if (
+            rsi[i] is not None
+            and rsi[i]
+            <= PRICE_ACTION_RSI_OVERSOLD
+        ):
+
+            return True
+
+    return False
+
+
+def recent_overbought(
+    rsi,
+    index,
+):
+
+    start = max(
+        0,
+        index
+        - PRICE_ACTION_RSI_LOOKBACK
+        + 1,
+    )
+
+    for i in range(
+        start,
+        index + 1,
+    ):
+
+        if (
+            rsi[i] is not None
+            and rsi[i]
+            >= PRICE_ACTION_RSI_OVERBOUGHT
+        ):
+
+            return True
+
+    return False
+
+
+# ============================================================
+# ZETA V3 STRATEGY ENGINE
 # ============================================================
 
 def evaluate_zeta_v3(
@@ -2327,528 +1793,430 @@ def evaluate_zeta_v3(
     candles_1m,
 ):
 
-    global signals_found
+    # --------------------------------------------------------
+    # BASIC DATA REQUIREMENTS
+    # --------------------------------------------------------
 
-    if len(
-        candles_5m
-    ) < 80:
-
-        remember_rejection(
-            "insufficient_5m_data"
-        )
-
+    if len(candles_5m) < 210:
         return None
 
-    if len(
-        candles_1m
-    ) < 1000:
-
-        remember_rejection(
-            "insufficient_1m_macro_data"
-        )
-
+    if len(candles_1m) < 80:
         return None
 
-    # ========================================================
-    # CURRENT CLOSED CANDLES
-    # ========================================================
-
-    current = candles_1m[-1]
-
-    previous = candles_1m[-2]
-
-    candle_time = (
-        current["from"]
-    )
-
-    price = current[
-        "close"
-    ]
-
-
-    # ========================================================
-    # 1M EMA SYSTEM — PINE #3
-    # ========================================================
-
-    closes_1m = [
-        c["close"]
-        for c in candles_1m
-    ]
-
-    ema3 = ema(
-        closes_1m,
-        EMA_FAST,
-    )
-
-    ema21 = ema(
-        closes_1m,
-        EMA_MEDIUM,
-    )
-
-    ema50 = ema(
-        closes_1m,
-        EMA_SLOW_MEDIUM,
-    )
-
-    ema200 = ema(
-        closes_1m,
-        EMA_SLOW,
-    )
-
-    i = len(
-        candles_1m
-    ) - 1
-
-    p = i - 1
-
-    values = (
-        ema3[i],
-        ema21[i],
-        ema50[i],
-        ema200[i],
-        ema3[p],
-        ema21[p],
-        ema50[p],
-        ema200[p],
-    )
-
-    if any(
-        x is None
-        for x in values
-    ):
-
-        remember_rejection(
-            "ema_not_ready"
-        )
-
-        return None
-
-    e3 = ema3[i]
-
-    e21 = ema21[i]
-
-    e50 = ema50[i]
-
-    e200 = ema200[i]
-
-    p_e3 = ema3[p]
-
-    p_e21 = ema21[p]
-
-    p_e50 = ema50[p]
-
-    p_e200 = ema200[p]
-
-
-    # ========================================================
-    # PRIMARY TREND — 3/21/50/200
-    # ========================================================
-
-    bullish_primary = (
-        e3 > e21
-        and e21 > e50
-        and e50 > e200
-        and price > e21
-        and price > e50
-    )
-
-    bearish_primary = (
-        e3 < e21
-        and e21 < e50
-        and e50 < e200
-        and price < e21
-        and price < e50
-    )
-
-
-    # ========================================================
-    # PRIMARY REGIME CROSS
-    # ========================================================
-
-    bullish_regime = (
-        e21 >= e50
-        and p_e21 >= p_e50
-    )
-
-    bearish_regime = (
-        e21 <= e50
-        and p_e21 <= p_e50
-    )
-
-    if not (
-        bullish_primary
-        or bearish_primary
-    ):
-
-        remember_rejection(
-            "primary_ema_trend"
-        )
-
-        return None
-
-
-    # ========================================================
-    # MACRO EMA — PINE #4
-    # ========================================================
-
-    macro200 = ema(
-        closes_1m,
-        MACRO_EMA_FAST,
-    )
-
-    macro600 = ema(
-        closes_1m,
-        MACRO_EMA_MEDIUM,
-    )
-
-    macro1000 = ema(
-        closes_1m,
-        MACRO_EMA_SLOW,
-    )
-
-    macro_values = (
-        macro200[i],
-        macro600[i],
-        macro1000[i],
-    )
-
-    if any(
-        x is None
-        for x in macro_values
-    ):
-
-        remember_rejection(
-            "macro_ema_not_ready"
-        )
-
-        return None
-
-    m200 = macro200[i]
-
-    m600 = macro600[i]
-
-    m1000 = macro1000[i]
-
-    macro_bullish = (
-        m200 > m600
-        and m600 > m1000
-        and price > m200
-        and price > m600
-        and price > m1000
-    )
-
-    macro_bearish = (
-        m1000 > m600
-        and m600 > m200
-        and price < m200
-        and price < m600
-        and price < m1000
-    )
-
-
-    # ========================================================
-    # 5M RSI(20) — PINE #3
-    # ========================================================
+    # --------------------------------------------------------
+    # 5M CLOSES
+    # --------------------------------------------------------
 
     closes_5m = [
         c["close"]
         for c in candles_5m
     ]
 
+    # --------------------------------------------------------
+    # PRIMARY EMAs
+    # --------------------------------------------------------
+
+    ema3_5m = ema(
+        closes_5m,
+        EMA_FAST,
+    )
+
+    ema21_5m = ema(
+        closes_5m,
+        EMA_MEDIUM,
+    )
+
+    ema50_5m = ema(
+        closes_5m,
+        EMA_SLOW_MEDIUM,
+    )
+
+    ema200_5m = ema(
+        closes_5m,
+        EMA_SLOW,
+    )
+
+    # --------------------------------------------------------
+    # 5M RSI
+    # --------------------------------------------------------
+
     rsi5 = rsi_values(
         closes_5m,
-        RSI_MTF_PERIOD,
+        RSI_PERIOD_5M,
     )
 
-    current_rsi5 = rsi5[-1]
-
-    average_rsi5 = (
-        average_recent_values(
-            rsi5,
-            RSI_MTF_LOOKBACK,
-        )
+    i5 = (
+        len(candles_5m)
+        - 1
     )
 
-    if (
-        current_rsi5 is None
-        or average_rsi5 is None
+    if i5 < (
+        RSI_HTF_LOOKBACK
+        + SLOPE_LOOKBACK_5M
+        + 5
     ):
 
-        remember_rejection(
-            "rsi5_not_ready"
-        )
+        return None
+
+    # --------------------------------------------------------
+    # PRIMARY VALUES
+    # --------------------------------------------------------
+
+    required_5m = (
+        ema3_5m[i5],
+        ema21_5m[i5],
+        ema50_5m[i5],
+        ema200_5m[i5],
+        rsi5[i5],
+    )
+
+    if any(
+        x is None
+        for x in required_5m
+    ):
 
         return None
 
-    rsi_bullish = (
-        current_rsi5
-        >= RSI_MTF_LONG
-        and average_rsi5
-        >= RSI_MTF_LONG
-    )
+    fast5 = ema3_5m[i5]
+    medium5 = ema21_5m[i5]
+    slow_medium5 = ema50_5m[i5]
+    slow5 = ema200_5m[i5]
 
-    rsi_bearish = (
-        current_rsi5
-        <= RSI_MTF_SHORT
-        and average_rsi5
-        <= RSI_MTF_SHORT
-    )
+    current_rsi5 = rsi5[i5]
 
+    # --------------------------------------------------------
+    # 3-BAR RSI AVERAGE
+    # --------------------------------------------------------
 
-    # ========================================================
-    # 5M EMA50 SLOPE
-    # ========================================================
-
-    slope = (
-        calculate_5m_sampled_ema50_slope(
-            candles_1m
+    rsi_average_3 = (
+        average_recent_values(
+            rsi5,
+            i5,
+            RSI_HTF_LOOKBACK,
         )
     )
 
-    if slope is None:
-
-        remember_rejection(
-            "slope_not_ready"
-        )
-
+    if rsi_average_3 is None:
         return None
 
-    slope_bullish = (
-        slope
-        >= MIN_BULL_SLOPE_PERCENT
+    rsi_long_ok = (
+        current_rsi5
+        >= RSI_LONG_THRESHOLD
+        and rsi_average_3
+        >= RSI_LONG_THRESHOLD
     )
 
-    slope_bearish = (
-        slope
-        <= MIN_BEAR_SLOPE_PERCENT
+    rsi_short_ok = (
+        current_rsi5
+        <= RSI_SHORT_THRESHOLD
+        and rsi_average_3
+        <= RSI_SHORT_THRESHOLD
+    )
+
+    # --------------------------------------------------------
+    # EMA SLOPE
+    # --------------------------------------------------------
+
+    slope_index = (
+        i5
+        - SLOPE_LOOKBACK_5M
+    )
+
+    if slope_index < 0:
+        return None
+
+    slope50 = (
+        percentage_slope(
+            ema50_5m[i5],
+            ema50_5m[
+                slope_index
+            ],
+        )
+    )
+
+    if slope50 is None:
+        return None
+
+    bullish_slope = (
+        slope50
+        >= LONG_SLOPE_MIN
+    )
+
+    bearish_slope = (
+        slope50
+        <= SHORT_SLOPE_MAX
     )
 
     ranging = (
-        abs(slope)
-        < FLAT_SLOPE_PERCENT
-        and is_ranging_from_slope(
-            candles_1m
-        )
+        abs(slope50)
+        < FLAT_SLOPE_THRESHOLD
     )
 
-    if ranging:
+    # --------------------------------------------------------
+    # PRIMARY EMA ALIGNMENT
+    # --------------------------------------------------------
 
-        remember_rejection(
-            "ranging_market"
+    bullish_alignment = (
+        fast5
+        > medium5
+        > slow_medium5
+        > slow5
+    )
+
+    bearish_alignment = (
+        fast5
+        < medium5
+        < slow_medium5
+        < slow5
+    )
+
+    # --------------------------------------------------------
+    # PRIMARY TREND REGIME
+    #
+    # EMA 21 x EMA 200 regime
+    # --------------------------------------------------------
+
+    previous_medium5 = (
+        ema21_5m[i5 - 1]
+    )
+
+    previous_slow5 = (
+        ema200_5m[i5 - 1]
+    )
+
+    bullish_regime = (
+        medium5
+        > slow5
+    )
+
+    bearish_regime = (
+        medium5
+        < slow5
+    )
+
+    bullish_cross_recent = (
+        medium5 > slow5
+        and previous_medium5
+        <= previous_slow5
+    )
+
+    bearish_cross_recent = (
+        medium5 < slow5
+        and previous_medium5
+        >= previous_slow5
+    )
+
+    # --------------------------------------------------------
+    # MACRO TREND
+    #
+    # Strategy #4:
+    # 200 > 600 > 1000 for long
+    # 1000 > 600 > 200 for short
+    # --------------------------------------------------------
+
+    macro_bullish = True
+    macro_bearish = True
+
+    macro_ema_200 = None
+    macro_ema_600 = None
+    macro_ema_1000 = None
+
+    if USE_MACRO_TREND:
+
+        macro_ema_200 = ema(
+            closes_5m,
+            MACRO_EMA_FAST,
         )
 
-        return None
+        macro_ema_600 = ema(
+            closes_5m,
+            MACRO_EMA_MEDIUM,
+        )
 
+        macro_ema_1000 = ema(
+            closes_5m,
+            MACRO_EMA_SLOW,
+        )
 
-    # ========================================================
-    # 1M RSI14 — PRICE ACTION PULLBACK
-    # ========================================================
+        if (
+            macro_ema_1000[i5]
+            is None
+            or macro_ema_600[i5]
+            is None
+            or macro_ema_200[i5]
+            is None
+        ):
 
-    rsi14 = rsi_values(
+            return None
+
+        macro_200 = (
+            macro_ema_200[i5]
+        )
+
+        macro_600 = (
+            macro_ema_600[i5]
+        )
+
+        macro_1000 = (
+            macro_ema_1000[i5]
+        )
+
+        macro_bullish = (
+            macro_200
+            > macro_600
+            > macro_1000
+        )
+
+        macro_bearish = (
+            macro_1000
+            > macro_600
+            > macro_200
+        )
+
+    # --------------------------------------------------------
+    # 1M DATA
+    # --------------------------------------------------------
+
+    closes_1m = [
+        c["close"]
+        for c in candles_1m
+    ]
+
+    ema3_1m = ema(
         closes_1m,
-        RSI_PRICE_ACTION_PERIOD,
+        EMA_FAST,
     )
 
-    current_rsi14 = rsi14[-1]
-
-    if current_rsi14 is None:
-
-        remember_rejection(
-            "rsi14_not_ready"
-        )
-
-        return None
-
-    recent_oversold = (
-        recent_rsi_extreme(
-            rsi14,
-            RSI_OVERSOLD,
-            "LOW",
-            RSI_PULLBACK_LOOKBACK,
-        )
+    ema21_1m = ema(
+        closes_1m,
+        EMA_MEDIUM,
     )
 
-    recent_overbought = (
-        recent_rsi_extreme(
-            rsi14,
-            RSI_OVERBOUGHT,
-            "HIGH",
-            RSI_PULLBACK_LOOKBACK,
-        )
+    ema50_1m = ema(
+        closes_1m,
+        EMA_SLOW_MEDIUM,
     )
 
-    bullish_rsi_pullback = (
-        recent_oversold
-        and current_rsi14 > 30
-        and current_rsi14 < 55
+    ema200_1m = ema(
+        closes_1m,
+        EMA_SLOW,
     )
 
-    bearish_rsi_pullback = (
-        recent_overbought
-        and current_rsi14 < 70
-        and current_rsi14 > 45
+    rsi14_1m = rsi_values(
+        closes_1m,
+        PRICE_ACTION_RSI_PERIOD,
     )
-
-
-    # ========================================================
-    # ATR / ADX
-    # ========================================================
 
     atr1 = atr_values(
         candles_1m,
-        ATR_PERIOD,
+        14,
     )
 
-    atr5 = atr_values(
-        candles_5m,
-        ATR_PERIOD,
+    i1 = (
+        len(candles_1m)
+        - 1
     )
 
-    adx5 = adx_values(
-        candles_5m,
-        ADX_PERIOD,
+    if i1 < 5:
+        return None
+
+    required_1m = (
+        ema3_1m[i1],
+        ema21_1m[i1],
+        ema50_1m[i1],
+        ema200_1m[i1],
+        rsi14_1m[i1],
+        atr1[i1],
     )
 
-    current_atr1 = atr1[-1]
-
-    current_atr5 = atr5[-1]
-
-    current_adx = adx5[-1]
-
-    if (
-        current_atr1 is None
-        or current_atr5 is None
-        or current_adx is None
+    if any(
+        x is None
+        for x in required_1m
     ):
 
-        remember_rejection(
-            "atr_adx_not_ready"
-        )
-
         return None
+
+    current = candles_1m[i1]
+
+    previous = candles_1m[
+        i1 - 1
+    ]
+
+    two_back = candles_1m[
+        i1 - 2
+    ]
+
+    price = current[
+        "close"
+    ]
+
+    current_atr1 = atr1[
+        i1
+    ]
+
+    current_rsi14 = (
+        rsi14_1m[i1]
+    )
 
     if current_atr1 <= 0:
-
-        remember_rejection(
-            "invalid_atr"
-        )
-
         return None
 
-    if current_adx < MIN_ADX:
+    # --------------------------------------------------------
+    # 1M EMA VALUES
+    # --------------------------------------------------------
 
-        remember_rejection(
-            "adx_below_minimum"
-        )
+    fast1 = ema3_1m[i1]
+    medium1 = ema21_1m[i1]
+    slow_medium1 = ema50_1m[i1]
+    slow1 = ema200_1m[i1]
 
-        return None
+    # --------------------------------------------------------
+    # 1M PRICE-ACTION TREND
+    # --------------------------------------------------------
 
-
-    # ========================================================
-    # PULLBACK / EXTENSION
-    # ========================================================
-
-    distance_from_ema21 = abs(
-        price - e21
+    bullish_1m_structure = (
+        fast1
+        > medium1
+        and medium1
+        > slow_medium1
     )
 
-    pullback_atr = (
-        distance_from_ema21
-        / current_atr1
+    bearish_1m_structure = (
+        fast1
+        < medium1
+        and medium1
+        < slow_medium1
     )
 
-    if (
-        pullback_atr
-        < MIN_PULLBACK_ATR
-    ):
-
-        remember_rejection(
-            "pullback_too_small"
-        )
-
-        return None
-
-    if (
-        pullback_atr
-        > MAX_PULLBACK_ATR
-    ):
-
-        remember_rejection(
-            "pullback_too_deep"
-        )
-
-        return None
-
-    if (
-        pullback_atr
-        > MAX_EXTENSION_ATR
-    ):
-
-        remember_rejection(
-            "extension_too_large"
-        )
-
-        return None
-
-
-    # ========================================================
-    # SUPPORT / RESISTANCE
-    # ========================================================
-
-    support = recent_support(
-        candles_1m,
-        30,
+    price_above_primary = (
+        price
+        > medium1
+        and price
+        > slow_medium1
     )
 
-    resistance = recent_resistance(
-        candles_1m,
-        30,
+    price_below_primary = (
+        price
+        < medium1
+        and price
+        < slow_medium1
     )
 
-    if (
-        support is None
-        or resistance is None
-    ):
+    # --------------------------------------------------------
+    # 1M MACRO PRICE POSITION
+    # --------------------------------------------------------
 
-        remember_rejection(
-            "no_support_resistance"
-        )
-
-        return None
-
-    zone_tolerance = (
-        current_atr1
-        * ZONE_TOLERANCE_ATR
+    price_above_200 = (
+        price > slow1
     )
 
-    near_support = (
-        abs(
-            price
-            - support
-        )
-        <= zone_tolerance
+    price_below_200 = (
+        price < slow1
     )
 
-    near_resistance = (
-        abs(
-            price
-            - resistance
-        )
-        <= zone_tolerance
-    )
-
-    near_ema21 = (
-        abs(
-            price
-            - e21
-        )
-        <= zone_tolerance
-    )
-
-
-    # ========================================================
-    # PRICE ACTION — PINE #4
-    # ========================================================
+    # --------------------------------------------------------
+    # PRICE ACTION PATTERNS
+    # --------------------------------------------------------
 
     bull_engulf = (
         bullish_engulfing(
@@ -2866,181 +2234,256 @@ def evaluate_zeta_v3(
 
     bull_morning = (
         morning_star(
-            candles_1m
+            candles_1m,
+            i1,
         )
     )
 
     bear_evening = (
         evening_star(
-            candles_1m
+            candles_1m,
+            i1,
         )
     )
 
-    bullish_pattern = (
-        bull_engulf
-        or bull_morning
-    )
-
-    bearish_pattern = (
-        bear_engulf
-        or bear_evening
-    )
-
-
-    # ========================================================
-    # STRONG CANDLE — PINE #3
-    # ========================================================
-
     strong_bull = (
-        is_strong_bullish(
-            candles_1m
+        is_strong_bullish_candle(
+            candles_1m,
+            i1,
         )
     )
 
     strong_bear = (
-        is_strong_bearish(
-            candles_1m
+        is_strong_bearish_candle(
+            candles_1m,
+            i1,
         )
     )
 
-
-    # ========================================================
-    # CANDLE CONFIRMATION
-    # ========================================================
-
-    bull_rejection = (
+    bull_reject = (
         bullish_rejection(
             current
         )
     )
 
-    bear_rejection = (
+    bear_reject = (
         bearish_rejection(
             current
         )
     )
 
-    bull_candle_confirm = (
-        is_bullish(current)
-        and (
-            strong_bull
-            or bullish_pattern
-            or bull_rejection
+    # --------------------------------------------------------
+    # FINAL PRICE-ACTION TRIGGERS
+    # --------------------------------------------------------
+
+    bullish_price_action = (
+        bull_engulf
+        or bull_morning
+        or strong_bull
+        or (
+            bull_reject
+            and is_bullish(
+                current
+            )
         )
     )
 
-    bear_candle_confirm = (
-        is_bearish(current)
-        and (
-            strong_bear
-            or bearish_pattern
-            or bear_rejection
+    bearish_price_action = (
+        bear_engulf
+        or bear_evening
+        or strong_bear
+        or (
+            bear_reject
+            and is_bearish(
+                current
+            )
         )
     )
 
+    # --------------------------------------------------------
+    # PRICE-ACTION RSI PULLBACK
+    # --------------------------------------------------------
 
-    # ========================================================
-    # ROOM
-    # ========================================================
-
-    room_up = (
-        resistance
-        - price
+    recent_oversold_flag = (
+        recent_oversold(
+            rsi14_1m,
+            i1,
+        )
     )
 
-    room_down = (
+    recent_overbought_flag = (
+        recent_overbought(
+            rsi14_1m,
+            i1,
+        )
+    )
+
+    # --------------------------------------------------------
+    # 1M MOMENTUM
+    # --------------------------------------------------------
+
+    bullish_momentum = (
+        current["close"]
+        > previous["close"]
+        and previous["close"]
+        >= two_back["close"]
+    )
+
+    bearish_momentum = (
+        current["close"]
+        < previous["close"]
+        and previous["close"]
+        <= two_back["close"]
+    )
+
+    # --------------------------------------------------------
+    # CANDLE BODY QUALITY
+    # --------------------------------------------------------
+
+    current_body_ratio = (
+        body_ratio(current)
+    )
+
+    # --------------------------------------------------------
+    # DISTANCE FROM EMA21
+    # --------------------------------------------------------
+
+    distance_from_ema21 = abs(
         price
-        - support
+        - medium1
     )
 
-    room_up_atr = (
-        room_up
+    distance_ema21_atr = (
+        distance_from_ema21
         / current_atr1
     )
 
-    room_down_atr = (
-        room_down
-        / current_atr1
-    )
+    # Avoid chasing candles excessively far from EMA21.
+    max_entry_distance_atr = 1.80
 
+    if (
+        distance_ema21_atr
+        > max_entry_distance_atr
+    ):
 
-    # ========================================================
-    # DIRECTION
-    # ========================================================
+        return None
+
+    # --------------------------------------------------------
+    # FINAL DIRECTION
+    # --------------------------------------------------------
 
     direction = None
 
-    reasons = []
-
     score = 0
 
+    reasons = []
+
+    rejection_reasons = []
 
     # ========================================================
-    # CALL
+    # CALL ENGINE
     # ========================================================
 
-    if bullish_primary:
+    call_core = (
+        bullish_regime
+        and bullish_slope
+        and not ranging
+        and rsi_long_ok
+        and price_above_primary
+        and price_above_200
+    )
 
-        # 20 — primary EMA trend
+    if call_core:
+
+        # ----------------------------------------------------
+        # Trend
+        # ----------------------------------------------------
+
         score += 20
 
         reasons.append(
-            "3/21/50/200 bullish"
+            "5M bullish EMA regime"
         )
 
-        # 15 — macro trend
-        if macro_bullish:
+        # ----------------------------------------------------
+        # EMA alignment
+        # ----------------------------------------------------
+
+        if bullish_alignment:
 
             score += 15
 
             reasons.append(
-                "200/600/1000 bullish"
+                "3/21/50/200 bullish alignment"
             )
 
         else:
 
-            remember_rejection(
-                "macro_not_bullish"
+            rejection_reasons.append(
+                "5M EMA alignment incomplete"
             )
 
-            return None
+        # ----------------------------------------------------
+        # Slope
+        # ----------------------------------------------------
 
-        # 15 — RSI
-        if rsi_bullish:
+        score += 10
 
-            score += 15
+        reasons.append(
+            f"EMA50 slope +{slope50:.3f}%"
+        )
 
-            reasons.append(
-                "5M RSI bullish"
-            )
+        # ----------------------------------------------------
+        # RSI
+        # ----------------------------------------------------
 
-        else:
+        score += 15
 
-            remember_rejection(
-                "5m_rsi_not_bullish"
-            )
+        reasons.append(
+            f"5M RSI {current_rsi5:.1f}"
+        )
 
-            return None
+        reasons.append(
+            f"3-bar RSI avg {rsi_average_3:.1f}"
+        )
 
-        # 10 — slope
-        if slope_bullish:
+        # ----------------------------------------------------
+        # Macro trend
+        # ----------------------------------------------------
+
+        if USE_MACRO_TREND:
+
+            if macro_bullish:
+
+                score += 10
+
+                reasons.append(
+                    "macro EMA bullish"
+                )
+
+            else:
+
+                rejection_reasons.append(
+                    "macro EMA not bullish"
+                )
+
+        # ----------------------------------------------------
+        # 1M structure
+        # ----------------------------------------------------
+
+        if bullish_1m_structure:
 
             score += 10
 
             reasons.append(
-                "EMA50 positive slope"
+                "1M EMA structure bullish"
             )
 
-        else:
+        # ----------------------------------------------------
+        # Price action
+        # ----------------------------------------------------
 
-            remember_rejection(
-                "bullish_slope_failed"
-            )
-
-            return None
-
-        # 15 — price action
-        if bullish_pattern:
+        if bullish_price_action:
 
             score += 15
 
@@ -3056,153 +2499,181 @@ def evaluate_zeta_v3(
                     "morning star"
                 )
 
-        elif bull_candle_confirm:
+            if strong_bull:
 
-            score += 10
+                reasons.append(
+                    "strong bullish candle"
+                )
 
-            reasons.append(
-                "bullish candle confirmation"
-            )
+            if bull_reject:
 
-        else:
-
-            remember_rejection(
-                "no_bullish_trigger"
-            )
-
-            return None
-
-        # 10 — strong candle
-        if strong_bull:
-
-            score += 10
-
-            reasons.append(
-                "strong bullish candle"
-            )
-
-        # 5 — pullback
-        if (
-            bullish_rsi_pullback
-            or near_ema21
-            or near_support
-        ):
-
-            score += 5
-
-            reasons.append(
-                "bullish pullback"
-            )
-
-        # 5 — room
-        if (
-            room_up_atr
-            >= MIN_ROOM_ATR
-        ):
-
-            score += 5
-
-            reasons.append(
-                "room to resistance"
-            )
+                reasons.append(
+                    "bullish rejection"
+                )
 
         else:
 
-            remember_rejection(
-                "insufficient_call_room"
+            rejection_reasons.append(
+                "no bullish price-action trigger"
             )
 
-            return None
+        # ----------------------------------------------------
+        # Momentum
+        # ----------------------------------------------------
 
-        # 5 — ADX
-        if current_adx >= MIN_ADX:
+        if bullish_momentum:
 
             score += 5
 
             reasons.append(
-                "ADX trend strength"
+                "1M bullish momentum"
             )
 
-        # final confirmation
-        if not (
-            bull_candle_confirm
+        # ----------------------------------------------------
+        # RSI pullback bonus
+        # ----------------------------------------------------
+
+        if recent_oversold_flag:
+
+            score += 5
+
+            reasons.append(
+                "recent 1M RSI oversold pullback"
+            )
+
+        # ----------------------------------------------------
+        # Candle quality
+        # ----------------------------------------------------
+
+        if (
+            current_body_ratio
+            >= 0.50
         ):
 
-            remember_rejection(
-                "bullish_candle_failed"
+            score += 5
+
+            reasons.append(
+                "strong candle body"
             )
 
-            return None
+        # ----------------------------------------------------
+        # Final CALL
+        # ----------------------------------------------------
 
-        direction = "CALL"
+        if (
+            bullish_price_action
+            and score >= 80
+        ):
 
+            direction = "CALL"
 
     # ========================================================
-    # PUT
+    # PUT ENGINE
     # ========================================================
 
-    elif bearish_primary:
+    put_core = (
+        bearish_regime
+        and bearish_slope
+        and not ranging
+        and rsi_short_ok
+        and price_below_primary
+        and price_below_200
+    )
 
-        # 20 — primary EMA trend
+    if (
+        direction is None
+        and put_core
+    ):
+
+        # ----------------------------------------------------
+        # Trend
+        # ----------------------------------------------------
+
         score += 20
 
         reasons.append(
-            "3/21/50/200 bearish"
+            "5M bearish EMA regime"
         )
 
-        # 15 — macro trend
-        if macro_bearish:
+        # ----------------------------------------------------
+        # EMA alignment
+        # ----------------------------------------------------
+
+        if bearish_alignment:
 
             score += 15
 
             reasons.append(
-                "200/600/1000 bearish"
+                "3/21/50/200 bearish alignment"
             )
 
         else:
 
-            remember_rejection(
-                "macro_not_bearish"
+            rejection_reasons.append(
+                "5M EMA alignment incomplete"
             )
 
-            return None
+        # ----------------------------------------------------
+        # Slope
+        # ----------------------------------------------------
 
-        # 15 — RSI
-        if rsi_bearish:
+        score += 10
 
-            score += 15
+        reasons.append(
+            f"EMA50 slope {slope50:.3f}%"
+        )
 
-            reasons.append(
-                "5M RSI bearish"
-            )
+        # ----------------------------------------------------
+        # RSI
+        # ----------------------------------------------------
 
-        else:
+        score += 15
 
-            remember_rejection(
-                "5m_rsi_not_bearish"
-            )
+        reasons.append(
+            f"5M RSI {current_rsi5:.1f}"
+        )
 
-            return None
+        reasons.append(
+            f"3-bar RSI avg {rsi_average_3:.1f}"
+        )
 
-        # 10 — slope
-        if slope_bearish:
+        # ----------------------------------------------------
+        # Macro trend
+        # ----------------------------------------------------
+
+        if USE_MACRO_TREND:
+
+            if macro_bearish:
+
+                score += 10
+
+                reasons.append(
+                    "macro EMA bearish"
+                )
+
+            else:
+
+                rejection_reasons.append(
+                    "macro EMA not bearish"
+                )
+
+        # ----------------------------------------------------
+        # 1M structure
+        # ----------------------------------------------------
+
+        if bearish_1m_structure:
 
             score += 10
 
             reasons.append(
-                "EMA50 negative slope"
+                "1M EMA structure bearish"
             )
 
-        else:
+        # ----------------------------------------------------
+        # Price action
+        # ----------------------------------------------------
 
-            remember_rejection(
-                "bearish_slope_failed"
-            )
-
-            return None
-
-        # 15 — price action
-        if bearish_pattern:
+        if bearish_price_action:
 
             score += 15
 
@@ -3218,115 +2689,96 @@ def evaluate_zeta_v3(
                     "evening star"
                 )
 
-        elif bear_candle_confirm:
+            if strong_bear:
 
-            score += 10
+                reasons.append(
+                    "strong bearish candle"
+                )
 
-            reasons.append(
-                "bearish candle confirmation"
-            )
+            if bear_reject:
 
-        else:
-
-            remember_rejection(
-                "no_bearish_trigger"
-            )
-
-            return None
-
-        # 10 — strong candle
-        if strong_bear:
-
-            score += 10
-
-            reasons.append(
-                "strong bearish candle"
-            )
-
-        # 5 — pullback
-        if (
-            bearish_rsi_pullback
-            or near_ema21
-            or near_resistance
-        ):
-
-            score += 5
-
-            reasons.append(
-                "bearish pullback"
-            )
-
-        # 5 — room
-        if (
-            room_down_atr
-            >= MIN_ROOM_ATR
-        ):
-
-            score += 5
-
-            reasons.append(
-                "room to support"
-            )
+                reasons.append(
+                    "bearish rejection"
+                )
 
         else:
 
-            remember_rejection(
-                "insufficient_put_room"
+            rejection_reasons.append(
+                "no bearish price-action trigger"
             )
 
-            return None
+        # ----------------------------------------------------
+        # Momentum
+        # ----------------------------------------------------
 
-        # 5 — ADX
-        if current_adx >= MIN_ADX:
+        if bearish_momentum:
 
             score += 5
 
             reasons.append(
-                "ADX trend strength"
+                "1M bearish momentum"
             )
 
-        if not (
-            bear_candle_confirm
+        # ----------------------------------------------------
+        # RSI pullback bonus
+        # ----------------------------------------------------
+
+        if recent_overbought_flag:
+
+            score += 5
+
+            reasons.append(
+                "recent 1M RSI overbought pullback"
+            )
+
+        # ----------------------------------------------------
+        # Candle quality
+        # ----------------------------------------------------
+
+        if (
+            current_body_ratio
+            >= 0.50
         ):
 
-            remember_rejection(
-                "bearish_candle_failed"
+            score += 5
+
+            reasons.append(
+                "strong candle body"
             )
 
-            return None
+        # ----------------------------------------------------
+        # Final PUT
+        # ----------------------------------------------------
 
-        direction = "PUT"
+        if (
+            bearish_price_action
+            and score >= 80
+        ):
 
+            direction = "PUT"
 
     # ========================================================
-    # NO DIRECTION
+    # NO TRADE
     # ========================================================
 
     if direction is None:
 
-        remember_rejection(
-            "no_direction"
-        )
-
         return None
 
+    # --------------------------------------------------------
+    # FINAL SCORE
+    # --------------------------------------------------------
 
-    # ========================================================
-    # SCORE FILTER
-    # ========================================================
-
-    if score < MIN_SCORE:
-
-        remember_rejection(
-            "score_below_minimum"
-        )
-
+    if score < 80:
         return None
 
-
-    # ========================================================
+    # --------------------------------------------------------
     # SIGNAL COOLDOWN
-    # ========================================================
+    # --------------------------------------------------------
+
+    candle_time = current[
+        "from"
+    ]
 
     previous_signal_time = (
         last_signal_time.get(
@@ -3340,19 +2792,10 @@ def evaluate_zeta_v3(
         if (
             candle_time
             - previous_signal_time
-            < SIGNAL_LOCK_SECONDS
+            < SIGNAL_COOLDOWN_SECONDS
         ):
 
-            remember_rejection(
-                "signal_cooldown"
-            )
-
             return None
-
-
-    # ========================================================
-    # TRADE LOCK
-    # ========================================================
 
     previous_trade_time = (
         last_trade_time.get(
@@ -3369,16 +2812,11 @@ def evaluate_zeta_v3(
             < ASSET_LOCK_SECONDS
         ):
 
-            remember_rejection(
-                "asset_trade_lock"
-            )
-
             return None
 
-
-    # ========================================================
+    # --------------------------------------------------------
     # SIGNAL ID
-    # ========================================================
+    # --------------------------------------------------------
 
     signal_id = (
         "ZETA3-"
@@ -3400,12 +2838,9 @@ def evaluate_zeta_v3(
         asset
     ] = candle_time
 
-    signals_found += 1
-
-
-    # ========================================================
+    # --------------------------------------------------------
     # RETURN SIGNAL
-    # ========================================================
+    # --------------------------------------------------------
 
     return {
         "signal_id":
@@ -3423,59 +2858,62 @@ def evaluate_zeta_v3(
         "price":
             price,
 
-        "ema3":
-            e3,
+        "ema3_5m":
+            fast5,
 
-        "ema21":
-            e21,
+        "ema21_5m":
+            medium5,
 
-        "ema50":
-            e50,
+        "ema50_5m":
+            slow_medium5,
 
-        "ema200":
-            e200,
+        "ema200_5m":
+            slow5,
 
-        "macro200":
-            m200,
+        "ema3_1m":
+            fast1,
 
-        "macro600":
-            m600,
+        "ema21_1m":
+            medium1,
 
-        "macro1000":
-            m1000,
+        "ema50_1m":
+            slow_medium1,
 
-        "rsi5":
+        "ema200_1m":
+            slow1,
+
+        "rsi_5m":
             current_rsi5,
 
-        "rsi5_average":
-            average_rsi5,
+        "rsi_avg_3":
+            rsi_average_3,
 
-        "rsi14":
+        "rsi_14_1m":
             current_rsi14,
 
         "ema50_slope":
-            slope,
+            slope50,
 
-        "adx5":
-            current_adx,
-
-        "atr1":
+        "atr_1m":
             current_atr1,
 
-        "pullback_atr":
-            pullback_atr,
+        "body_ratio":
+            current_body_ratio,
 
-        "room_up_atr":
-            room_up_atr,
+        "distance_ema21_atr":
+            distance_ema21_atr,
 
-        "room_down_atr":
-            room_down_atr,
+        "bullish_engulfing":
+            bull_engulf,
 
-        "bullish_pattern":
-            bullish_pattern,
+        "bearish_engulfing":
+            bear_engulf,
 
-        "bearish_pattern":
-            bearish_pattern,
+        "morning_star":
+            bull_morning,
+
+        "evening_star":
+            bear_evening,
 
         "strong_bull":
             strong_bull,
@@ -3483,11 +2921,17 @@ def evaluate_zeta_v3(
         "strong_bear":
             strong_bear,
 
-        "timestamp":
-            now_utc(),
+        "macro_bullish":
+            macro_bullish,
+
+        "macro_bearish":
+            macro_bearish,
 
         "reasons":
             reasons,
+
+        "timestamp":
+            now_utc(),
     }
 
 
@@ -3520,26 +2964,50 @@ def format_signal(
         f"*Direction:* *{direction}*\n"
         f"*Score:* *{signal['score']}/100*\n"
         "*Strategy:* 3EMA + RSI + Price Action\n"
-        "*Trend:* 3/21/50/200 EMA\n"
-        "*Macro:* 200/600/1000 EMA\n"
         "*Context:* 5M\n"
         "*Entry:* 1M\n"
         f"*Expiry:* {EXPIRY_MINUTES} minutes\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        f"*5M RSI:* {signal['rsi5']:.2f}\n"
-        f"*5M RSI Avg:* {signal['rsi5_average']:.2f}\n"
-        f"*1M RSI:* {signal['rsi14']:.2f}\n"
-        f"*EMA50 slope:* {signal['ema50_slope']:.4f}%\n"
-        f"*ADX 5M:* {signal['adx5']:.2f}\n"
-        f"*Pullback:* {signal['pullback_atr']:.2f} ATR\n"
-        f"*Room UP:* {signal['room_up_atr']:.2f} ATR\n"
-        f"*Room DOWN:* {signal['room_down_atr']:.2f} ATR\n"
-        f"*Price:* {signal['price']:.8f}\n"
+        f"*EMA 3 / 21 / 50 / 200:* "
+        f"{signal['ema3_5m']:.8f} / "
+        f"{signal['ema21_5m']:.8f} / "
+        f"{signal['ema50_5m']:.8f} / "
+        f"{signal['ema200_5m']:.8f}\n"
+        f"*EMA50 slope:* "
+        f"{signal['ema50_slope']:.3f}%\n"
+        f"*RSI 5M:* "
+        f"{signal['rsi_5m']:.2f}\n"
+        f"*RSI 3-bar avg:* "
+        f"{signal['rsi_avg_3']:.2f}\n"
+        f"*RSI 1M:* "
+        f"{signal['rsi_14_1m']:.2f}\n"
+        f"*1M body ratio:* "
+        f"{signal['body_ratio']:.2f}\n"
+        f"*EMA21 distance:* "
+        f"{signal['distance_ema21_atr']:.2f} ATR\n"
+        f"*Price:* "
+        f"{signal['price']:.8f}\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "*Price Action:*\n"
+        f"• Bull engulf: "
+        f"{signal['bullish_engulfing']}\n"
+        f"• Bear engulf: "
+        f"{signal['bearish_engulfing']}\n"
+        f"• Morning star: "
+        f"{signal['morning_star']}\n"
+        f"• Evening star: "
+        f"{signal['evening_star']}\n"
+        f"• Strong bull: "
+        f"{signal['strong_bull']}\n"
+        f"• Strong bear: "
+        f"{signal['strong_bear']}\n"
         "━━━━━━━━━━━━━━━━━━\n"
         f"*Confirmations:* {reasons}\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        f"*Signal ID:* {signal['signal_id']}\n"
-        f"*Time:* {signal['timestamp']}\n"
+        f"*Signal ID:* "
+        f"{signal['signal_id']}\n"
+        f"*Time:* "
+        f"{signal['timestamp']}\n"
         "🤖 *ZETA V3 — PRACTICE AUTO TRADE*"
     )
 
@@ -3555,7 +3023,6 @@ def execute_demo_trade(
     global total_trades
 
     if api is None:
-
         return False
 
     asset = signal[
@@ -3590,7 +3057,7 @@ def execute_demo_trade(
             "🔴 *ZETA V3 TRADE ERROR*\n"
             "━━━━━━━━━━━━━━━━━━\n"
             f"*Asset:* {asset}\n"
-            "*Reason:* No IQ Option "
+            "*Reason:* No real IQ Option "
             "active ID is mapped."
         )
 
@@ -3607,37 +3074,37 @@ def execute_demo_trade(
 
     print(
         "Asset:",
-        asset
+        asset,
     )
 
     print(
         "Active ID:",
-        active_id
+        active_id,
     )
 
     print(
         "Direction:",
-        direction
+        direction,
     )
 
     print(
         "Score:",
-        signal["score"]
+        signal["score"],
     )
 
     print(
         "Stake:",
-        STAKE
+        STAKE,
     )
 
     print(
         "Expiry:",
-        EXPIRY_MINUTES
+        EXPIRY_MINUTES,
     )
 
     print(
         "Account:",
-        BALANCE_MODE
+        BALANCE_MODE,
     )
 
     print(
@@ -3692,7 +3159,6 @@ def execute_demo_trade(
         return False
 
     success = False
-
     trade_id = None
 
     if isinstance(
@@ -3756,17 +3222,19 @@ def execute_demo_trade(
         send_telegram(
             "🟡 *ZETA V3 ORDER ACCEPTED*\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            f"*Trade #:* "
+            f"*Trade number:* "
             f"{total_trades}/{TARGET_TRADES}\n"
             f"*Asset:* {asset}\n"
             f"*Direction:* {direction}\n"
-            f"*Score:* {signal['score']}/100\n"
             f"*Stake:* ${STAKE:.2f}\n"
-            f"*Expiry:* {EXPIRY_MINUTES} minutes\n"
-            f"*Signal ID:* {signal['signal_id']}\n"
+            f"*Expiry:* "
+            f"{EXPIRY_MINUTES} minutes\n"
+            f"*Signal ID:* "
+            f"{signal['signal_id']}\n"
             "*Trade ID:* NOT RETURNED\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            "📋 *Track result manually in IQ Option.*"
+            "📋 *Track result manually "
+            "in IQ Option.*"
         )
 
         return True
@@ -3789,19 +3257,22 @@ def execute_demo_trade(
         f"*Direction:* *{direction}*\n"
         f"*Score:* *{signal['score']}/100*\n"
         f"*Stake:* ${STAKE:.2f}\n"
-        f"*Expiry:* *{EXPIRY_MINUTES} minutes*\n"
+        f"*Expiry:* "
+        f"*{EXPIRY_MINUTES} minutes*\n"
         f"*Trade ID:* {trade_id}\n"
-        f"*Signal ID:* {signal['signal_id']}\n"
+        f"*Signal ID:* "
+        f"{signal['signal_id']}\n"
         "━━━━━━━━━━━━━━━━━━\n"
         "🤖 *PRACTICE / DEMO ONLY*\n"
-        "📋 *Track result manually in IQ Option.*"
+        "📋 *Track the result manually "
+        "in IQ Option.*"
     )
 
     return True
 
 
 # ============================================================
-# TEST REAL OTC FEEDS
+# TEST REAL OTC CANDLE FEEDS
 # ============================================================
 
 def test_candle_access(
@@ -3836,20 +3307,17 @@ def test_candle_access(
         )
 
         if mapped_id is None:
-
             continue
 
         candles = (
             get_candles_safe(
                 asset,
                 TF1,
-                20,
+                10,
             )
         )
 
-        if len(
-            candles
-        ) >= 5:
+        if len(candles) >= 5:
 
             working.append(
                 item
@@ -3886,7 +3354,6 @@ def test_candle_access(
 def refresh_otc_assets():
 
     global otc_assets
-
     global last_discovery_time
 
     raw_data = (
@@ -3938,15 +3405,15 @@ def refresh_otc_assets():
         return True
 
     print(
-        "[OTC] Assets discovered, "
-        "but candle feeds failed."
+        "[OTC] Assets were discovered, "
+        "but candle feeds did not respond."
     )
 
     return False
 
 
 # ============================================================
-# CONNECTION
+# CONNECTION CHECK
 # ============================================================
 
 def connection_is_alive():
@@ -3954,7 +3421,6 @@ def connection_is_alive():
     global last_connection_check
 
     if api is None:
-
         return False
 
     if (
@@ -3981,41 +3447,9 @@ def connection_is_alive():
             )
 
     except Exception:
-
         pass
 
     return True
-
-
-# ============================================================
-# REJECTION SUMMARY
-# ============================================================
-
-def rejection_summary():
-
-    if not rejection_counts:
-
-        return "No rejections recorded."
-
-    ordered = sorted(
-        rejection_counts.items(),
-        key=lambda x: x[1],
-        reverse=True,
-    )
-
-    lines = []
-
-    for reason, count in ordered[
-        :6
-    ]:
-
-        lines.append(
-            f"• {reason}: {count}"
-        )
-
-    return "\n".join(
-        lines
-    )
 
 
 # ============================================================
@@ -4033,25 +3467,29 @@ def send_heartbeat():
         )
 
     except Exception:
-
         pass
 
     message = (
         "🟡 *ZETA V3 HEARTBEAT*\n"
         "━━━━━━━━━━━━━━━━━━\n"
         "*Status:* ONLINE\n"
-        f"*OTC feeds:* {len(otc_assets)}\n"
-        f"*Demo orders:* "
+        f"*OTC feeds:* "
+        f"{len(otc_assets)}\n"
+        f"*Demo orders opened:* "
         f"{total_trades}/{TARGET_TRADES}\n"
-        f"*Scan cycles:* {scan_cycles}\n"
-        f"*Signals found:* {signals_found}\n"
-        f"*Runtime:* {runtime_string()}\n"
+        f"*Runtime:* "
+        f"{runtime_string()}\n"
         "━━━━━━━━━━━━━━━━━━\n"
         f"*Account:* {BALANCE_MODE}\n"
         "*Auto-trading:* ON\n"
         f"*Stake:* ${STAKE:.2f}\n"
-        f"*Expiry:* {EXPIRY_MINUTES} minutes\n"
-        f"*Minimum score:* {MIN_SCORE}/100\n"
+        f"*Expiry:* "
+        f"{EXPIRY_MINUTES} minutes\n"
+        "*Strategy:* "
+        "3EMA + RSI + Price Action\n"
+        "*Context:* 5M\n"
+        "*Entry:* 1M\n"
+        "━━━━━━━━━━━━━━━━━━\n"
     )
 
     if balance is not None:
@@ -4063,34 +3501,11 @@ def send_heartbeat():
 
     message += (
         "━━━━━━━━━━━━━━━━━━\n"
-        "*Top rejection reasons:*\n"
-        f"{rejection_summary()}\n"
+        "📋 *Results are tracked manually "
+        "in IQ Option.*\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        "🟢 *ZETA V3 SCANNING REAL OTC MARKETS*"
-    )
-
-    send_telegram(
-        message
-    )
-
-
-# ============================================================
-# NO TRADE STATUS
-# ============================================================
-
-def send_no_trade_summary():
-
-    message = (
-        "⚪ *ZETA V3 — NO TRADE*\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"*OTC feeds:* {len(otc_assets)}\n"
-        f"*Orders:* {total_trades}/{TARGET_TRADES}\n"
-        f"*Signals found:* {signals_found}\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "*Reason summary:*\n"
-        f"{rejection_summary()}\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "No setup passed the full combined strategy."
+        "🟢 *ZETA V3 SCANNING "
+        "REAL OTC MARKETS*"
     )
 
     send_telegram(
@@ -4135,7 +3550,6 @@ def connect_iq():
     )
 
     if not connected:
-
         return False
 
     try:
@@ -4163,14 +3577,13 @@ def connect_iq():
         )
 
     except Exception:
-
         pass
 
     return True
 
 
 # ============================================================
-# TARGET
+# TARGET CHECK
 # ============================================================
 
 def target_reached():
@@ -4188,12 +3601,7 @@ def target_reached():
 def run_trader():
 
     global last_status_time
-
     global last_discovery_time
-
-    global scan_cycles
-
-    global no_trade_cycles
 
     if (
         not IQ_EMAIL
@@ -4207,9 +3615,7 @@ def run_trader():
             "is missing from GitHub Secrets."
         )
 
-        print(
-            message
-        )
+        print(message)
 
         send_telegram(
             message
@@ -4217,9 +3623,9 @@ def run_trader():
 
         return
 
-    # ========================================================
+    # --------------------------------------------------------
     # CONNECT
-    # ========================================================
+    # --------------------------------------------------------
 
     while not connect_iq():
 
@@ -4252,25 +3658,29 @@ def run_trader():
         "━━━━━━━━━━━━━━━━━━\n"
         "*Connection:* OK\n"
         f"*Account:* {BALANCE_MODE}\n"
-        "*Strategy:* 3EMA + RSI + Trend Price Action\n"
-        "*Primary:* EMA 3 / 21 / 50 / 200\n"
-        "*Macro:* EMA 200 / 600 / 1000\n"
-        "*Momentum:* 5M RSI(20)\n"
-        "*Price Action:* Engulfing / Morning-Star / Evening-Star\n"
-        "*Entry:* 1M closed candle\n"
-        f"*Expiry:* {EXPIRY_MINUTES} minutes\n"
-        f"*Minimum score:* {MIN_SCORE}/100\n"
+        "*Strategy:* "
+        "3EMA + RSI + Trend Price Action\n"
+        "*Trend:* 5M\n"
+        "*Entry:* 1M\n"
+        f"*Expiry:* "
+        f"{EXPIRY_MINUTES} minutes\n"
+        "*EMA:* 3 / 21 / 50 / 200\n"
+        "*RSI:* 5M RSI-20\n"
+        "*Price Action:* "
+        "Engulfing + Morning/Evening Star + Strong Candle\n"
         f"*Stake:* ${STAKE:.2f}\n"
-        f"*Target:* {TARGET_TRADES} demo orders\n"
+        f"*Target:* "
+        f"{TARGET_TRADES} demo orders\n"
         "*Result tracking:* MANUAL\n"
         "*Auto-trading:* ON\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        "🔎 Using real IQ Option OTC initialization..."
+        "🔎 Using real IQ Option "
+        "OTC initialization..."
     )
 
-    # ========================================================
-    # INITIAL DISCOVERY
-    # ========================================================
+    # --------------------------------------------------------
+    # INITIAL OTC DISCOVERY
+    # --------------------------------------------------------
 
     while not otc_assets:
 
@@ -4286,10 +3696,12 @@ def run_trader():
                 f"*Working OTC feeds:* "
                 f"{len(otc_assets)}\n"
                 "*Data:* REAL IQ OPTION CANDLES\n"
-                "*Strategy:* ZETA V3\n"
-                "*Context:* 5M\n"
+                "*Trend:* 5M\n"
                 "*Entry:* 1M\n"
-                f"*Expiry:* {EXPIRY_MINUTES} minutes\n"
+                f"*Expiry:* "
+                f"{EXPIRY_MINUTES} minutes\n"
+                "*Strategy:* "
+                "ZETA V3\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 "ZETA V3 scanning started."
             )
@@ -4315,9 +3727,9 @@ def run_trader():
 
     last_scan_cycle = 0
 
-    # ========================================================
+    # --------------------------------------------------------
     # CONTINUOUS LOOP
-    # ========================================================
+    # --------------------------------------------------------
 
     while True:
 
@@ -4326,13 +3738,16 @@ def run_trader():
             if target_reached():
 
                 send_telegram(
-                    "🏁 *ZETA V3 50-TRADE TEST REACHED*\n"
+                    "🏁 *ZETA V3 "
+                    "50-TRADE TEST REACHED*\n"
                     "━━━━━━━━━━━━━━━━━━\n"
                     f"*Demo orders opened:* "
                     f"{total_trades}\n"
-                    "*Results:* Tracked manually in IQ Option\n"
+                    "*Results:* "
+                    "Tracked manually in IQ Option\n"
                     "━━━━━━━━━━━━━━━━━━\n"
-                    "The 50-order Practice test is complete."
+                    "The 50-order Practice "
+                    "test is complete."
                 )
 
                 break
@@ -4341,9 +3756,9 @@ def run_trader():
                 time.time()
             )
 
-            # =================================================
+            # ------------------------------------------------
             # CONNECTION
-            # =================================================
+            # ------------------------------------------------
 
             if not connection_is_alive():
 
@@ -4352,7 +3767,8 @@ def run_trader():
                 )
 
                 send_telegram(
-                    "🔴 *ZETA V3 CONNECTION LOST*\n"
+                    "🔴 *ZETA V3 "
+                    "CONNECTION LOST*\n"
                     "━━━━━━━━━━━━━━━━━━\n"
                     "Attempting reconnect..."
                 )
@@ -4366,7 +3782,8 @@ def run_trader():
                     )
 
                     print(
-                        "[CONNECTION] Reconnected."
+                        "[CONNECTION] "
+                        "Reconnected."
                     )
 
                 except Exception as e:
@@ -4382,9 +3799,9 @@ def run_trader():
 
                     continue
 
-            # =================================================
+            # ------------------------------------------------
             # OTC REFRESH
-            # =================================================
+            # ------------------------------------------------
 
             if (
                 not otc_assets
@@ -4402,9 +3819,9 @@ def run_trader():
 
                 refresh_otc_assets()
 
-            # =================================================
+            # ------------------------------------------------
             # SCAN
-            # =================================================
+            # ------------------------------------------------
 
             if (
                 current_time
@@ -4416,15 +3833,11 @@ def run_trader():
                     current_time
                 )
 
-                scan_cycles += 1
-
-                cycle_signals = 0
-
                 if not otc_assets:
 
                     print(
-                        "[SCAN] "
-                        "No working OTC feeds."
+                        "[SCAN] No working "
+                        "OTC feeds."
                     )
 
                 else:
@@ -4445,7 +3858,7 @@ def run_trader():
                     )
 
                     print(
-                        "Demo orders:",
+                        "Demo orders opened:",
                         total_trades,
                     )
 
@@ -4454,7 +3867,6 @@ def run_trader():
                     ):
 
                         if target_reached():
-
                             break
 
                         asset = item[
@@ -4463,9 +3875,9 @@ def run_trader():
 
                         try:
 
-                            # ---------------------------------
+                            # --------------------------------
                             # 5M
-                            # ---------------------------------
+                            # --------------------------------
 
                             candles_5m = (
                                 get_candles_safe(
@@ -4477,17 +3889,13 @@ def run_trader():
 
                             if len(
                                 candles_5m
-                            ) < 80:
-
-                                remember_rejection(
-                                    "5m_feed_short"
-                                )
+                            ) < 210:
 
                                 continue
 
-                            # ---------------------------------
+                            # --------------------------------
                             # 1M
-                            # ---------------------------------
+                            # --------------------------------
 
                             candles_1m = (
                                 get_candles_safe(
@@ -4499,17 +3907,13 @@ def run_trader():
 
                             if len(
                                 candles_1m
-                            ) < 1000:
-
-                                remember_rejection(
-                                    "1m_feed_short"
-                                )
+                            ) < 80:
 
                                 continue
 
-                            # ---------------------------------
+                            # --------------------------------
                             # STRATEGY
-                            # ---------------------------------
+                            # --------------------------------
 
                             signal = (
                                 evaluate_zeta_v3(
@@ -4520,10 +3924,7 @@ def run_trader():
                             )
 
                             if signal is None:
-
                                 continue
-
-                            cycle_signals += 1
 
                             print(
                                 "\n[ZETA V3 SIGNAL]",
@@ -4535,6 +3936,15 @@ def run_trader():
                                 signal[
                                     "score"
                                 ],
+                            )
+
+                            print(
+                                "REASONS:",
+                                ", ".join(
+                                    signal[
+                                        "reasons"
+                                    ]
+                                ),
                             )
 
                             send_telegram(
@@ -4557,36 +3967,15 @@ def run_trader():
 
                             traceback.print_exc()
 
-                            remember_rejection(
-                                "asset_exception"
-                            )
-
-                    if cycle_signals == 0:
-
-                        no_trade_cycles += 1
-
-                        print(
-                            "[ZETA V3] "
-                            "NO TRADE — "
-                            "no asset passed."
-                        )
-
-                    else:
-
-                        print(
-                            "[ZETA V3] "
-                            f"{cycle_signals} "
-                            "signal(s) found."
-                        )
-
                     print(
-                        "[ZETA V3 SCAN COMPLETE]",
+                        "[ZETA V3 "
+                        "SCAN COMPLETE]",
                         now_utc(),
                     )
 
-            # =================================================
+            # ------------------------------------------------
             # HEARTBEAT
-            # =================================================
+            # ------------------------------------------------
 
             if (
                 time.time()
@@ -4634,11 +4023,8 @@ def main():
     )
 
     print(
-        "ZETA V3 — IQ OPTION OTC DEMO TRADER"
-    )
-
-    print(
-        "3EMA + RSI + TREND PRICE ACTION"
+        "ZETA V3 — "
+        "3EMA + RSI + PRICE ACTION"
     )
 
     print(
@@ -4651,33 +4037,33 @@ def main():
     )
 
     print(
-        "Primary EMA:",
-        "3 / 21 / 50 / 200",
+        "Strategy:",
+        "3EMA + RSI + Trend Price Action",
     )
 
     print(
-        "Macro EMA:",
-        "200 / 600 / 1000",
-    )
-
-    print(
-        "5M RSI:",
-        RSI_MTF_PERIOD,
-    )
-
-    print(
-        "1M RSI:",
-        RSI_PRICE_ACTION_PERIOD,
-    )
-
-    print(
-        "Context:",
+        "Trend Context:",
         "5M",
     )
 
     print(
         "Entry:",
         "1M",
+    )
+
+    print(
+        "EMA:",
+        "3 / 21 / 50 / 200",
+    )
+
+    print(
+        "RSI:",
+        "5M RSI-20",
+    )
+
+    print(
+        "Price Action:",
+        "Engulfing / Star / Strong Candle",
     )
 
     print(
@@ -4694,11 +4080,6 @@ def main():
     print(
         "Stake:",
         STAKE,
-    )
-
-    print(
-        "Minimum score:",
-        MIN_SCORE,
     )
 
     print(
@@ -4745,11 +4126,8 @@ def main():
         if api is not None:
 
             try:
-
                 api.close()
-
             except Exception:
-
                 pass
 
         print(
@@ -4758,9 +4136,8 @@ def main():
 
 
 # ============================================================
-# START
+# IMPORTANT — DO NOT CHANGE THIS
 # ============================================================
 
 if __name__ == "__main__":
-
     main()
