@@ -38,7 +38,6 @@ RECONNECT_SECONDS = 15
 MAX_ASSETS = 70
 
 LOG_FILE = "momentum_signal_log.csv"
-
 CANDLE_REQUEST_TIMEOUT = 8
 
 
@@ -184,6 +183,7 @@ def connect_iq():
                 reason,
                 flush=True,
             )
+            api = None
             return False
 
         print(
@@ -233,10 +233,6 @@ def get_otc_assets():
     try:
         init_data = None
 
-        # ----------------------------------------------------
-        # PRIMARY OTC DATA SOURCE
-        # ----------------------------------------------------
-
         try:
             init_data = api.get_all_init_v2()
         except Exception as exc:
@@ -250,19 +246,7 @@ def get_otc_assets():
         new_active_ids = {}
 
         # ----------------------------------------------------
-        # PARSE get_all_init_v2()
-        #
-        # Correct structure:
-        #
-        # turbo
-        #   actives
-        #      active_id
-        #         name
-        #
-        # binary
-        #   actives
-        #      active_id
-        #         name
+        # PRIMARY SOURCE
         # ----------------------------------------------------
 
         if isinstance(init_data, dict):
@@ -290,7 +274,6 @@ def get_otc_assets():
                     if not isinstance(info, dict):
                         continue
 
-                    # The active ID is normally the dictionary key.
                     active_id = info.get(
                         "active_id"
                     )
@@ -313,9 +296,6 @@ def get_otc_assets():
 
                     name = str(name)
 
-                    # IQ Option may return names such as:
-                    # "turbo.ALIBABA-OTC"
-                    # "binary.ALIBABA-OTC"
                     if "." in name:
                         name = name.split(
                             ".",
@@ -325,13 +305,8 @@ def get_otc_assets():
                     if "-OTC" not in name:
                         continue
 
-                    enabled = info.get(
-                        "enabled"
-                    )
-
-                    suspended = info.get(
-                        "is_suspended"
-                    )
+                    enabled = info.get("enabled")
+                    suspended = info.get("is_suspended")
 
                     if enabled is False:
                         continue
@@ -352,7 +327,7 @@ def get_otc_assets():
                     break
 
         # ----------------------------------------------------
-        # FALLBACK TO get_all_init()
+        # FALLBACK SOURCE
         # ----------------------------------------------------
 
         if not new_assets:
@@ -394,10 +369,7 @@ def get_otc_assets():
 
                     for section in sections:
 
-                        if not isinstance(
-                            section,
-                            dict,
-                        ):
+                        if not isinstance(section, dict):
                             continue
 
                         actives = section.get(
@@ -405,18 +377,12 @@ def get_otc_assets():
                             {},
                         )
 
-                        if not isinstance(
-                            actives,
-                            dict,
-                        ):
+                        if not isinstance(actives, dict):
                             continue
 
                         for key, info in actives.items():
 
-                            if not isinstance(
-                                info,
-                                dict,
-                            ):
+                            if not isinstance(info, dict):
                                 continue
 
                             try:
@@ -443,13 +409,8 @@ def get_otc_assets():
                             if "-OTC" not in name:
                                 continue
 
-                            enabled = info.get(
-                                "enabled"
-                            )
-
-                            suspended = info.get(
-                                "is_suspended"
-                            )
+                            enabled = info.get("enabled")
+                            suspended = info.get("is_suspended")
 
                             if enabled is False:
                                 continue
@@ -463,16 +424,10 @@ def get_otc_assets():
                             new_assets.append(name)
                             new_active_ids[name] = active_id
 
-                            if (
-                                len(new_assets)
-                                >= MAX_ASSETS
-                            ):
+                            if len(new_assets) >= MAX_ASSETS:
                                 break
 
-                        if (
-                            len(new_assets)
-                            >= MAX_ASSETS
-                        ):
+                        if len(new_assets) >= MAX_ASSETS:
                             break
 
         # ----------------------------------------------------
@@ -489,7 +444,7 @@ def get_otc_assets():
             return False
 
         # ----------------------------------------------------
-        # SAVE OTC ASSETS
+        # SAVE ASSETS
         # ----------------------------------------------------
 
         otc_assets = new_assets
@@ -497,15 +452,11 @@ def get_otc_assets():
 
         # ----------------------------------------------------
         # REGISTER ACTIVE IDs
-        #
         # api.buy() uses OP_code.ACTIVES[asset]
         # ----------------------------------------------------
 
         for asset_name, active_id in otc_active_ids.items():
-
-            OP_code.ACTIVES[
-                asset_name
-            ] = active_id
+            OP_code.ACTIVES[asset_name] = active_id
 
         print("", flush=True)
 
@@ -586,9 +537,7 @@ def get_candles(asset, count):
             < CANDLE_REQUEST_TIMEOUT
         ):
 
-            candles = (
-                api.api.candles.candles_data
-            )
+            candles = api.api.candles.candles_data
 
             if candles:
                 break
@@ -609,21 +558,11 @@ def get_candles(asset, count):
 
             try:
                 result.append({
-                    "from": float(
-                        candle.get("from")
-                    ),
-                    "open": float(
-                        candle.get("open")
-                    ),
-                    "close": float(
-                        candle.get("close")
-                    ),
-                    "high": float(
-                        candle.get("max")
-                    ),
-                    "low": float(
-                        candle.get("min")
-                    ),
+                    "from": float(candle.get("from")),
+                    "open": float(candle.get("open")),
+                    "close": float(candle.get("close")),
+                    "high": float(candle.get("max")),
+                    "low": float(candle.get("min")),
                 })
             except Exception:
                 continue
@@ -1519,5 +1458,4 @@ if __name__ == "__main__":
             "FATAL ERROR: "
             + str(exc),
             flush=True,
-            )sh=True,
         )
