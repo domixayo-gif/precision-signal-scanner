@@ -38,6 +38,8 @@ MAX_ASSETS = 70
 
 LOG_FILE = "momentum_signal_log.csv"
 
+CANDLE_REQUEST_TIMEOUT = 8
+
 
 # ============================================================
 # SECRETS
@@ -67,6 +69,8 @@ pending_lock = threading.Lock()
 last_heartbeat = 0
 last_asset_refresh = 0
 
+otc_active_ids = {}
+
 
 # ============================================================
 # TELEGRAM
@@ -74,7 +78,10 @@ last_asset_refresh = 0
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram credentials are missing.")
+        print(
+            "Telegram credentials are missing.",
+            flush=True
+        )
         return False
 
     url = (
@@ -96,17 +103,25 @@ def send_telegram(message):
         )
 
         if response.ok:
-            print("Telegram message sent.")
+            print(
+                "Telegram message sent.",
+                flush=True
+            )
             return True
 
         print(
             "Telegram HTTP error:",
             response.status_code,
-            response.text[:300]
+            response.text[:300],
+            flush=True
         )
 
     except Exception as exc:
-        print("Telegram error:", exc)
+        print(
+            "Telegram error:",
+            exc,
+            flush=True
+        )
 
     return False
 
@@ -151,7 +166,11 @@ def create_log_file():
             writer.writerow(headers)
 
     except Exception as exc:
-        print("CSV creation error:", exc)
+        print(
+            "CSV creation error:",
+            exc,
+            flush=True
+        )
 
 
 def log_signal(
@@ -195,7 +214,11 @@ def log_signal(
             writer.writerow(row)
 
     except Exception as exc:
-        print("CSV log error:", exc)
+        print(
+            "CSV log error:",
+            exc,
+            flush=True
+        )
 
 
 # ============================================================
@@ -203,10 +226,16 @@ def log_signal(
 # ============================================================
 
 def connect_iq():
-    print("Connecting to IQ Option...")
+    print(
+        "Connecting to IQ Option...",
+        flush=True
+    )
 
     if not IQ_EMAIL or not IQ_PASSWORD:
-        print("IQ credentials are missing.")
+        print(
+            "IQ credentials are missing.",
+            flush=True
+        )
         return None
 
     try:
@@ -218,7 +247,11 @@ def connect_iq():
         result = api.connect()
 
     except Exception as exc:
-        print("IQ connection exception:", exc)
+        print(
+            "IQ connection exception:",
+            exc,
+            flush=True
+        )
         return None
 
     connected = False
@@ -230,26 +263,53 @@ def connect_iq():
         connected = bool(result)
 
     if not connected:
-        print("IQ Option connection failed.")
+        print(
+            "IQ Option connection failed.",
+            flush=True
+        )
         return None
 
-    print("IQ Option connection successful.")
+    print(
+        "IQ Option connection successful.",
+        flush=True
+    )
 
     try:
         api.change_balance(BALANCE_MODE)
-        print("Balance mode:", BALANCE_MODE)
+
+        print(
+            "Balance mode:",
+            BALANCE_MODE,
+            flush=True
+        )
 
     except Exception as exc:
-        print("Balance mode warning:", exc)
+        print(
+            "Balance mode warning:",
+            exc,
+            flush=True
+        )
 
     time.sleep(2)
 
     try:
         if not api.check_connect():
-            print("Connection check failed after login.")
+
+            print(
+                "Connection check failed after login.",
+                flush=True
+            )
+
             return None
+
     except Exception as exc:
-        print("Connection verification error:", exc)
+
+        print(
+            "Connection verification error:",
+            exc,
+            flush=True
+        )
+
         return None
 
     return api
@@ -257,38 +317,50 @@ def connect_iq():
 
 # ============================================================
 # OTC ASSET DISCOVERY
-#
-# IMPORTANT:
-# We intentionally do NOT use get_all_open_time().
-# That function is very heavy and can stall OTC startup.
-#
-# We use the IQ Option initialization data directly and
-# inspect only turbo/binary assets.
 # ============================================================
 
 def get_otc_assets(api):
-    print("Preparing OTC assets...")
-    print("Requesting IQ Option OTC initialization data...")
+    global otc_active_ids
+
+    print(
+        "Preparing OTC assets...",
+        flush=True
+    )
+
+    print(
+        "Requesting IQ Option OTC initialization data...",
+        flush=True
+    )
 
     try:
         data = api.get_all_init_v2()
 
     except Exception as exc:
+
         print(
             "OTC initialization error:",
-            exc
+            exc,
+            flush=True
         )
+
         return []
 
     if not isinstance(data, dict):
+
         print(
-            "OTC initialization returned invalid data."
+            "OTC initialization returned invalid data.",
+            flush=True
         )
+
         return []
 
-    print("OTC initialization data received.")
+    print(
+        "OTC initialization data received.",
+        flush=True
+    )
 
     assets = []
+    new_active_ids = {}
 
     # --------------------------------------------------------
     # TURBO
@@ -310,7 +382,8 @@ def get_otc_assets(api):
 
             print(
                 "Turbo active records:",
-                len(turbo_actives)
+                len(turbo_actives),
+                flush=True
             )
 
             for active_id, active in turbo_actives.items():
@@ -326,8 +399,6 @@ def get_otc_assets(api):
                 if not isinstance(name, str):
                     continue
 
-                # Some API versions return names such as:
-                # turbo.EURUSD-OTC
                 if "." in name:
                     name = name.split(
                         ".",
@@ -347,10 +418,24 @@ def get_otc_assets(api):
                     False
                 )
 
-                if enabled is True and suspended is not True:
+                if enabled is not True:
+                    continue
 
-                    if name not in assets:
-                        assets.append(name)
+                if suspended is True:
+                    continue
+
+                try:
+                    numeric_id = int(active_id)
+                except Exception:
+                    continue
+
+                if name not in assets:
+
+                    assets.append(name)
+
+                    new_active_ids[
+                        name
+                    ] = numeric_id
 
     # --------------------------------------------------------
     # BINARY FALLBACK
@@ -359,7 +444,8 @@ def get_otc_assets(api):
     if not assets:
 
         print(
-            "No open turbo OTC assets found."
+            "No open turbo OTC assets found.",
+            flush=True
         )
 
         binary_data = data.get(
@@ -378,7 +464,8 @@ def get_otc_assets(api):
 
                 print(
                     "Binary active records:",
-                    len(binary_actives)
+                    len(binary_actives),
+                    flush=True
                 )
 
                 for active_id, active in binary_actives.items():
@@ -413,17 +500,32 @@ def get_otc_assets(api):
                         False
                     )
 
-                    if enabled is True and suspended is not True:
+                    if enabled is not True:
+                        continue
 
-                        if name not in assets:
-                            assets.append(name)
+                    if suspended is True:
+                        continue
+
+                    try:
+                        numeric_id = int(active_id)
+                    except Exception:
+                        continue
+
+                    if name not in assets:
+
+                        assets.append(name)
+
+                        new_active_ids[
+                            name
+                        ] = numeric_id
 
     assets = sorted(assets)
 
     if not assets:
 
         print(
-            "No OPEN OTC turbo/binary assets found."
+            "No OPEN OTC turbo/binary assets found.",
+            flush=True
         )
 
         return []
@@ -431,22 +533,46 @@ def get_otc_assets(api):
     if len(assets) > MAX_ASSETS:
         assets = assets[:MAX_ASSETS]
 
+    filtered_ids = {}
+
+    for asset in assets:
+
+        if asset in new_active_ids:
+            filtered_ids[
+                asset
+            ] = new_active_ids[asset]
+
+    otc_active_ids = filtered_ids
+
     print(
         "OPEN OTC assets found:",
-        len(assets)
+        len(assets),
+        flush=True
+    )
+
+    print(
+        "OTC active IDs mapped:",
+        len(otc_active_ids),
+        flush=True
     )
 
     for asset in assets[:20]:
+
         print(
             "OTC READY:",
-            asset
+            asset,
+            "ID:",
+            otc_active_ids.get(asset),
+            flush=True
         )
 
     if len(assets) > 20:
+
         print(
             "...and",
             len(assets) - 20,
-            "more."
+            "more.",
+            flush=True
         )
 
     return assets
@@ -454,44 +580,116 @@ def get_otc_assets(api):
 
 # ============================================================
 # CANDLE DATA
+#
+# IMPORTANT:
+# We do not use api.get_candles() here because the stable
+# wrapper can wait indefinitely for candle data.
+#
+# We send the request through the underlying IQ API and
+# impose our own timeout.
 # ============================================================
 
 def get_candles(api, asset, count):
     print(
         "Requesting 1M candles:",
+        asset,
+        flush=True
+    )
+
+    active_id = otc_active_ids.get(
         asset
     )
 
-    try:
-        now = int(time.time())
+    if active_id is None:
 
-        candles = api.get_candles(
-            asset,
-            CANDLE_SECONDS,
-            count,
-            now
-        )
-
-    except Exception as exc:
         print(
             asset,
-            "candle error:",
-            exc
+            "has no mapped IQ active ID.",
+            flush=True
         )
+
         return []
 
-    if not candles:
+    try:
+
+        api.api.candles.candles_data = None
+
+        try:
+            server_time = (
+                api.api.timesync.server_timestamp
+            )
+        except Exception:
+            server_time = None
+
+        if server_time is None:
+            server_time = int(
+                time.time()
+            )
+
+        api.api.getcandles(
+            active_id,
+            CANDLE_SECONDS,
+            count,
+            server_time
+        )
+
+        started = time.time()
+
+        while True:
+
+            candle_data = (
+                api.api.candles.candles_data
+            )
+
+            if candle_data is not None:
+                break
+
+            elapsed = (
+                time.time()
+                - started
+            )
+
+            if elapsed >= CANDLE_REQUEST_TIMEOUT:
+
+                print(
+                    asset,
+                    "candle request timed out after",
+                    CANDLE_REQUEST_TIMEOUT,
+                    "seconds.",
+                    flush=True
+                )
+
+                return []
+
+            time.sleep(0.05)
+
+    except Exception as exc:
+
         print(
             asset,
-            "returned no candles."
+            "candle request error:",
+            exc,
+            flush=True
         )
+
+        return []
+
+    if not candle_data:
+
+        print(
+            asset,
+            "returned no candles.",
+            flush=True
+        )
+
         return []
 
     valid = []
 
-    for candle in candles:
+    for candle in candle_data:
 
         try:
+
             candle_time = int(
                 candle["from"]
             )
@@ -531,10 +729,20 @@ def get_candles(api, asset, count):
     )
 
     if valid:
+
         print(
             asset,
             "candles received:",
-            len(valid)
+            len(valid),
+            flush=True
+        )
+
+    else:
+
+        print(
+            asset,
+            "received candle data but no valid candles.",
+            flush=True
         )
 
     return valid
@@ -544,7 +752,9 @@ def remove_open_candle(candles):
     if len(candles) < 2:
         return candles
 
-    now = int(time.time())
+    now = int(
+        time.time()
+    )
 
     latest = candles[-1]
 
@@ -587,6 +797,7 @@ def calculate_momentum(closes):
         ) * 100.0
 
         if value == value:
+
             if value != float("inf"):
                 values.append(value)
 
@@ -726,6 +937,7 @@ def analyze_momentum(candles):
     ):
 
         if REQUIRE_TURN:
+
             if not strong_turn:
                 return None
 
@@ -738,6 +950,7 @@ def analyze_momentum(candles):
     ):
 
         if REQUIRE_TURN:
+
             if not strong_turn:
                 return None
 
@@ -959,7 +1172,8 @@ def monitor_trade(
     print(
         "Trade monitor started:",
         trade_id,
-        asset
+        asset,
+        flush=True
     )
 
     time.sleep(wait_seconds)
@@ -967,24 +1181,30 @@ def monitor_trade(
     result = None
 
     try:
+
         result = api.check_win_v4(
             trade_id
         )
 
     except Exception as exc:
+
         print(
             "Result check error:",
             trade_id,
-            exc
+            exc,
+            flush=True
         )
 
     if result is None:
+
         print(
             "Result unavailable:",
-            trade_id
+            trade_id,
+            flush=True
         )
 
         with pending_lock:
+
             pending_trades.pop(
                 str(trade_id),
                 None
@@ -1005,14 +1225,17 @@ def monitor_trade(
         return
 
     if result > 0:
+
         result_text = "WIN"
         wins += 1
 
     elif result < 0:
+
         result_text = "LOSS"
         losses += 1
 
     else:
+
         result_text = "DRAW"
 
     closed = (
@@ -1021,11 +1244,14 @@ def monitor_trade(
     )
 
     if closed > 0:
+
         win_rate = (
             wins
             / closed
         ) * 100.0
+
     else:
+
         win_rate = 0.0
 
     print(
@@ -1039,7 +1265,8 @@ def monitor_trade(
         losses,
         "RATE:",
         round(win_rate, 1),
-        "%"
+        "%",
+        flush=True
     )
 
     log_signal(
@@ -1086,6 +1313,7 @@ def monitor_trade(
     )
 
     with pending_lock:
+
         pending_trades.pop(
             str(trade_id),
             None
@@ -1106,7 +1334,12 @@ def execute_trade(
     global total_trades
 
     if not AUTO_TRADE:
-        print("Auto trading disabled.")
+
+        print(
+            "Auto trading disabled.",
+            flush=True
+        )
+
         return None
 
     if total_trades >= TARGET_TRADES:
@@ -1117,10 +1350,12 @@ def execute_trade(
     print(
         "Attempting trade:",
         asset,
-        direction
+        direction,
+        flush=True
     )
 
     try:
+
         success, trade_id = api.buy(
             STAKE,
             asset,
@@ -1129,11 +1364,13 @@ def execute_trade(
         )
 
     except Exception as exc:
+
         print(
             "Trade exception:",
             asset,
             direction,
-            exc
+            exc,
+            flush=True
         )
 
         send_telegram(
@@ -1155,7 +1392,8 @@ def execute_trade(
         print(
             "Trade rejected:",
             asset,
-            direction
+            direction,
+            flush=True
         )
 
         send_telegram(
@@ -1174,7 +1412,9 @@ def execute_trade(
 
     total_trades += 1
 
-    trade_id = str(trade_id)
+    trade_id = str(
+        trade_id
+    )
 
     print(
         "TRADE ACCEPTED",
@@ -1185,11 +1425,15 @@ def execute_trade(
         "Trade:",
         total_trades,
         "/",
-        TARGET_TRADES
+        TARGET_TRADES,
+        flush=True
     )
 
     with pending_lock:
-        pending_trades[trade_id] = {
+
+        pending_trades[
+            trade_id
+        ] = {
             "asset": asset,
             "direction": direction
         }
@@ -1245,6 +1489,12 @@ def process_asset(
     api,
     asset
 ):
+    print(
+        "Scanning:",
+        asset,
+        flush=True
+    )
+
     candles = get_candles(
         api,
         asset,
@@ -1267,6 +1517,16 @@ def process_asset(
     )
 
     if len(candles) < minimum:
+
+        print(
+            asset,
+            "not enough closed candles:",
+            len(candles),
+            "needed:",
+            minimum,
+            flush=True
+        )
+
         return
 
     analysis = analyze_momentum(
@@ -1276,7 +1536,11 @@ def process_asset(
     # Reset the extreme episode when there
     # is no valid extreme reversal.
     if analysis is None:
-        extreme_state[asset] = "CENTER"
+
+        extreme_state[
+            asset
+        ] = "CENTER"
+
         return
 
     candle_time = analysis[
@@ -1287,6 +1551,7 @@ def process_asset(
         asset,
         candle_time
     ):
+
         return
 
     current_extreme = analysis[
@@ -1322,9 +1587,20 @@ def process_asset(
         signal_id
     )
 
-    print("")
-    print(message)
-    print("")
+    print(
+        "",
+        flush=True
+    )
+
+    print(
+        message,
+        flush=True
+    )
+
+    print(
+        "",
+        flush=True
+    )
 
     send_telegram(message)
 
@@ -1363,6 +1639,7 @@ def heartbeat(
         now - last_heartbeat
         < HEARTBEAT_SECONDS
     ):
+
         return
 
     last_heartbeat = now
@@ -1373,14 +1650,18 @@ def heartbeat(
     )
 
     if closed > 0:
+
         rate = (
             wins
             / closed
         ) * 100.0
+
     else:
+
         rate = 0.0
 
     with pending_lock:
+
         pending_count = len(
             pending_trades
         )
@@ -1419,7 +1700,11 @@ def heartbeat(
         + "%"
     )
 
-    print(message)
+    print(
+        message,
+        flush=True
+    )
+
     send_telegram(message)
 
 
@@ -1491,10 +1776,12 @@ def main():
         # ----------------------------------------------------
 
         try:
+
             if not api.check_connect():
 
                 print(
-                    "IQ Option disconnected."
+                    "IQ Option disconnected.",
+                    flush=True
                 )
 
                 send_telegram(
@@ -1514,7 +1801,8 @@ def main():
 
             print(
                 "Connection check error:",
-                exc
+                exc,
+                flush=True
             )
 
             api = None
@@ -1559,14 +1847,19 @@ def main():
             else:
 
                 print(
-                    "No open OTC assets."
+                    "No open OTC assets.",
+                    flush=True
                 )
 
                 if assets:
+
                     print(
-                        "Keeping previous asset list."
+                        "Keeping previous asset list.",
+                        flush=True
                     )
+
                 else:
+
                     send_telegram(
                         "⚠️ NO OTC ASSETS FOUND\n"
                         "Retrying OTC discovery..."
@@ -1581,7 +1874,8 @@ def main():
         if not assets:
 
             print(
-                "Waiting for OTC assets..."
+                "Waiting for OTC assets...",
+                flush=True
             )
 
             time.sleep(
@@ -1632,6 +1926,11 @@ def main():
         # SCAN ALL OTC ASSETS
         # ----------------------------------------------------
 
+        print(
+            "Starting OTC scan cycle...",
+            flush=True
+        )
+
         for asset in list(assets):
 
             if total_trades >= TARGET_TRADES:
@@ -1649,12 +1948,18 @@ def main():
                 print(
                     "Asset error:",
                     asset,
-                    exc
+                    exc,
+                    flush=True
                 )
 
             time.sleep(
                 SCAN_INTERVAL
             )
+
+        print(
+            "OTC scan cycle complete.",
+            flush=True
+        )
 
         # ----------------------------------------------------
         # SHORT LOOP DELAY
