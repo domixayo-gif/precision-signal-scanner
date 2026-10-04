@@ -1,2 +1,2 @@
 requests
-git+https://github.com/iqoptionapi/iqoptionapi.gitp
+git+https://github.com/iqoptionapi/iqoptionapi.git
