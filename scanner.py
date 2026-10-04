@@ -231,102 +231,302 @@ def get_otc_assets():
     )
 
     try:
-        init_data = api.get_all_init_v2()
+        init_data = None
 
-        if not init_data:
+        # ----------------------------------------------------
+        # PRIMARY OTC DATA SOURCE
+        # ----------------------------------------------------
+
+        try:
+            init_data = api.get_all_init_v2()
+        except Exception as exc:
             print(
-                "OTC initialization returned no data.",
+                "get_all_init_v2 warning: "
+                + str(exc),
                 flush=True,
             )
-            return False
 
         new_assets = []
         new_active_ids = {}
 
-        sections = [
-            init_data.get("turbo", {}),
-            init_data.get("binary", {}),
-        ]
+        # ----------------------------------------------------
+        # PARSE get_all_init_v2()
+        #
+        # Correct structure:
+        #
+        # turbo
+        #   actives
+        #      active_id
+        #         name
+        #
+        # binary
+        #   actives
+        #      active_id
+        #         name
+        # ----------------------------------------------------
 
-        for section in sections:
+        if isinstance(init_data, dict):
 
-            if not isinstance(section, dict):
-                continue
+            sections = [
+                init_data.get("turbo", {}),
+                init_data.get("binary", {}),
+            ]
 
-            for key, info in section.items():
+            for section in sections:
 
-                if not isinstance(info, dict):
+                if not isinstance(section, dict):
                     continue
 
-                active_id = info.get("active_id")
+                actives = section.get(
+                    "actives",
+                    {},
+                )
 
-                if active_id is None:
+                if not isinstance(actives, dict):
                     continue
 
-                name = info.get("name", key)
+                for key, info in actives.items():
 
-                if "." in name:
-                    name = name.split(".", 1)[1]
+                    if not isinstance(info, dict):
+                        continue
 
-                if "-OTC" not in name:
-                    continue
+                    # The active ID is normally the dictionary key.
+                    active_id = info.get(
+                        "active_id"
+                    )
 
-                if info.get("enabled") is not True:
-                    continue
+                    if active_id is None:
+                        active_id = key
 
-                if info.get("is_suspended") is True:
-                    continue
+                    try:
+                        active_id = int(active_id)
+                    except Exception:
+                        continue
 
-                try:
-                    active_id = int(active_id)
-                except Exception:
-                    continue
+                    name = info.get(
+                        "name",
+                        "",
+                    )
 
-                if name in new_active_ids:
-                    continue
+                    if not name:
+                        continue
 
-                new_assets.append(name)
-                new_active_ids[name] = active_id
+                    name = str(name)
+
+                    # IQ Option may return names such as:
+                    # "turbo.ALIBABA-OTC"
+                    # "binary.ALIBABA-OTC"
+                    if "." in name:
+                        name = name.split(
+                            ".",
+                            1,
+                        )[1]
+
+                    if "-OTC" not in name:
+                        continue
+
+                    enabled = info.get(
+                        "enabled"
+                    )
+
+                    suspended = info.get(
+                        "is_suspended"
+                    )
+
+                    if enabled is False:
+                        continue
+
+                    if suspended is True:
+                        continue
+
+                    if name in new_active_ids:
+                        continue
+
+                    new_assets.append(name)
+                    new_active_ids[name] = active_id
+
+                    if len(new_assets) >= MAX_ASSETS:
+                        break
 
                 if len(new_assets) >= MAX_ASSETS:
                     break
 
-            if len(new_assets) >= MAX_ASSETS:
-                break
+        # ----------------------------------------------------
+        # FALLBACK TO get_all_init()
+        # ----------------------------------------------------
 
         if not new_assets:
+
+            print(
+                "Primary OTC discovery returned no assets.",
+                flush=True,
+            )
+
+            try:
+                legacy_data = api.get_all_init()
+            except Exception as exc:
+                print(
+                    "get_all_init warning: "
+                    + str(exc),
+                    flush=True,
+                )
+                legacy_data = None
+
+            if isinstance(legacy_data, dict):
+
+                result = legacy_data.get(
+                    "result",
+                    {},
+                )
+
+                if isinstance(result, dict):
+
+                    sections = [
+                        result.get(
+                            "turbo",
+                            {},
+                        ),
+                        result.get(
+                            "binary",
+                            {},
+                        ),
+                    ]
+
+                    for section in sections:
+
+                        if not isinstance(
+                            section,
+                            dict,
+                        ):
+                            continue
+
+                        actives = section.get(
+                            "actives",
+                            {},
+                        )
+
+                        if not isinstance(
+                            actives,
+                            dict,
+                        ):
+                            continue
+
+                        for key, info in actives.items():
+
+                            if not isinstance(
+                                info,
+                                dict,
+                            ):
+                                continue
+
+                            try:
+                                active_id = int(key)
+                            except Exception:
+                                continue
+
+                            name = info.get(
+                                "name",
+                                "",
+                            )
+
+                            if not name:
+                                continue
+
+                            name = str(name)
+
+                            if "." in name:
+                                name = name.split(
+                                    ".",
+                                    1,
+                                )[1]
+
+                            if "-OTC" not in name:
+                                continue
+
+                            enabled = info.get(
+                                "enabled"
+                            )
+
+                            suspended = info.get(
+                                "is_suspended"
+                            )
+
+                            if enabled is False:
+                                continue
+
+                            if suspended is True:
+                                continue
+
+                            if name in new_active_ids:
+                                continue
+
+                            new_assets.append(name)
+                            new_active_ids[name] = active_id
+
+                            if (
+                                len(new_assets)
+                                >= MAX_ASSETS
+                            ):
+                                break
+
+                        if (
+                            len(new_assets)
+                            >= MAX_ASSETS
+                        ):
+                            break
+
+        # ----------------------------------------------------
+        # FINAL CHECK
+        # ----------------------------------------------------
+
+        if not new_assets:
+
             print(
                 "No OPEN OTC assets found.",
                 flush=True,
             )
+
             return False
+
+        # ----------------------------------------------------
+        # SAVE OTC ASSETS
+        # ----------------------------------------------------
 
         otc_assets = new_assets
         otc_active_ids = new_active_ids
 
-        # ====================================================
-        # FIX: REGISTER OTC ACTIVE IDs FOR api.buy()
-        # ====================================================
+        # ----------------------------------------------------
+        # REGISTER ACTIVE IDs
+        #
+        # api.buy() uses OP_code.ACTIVES[asset]
+        # ----------------------------------------------------
 
         for asset_name, active_id in otc_active_ids.items():
-            OP_code.ACTIVES[asset_name] = active_id
+
+            OP_code.ACTIVES[
+                asset_name
+            ] = active_id
 
         print("", flush=True)
+
         print(
             "🔎 OTC ASSETS READY",
             flush=True,
         )
+
         print(
             "Found "
             + str(len(otc_assets))
             + " OPEN OTC assets.",
             flush=True,
         )
+
         print(
             "IQ active-code mappings loaded: "
             + str(len(otc_active_ids)),
             flush=True,
         )
+
         print(
             "1M scanner is now active.",
             flush=True,
@@ -335,11 +535,13 @@ def get_otc_assets():
         return True
 
     except Exception as exc:
+
         print(
             "OTC discovery error:",
             exc,
             flush=True,
         )
+
         return False
 
 
@@ -1317,4 +1519,5 @@ if __name__ == "__main__":
             "FATAL ERROR: "
             + str(exc),
             flush=True,
+            )sh=True,
         )
