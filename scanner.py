@@ -257,74 +257,175 @@ def connect_iq():
 
 # ============================================================
 # OTC ASSET DISCOVERY
+#
+# IMPORTANT:
+# We intentionally do NOT use get_all_open_time().
+# That function is very heavy and can stall OTC startup.
+#
+# We use the IQ Option initialization data directly and
+# inspect only turbo/binary assets.
 # ============================================================
 
 def get_otc_assets(api):
-    print("Refreshing IQ Option OTC assets...")
+    print("Preparing OTC assets...")
+    print("Requesting IQ Option OTC initialization data...")
 
     try:
-        all_assets = api.get_all_open_time()
+        data = api.get_all_init_v2()
 
     except Exception as exc:
         print(
-            "get_all_open_time error:",
+            "OTC initialization error:",
             exc
         )
         return []
 
-    if not isinstance(all_assets, dict):
-        print("IQ Option returned invalid asset data.")
+    if not isinstance(data, dict):
+        print(
+            "OTC initialization returned invalid data."
+        )
         return []
+
+    print("OTC initialization data received.")
 
     assets = []
 
-    # 1-minute expiry uses TURBO/BINARY.
-    # We prioritize TURBO because 1-minute orders belong here.
-    turbo = all_assets.get("turbo", {})
+    # --------------------------------------------------------
+    # TURBO
+    # --------------------------------------------------------
 
-    if isinstance(turbo, dict):
+    turbo_data = data.get(
+        "turbo",
+        {}
+    )
 
-        for asset, info in turbo.items():
+    if isinstance(turbo_data, dict):
 
-            if not isinstance(asset, str):
-                continue
+        turbo_actives = turbo_data.get(
+            "actives",
+            {}
+        )
 
-            if "-OTC" not in asset.upper():
-                continue
+        if isinstance(turbo_actives, dict):
 
-            if not isinstance(info, dict):
-                continue
+            print(
+                "Turbo active records:",
+                len(turbo_actives)
+            )
 
-            if info.get("open") is True:
-                if asset not in assets:
-                    assets.append(asset)
+            for active_id, active in turbo_actives.items():
 
-    # Some installations may expose OTC assets in binary too.
+                if not isinstance(active, dict):
+                    continue
+
+                name = active.get(
+                    "name",
+                    ""
+                )
+
+                if not isinstance(name, str):
+                    continue
+
+                # Some API versions return names such as:
+                # turbo.EURUSD-OTC
+                if "." in name:
+                    name = name.split(
+                        ".",
+                        1
+                    )[1]
+
+                if "-OTC" not in name.upper():
+                    continue
+
+                enabled = active.get(
+                    "enabled",
+                    False
+                )
+
+                suspended = active.get(
+                    "is_suspended",
+                    False
+                )
+
+                if enabled is True and suspended is not True:
+
+                    if name not in assets:
+                        assets.append(name)
+
+    # --------------------------------------------------------
+    # BINARY FALLBACK
+    # --------------------------------------------------------
+
     if not assets:
 
-        binary = all_assets.get("binary", {})
+        print(
+            "No open turbo OTC assets found."
+        )
 
-        if isinstance(binary, dict):
+        binary_data = data.get(
+            "binary",
+            {}
+        )
 
-            for asset, info in binary.items():
+        if isinstance(binary_data, dict):
 
-                if not isinstance(asset, str):
-                    continue
+            binary_actives = binary_data.get(
+                "actives",
+                {}
+            )
 
-                if "-OTC" not in asset.upper():
-                    continue
+            if isinstance(binary_actives, dict):
 
-                if not isinstance(info, dict):
-                    continue
+                print(
+                    "Binary active records:",
+                    len(binary_actives)
+                )
 
-                if info.get("open") is True:
-                    if asset not in assets:
-                        assets.append(asset)
+                for active_id, active in binary_actives.items():
+
+                    if not isinstance(active, dict):
+                        continue
+
+                    name = active.get(
+                        "name",
+                        ""
+                    )
+
+                    if not isinstance(name, str):
+                        continue
+
+                    if "." in name:
+                        name = name.split(
+                            ".",
+                            1
+                        )[1]
+
+                    if "-OTC" not in name.upper():
+                        continue
+
+                    enabled = active.get(
+                        "enabled",
+                        False
+                    )
+
+                    suspended = active.get(
+                        "is_suspended",
+                        False
+                    )
+
+                    if enabled is True and suspended is not True:
+
+                        if name not in assets:
+                            assets.append(name)
 
     assets = sorted(assets)
 
     if not assets:
-        print("No OPEN OTC turbo/binary assets found.")
+
+        print(
+            "No OPEN OTC turbo/binary assets found."
+        )
+
         return []
 
     if len(assets) > MAX_ASSETS:
@@ -336,7 +437,10 @@ def get_otc_assets(api):
     )
 
     for asset in assets[:20]:
-        print("OTC:", asset)
+        print(
+            "OTC READY:",
+            asset
+        )
 
     if len(assets) > 20:
         print(
@@ -353,6 +457,11 @@ def get_otc_assets(api):
 # ============================================================
 
 def get_candles(api, asset, count):
+    print(
+        "Requesting 1M candles:",
+        asset
+    )
+
     try:
         now = int(time.time())
 
@@ -372,6 +481,10 @@ def get_candles(api, asset, count):
         return []
 
     if not candles:
+        print(
+            asset,
+            "returned no candles."
+        )
         return []
 
     valid = []
@@ -416,6 +529,13 @@ def get_candles(api, asset, count):
     valid.sort(
         key=lambda item: item["time"]
     )
+
+    if valid:
+        print(
+            asset,
+            "candles received:",
+            len(valid)
+        )
 
     return valid
 
@@ -1546,5 +1666,6 @@ def main():
 # ============================================================
 # START
 # ============================================================
+
 if __name__ == "__main__":
     main()
