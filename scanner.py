@@ -65,7 +65,6 @@ otc_active_ids = {}
 trade_count = 0
 wins = 0
 losses = 0
-
 pending_results = 0
 
 last_signal_candle = {}
@@ -109,7 +108,12 @@ def init_log():
         return
 
     try:
-        with open(LOG_FILE, "w", newline="", encoding="utf-8") as file:
+        with open(
+            LOG_FILE,
+            "w",
+            newline="",
+            encoding="utf-8",
+        ) as file:
             writer = csv.writer(file)
 
             writer.writerow([
@@ -135,7 +139,12 @@ def log_trade(
     profit,
 ):
     try:
-        with open(LOG_FILE, "a", newline="", encoding="utf-8") as file:
+        with open(
+            LOG_FILE,
+            "a",
+            newline="",
+            encoding="utf-8",
+        ) as file:
             writer = csv.writer(file)
 
             writer.writerow([
@@ -161,24 +170,51 @@ def connect_iq():
 
     print("Connecting to IQ Option...", flush=True)
 
-    api = IQ_Option(IQ_EMAIL, IQ_PASSWORD)
-
-    connected, reason = api.connect()
-
-    if not connected:
-        print("IQ OPTION CONNECTION FAILED:", reason, flush=True)
-        return False
-
-    print("🟢 IQ OPTION CONNECTED", flush=True)
-
     try:
-        api.change_balance(BALANCE_MODE)
+        api = IQ_Option(
+            IQ_EMAIL,
+            IQ_PASSWORD,
+        )
+
+        connected, reason = api.connect()
+
+        if not connected:
+            print(
+                "IQ OPTION CONNECTION FAILED:",
+                reason,
+                flush=True,
+            )
+            return False
+
+        print(
+            "🟢 IQ OPTION CONNECTED",
+            flush=True,
+        )
+
+        try:
+            api.change_balance(BALANCE_MODE)
+        except Exception as exc:
+            print(
+                "Balance mode warning:",
+                exc,
+                flush=True,
+            )
+
+        print(
+            "Practice mode active.",
+            flush=True,
+        )
+
+        return True
+
     except Exception as exc:
-        print("Balance mode warning:", exc, flush=True)
-
-    print("Practice mode active.", flush=True)
-
-    return True
+        print(
+            "Connection error:",
+            exc,
+            flush=True,
+        )
+        api = None
+        return False
 
 
 # ============================================================
@@ -189,13 +225,19 @@ def get_otc_assets():
     global otc_assets
     global otc_active_ids
 
-    print("Preparing OTC assets...", flush=True)
+    print(
+        "Preparing OTC assets...",
+        flush=True,
+    )
 
     try:
         init_data = api.get_all_init_v2()
 
         if not init_data:
-            print("OTC initialization returned no data.", flush=True)
+            print(
+                "OTC initialization returned no data.",
+                flush=True,
+            )
             return False
 
         new_assets = []
@@ -207,6 +249,10 @@ def get_otc_assets():
         ]
 
         for section in sections:
+
+            if not isinstance(section, dict):
+                continue
+
             for key, info in section.items():
 
                 if not isinstance(info, dict):
@@ -249,42 +295,51 @@ def get_otc_assets():
                 break
 
         if not new_assets:
-            print("No OPEN OTC assets found.", flush=True)
+            print(
+                "No OPEN OTC assets found.",
+                flush=True,
+            )
             return False
 
         otc_assets = new_assets
         otc_active_ids = new_active_ids
 
         # ====================================================
-        # ONLY FIX:
-        # Register the discovered OTC IDs in IQ Option's
-        # internal active-code map used by api.buy().
+        # FIX: REGISTER OTC ACTIVE IDs FOR api.buy()
         # ====================================================
 
         for asset_name, active_id in otc_active_ids.items():
             OP_code.ACTIVES[asset_name] = active_id
 
         print("", flush=True)
-        print("🔎 OTC ASSETS READY", flush=True)
+        print(
+            "🔎 OTC ASSETS READY",
+            flush=True,
+        )
         print(
             "Found "
             + str(len(otc_assets))
             + " OPEN OTC assets.",
             flush=True,
         )
-
         print(
             "IQ active-code mappings loaded: "
             + str(len(otc_active_ids)),
             flush=True,
         )
-
-        print("1M scanner is now active.", flush=True)
+        print(
+            "1M scanner is now active.",
+            flush=True,
+        )
 
         return True
 
     except Exception as exc:
-        print("OTC discovery error:", exc, flush=True)
+        print(
+            "OTC discovery error:",
+            exc,
+            flush=True,
+        )
         return False
 
 
@@ -309,7 +364,9 @@ def get_candles(asset, count):
         server_time = time.time()
 
         try:
-            server_time = api.api.timesync.server_timestamp
+            server_time = (
+                api.api.timesync.server_timestamp
+            )
         except Exception:
             pass
 
@@ -322,9 +379,14 @@ def get_candles(asset, count):
 
         started = time.time()
 
-        while time.time() - started < CANDLE_REQUEST_TIMEOUT:
+        while (
+            time.time() - started
+            < CANDLE_REQUEST_TIMEOUT
+        ):
 
-            candles = api.api.candles.candles_data
+            candles = (
+                api.api.candles.candles_data
+            )
 
             if candles:
                 break
@@ -345,11 +407,21 @@ def get_candles(asset, count):
 
             try:
                 result.append({
-                    "from": float(candle.get("from")),
-                    "open": float(candle.get("open")),
-                    "close": float(candle.get("close")),
-                    "high": float(candle.get("max")),
-                    "low": float(candle.get("min")),
+                    "from": float(
+                        candle.get("from")
+                    ),
+                    "open": float(
+                        candle.get("open")
+                    ),
+                    "close": float(
+                        candle.get("close")
+                    ),
+                    "high": float(
+                        candle.get("max")
+                    ),
+                    "low": float(
+                        candle.get("min")
+                    ),
                 })
             except Exception:
                 continue
@@ -372,9 +444,7 @@ def remove_open_candle(candles):
         return candles
 
     now = time.time()
-
     last = candles[-1]
-
     candle_from = last.get("from", 0)
 
     if now - candle_from < CANDLE_SECONDS:
@@ -393,9 +463,13 @@ def calculate_momentum(candles):
     if len(candles) <= MOMENTUM_PERIOD:
         return values
 
-    for index in range(MOMENTUM_PERIOD, len(candles)):
+    for index in range(
+        MOMENTUM_PERIOD,
+        len(candles),
+    ):
 
         current = candles[index]["close"]
+
         previous = candles[
             index - MOMENTUM_PERIOD
         ]["close"]
@@ -545,7 +619,12 @@ def build_signal_message(
         + str(round(analysis["previous"], 5))
         + "\n"
         "Previous 2: "
-        + str(round(analysis["previous_previous"], 5))
+        + str(
+            round(
+                analysis["previous_previous"],
+                5,
+            )
+        )
         + "\n"
         "Recent Low: "
         + str(round(analysis["recent_low"], 5))
@@ -560,7 +639,12 @@ def build_signal_message(
         + str(round(analysis["high_threshold"], 5))
         + "\n"
         "Reversal Strength: "
-        + str(round(analysis["reversal_strength"], 1))
+        + str(
+            round(
+                analysis["reversal_strength"],
+                1,
+            )
+        )
         + "%\n"
         "Price: "
         + str(price)
@@ -595,7 +679,9 @@ def monitor_trade(
         for _ in range(20):
 
             try:
-                result = api.check_win_v4(order_id)
+                result = api.check_win_v4(
+                    order_id
+                )
             except Exception:
                 result = None
 
@@ -620,7 +706,6 @@ def monitor_trade(
         if profit > 0:
             wins += 1
             result_text = "WIN"
-
         else:
             losses += 1
             result_text = "LOSS"
@@ -713,9 +798,10 @@ def execute_trade(
 
         if not success:
             print(
-                "❌ TRADE FAILED",
-                asset,
-                direction,
+                "❌ TRADE FAILED "
+                + asset
+                + " "
+                + direction,
                 flush=True,
             )
             return False
@@ -724,11 +810,12 @@ def execute_trade(
         pending_results += 1
 
         print(
-            "✅ TRADE OPENED",
-            asset,
-            direction,
-            "Order:",
-            order_id,
+            "✅ TRADE OPENED "
+            + asset
+            + " "
+            + direction
+            + " Order: "
+            + str(order_id),
             flush=True,
         )
 
@@ -766,7 +853,10 @@ def execute_trade(
 
     except Exception as exc:
         print("", flush=True)
-        print("❌ TRADE EXCEPTION", flush=True)
+        print(
+            "❌ TRADE EXCEPTION",
+            flush=True,
+        )
         print(
             "Asset: "
             + asset,
@@ -1115,6 +1205,9 @@ def main():
     )
     print("", flush=True)
 
+    last_asset_refresh = 0
+    last_heartbeat = 0
+
     while not stop_event.is_set():
 
         if api is None:
@@ -1122,13 +1215,6 @@ def main():
             if not connect_iq():
                 time.sleep(RECONNECT_SECONDS)
                 continue
-
-            if not get_otc_assets():
-                time.sleep(RECONNECT_SECONDS)
-                continue
-
-            last_asset_refresh = time.time()
-            last_heartbeat = time.time()
 
         try:
             if not api.check_connect():
@@ -1138,17 +1224,30 @@ def main():
                     flush=True,
                 )
 
+                api = None
+
                 time.sleep(RECONNECT_SECONDS)
-
-                try:
-                    api.connect()
-                except Exception:
-                    pass
-
                 continue
 
         except Exception:
-            pass
+            api = None
+            time.sleep(RECONNECT_SECONDS)
+            continue
+
+        if not otc_assets:
+
+            if not get_otc_assets():
+
+                print(
+                    "OTC assets unavailable. Retrying...",
+                    flush=True,
+                )
+
+                time.sleep(RECONNECT_SECONDS)
+                continue
+
+            last_asset_refresh = time.time()
+            last_heartbeat = time.time()
 
         now = time.time()
 
@@ -1156,6 +1255,7 @@ def main():
             now - last_asset_refresh
             >= ASSET_REFRESH_SECONDS
         ):
+
             if get_otc_assets():
                 last_asset_refresh = now
 
@@ -1205,14 +1305,16 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+
     except KeyboardInterrupt:
         print(
             "Bot stopped.",
             flush=True,
         )
+
     except Exception as exc:
         print(
-            "FATAL ERROR:",
-            str(exc),
+            "FATAL ERROR: "
+            + str(exc),
             flush=True,
         )
