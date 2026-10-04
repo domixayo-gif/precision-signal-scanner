@@ -1,8 +1,6 @@
 import os
 import csv
 import time
-import uuid
-import statistics
 from datetime import datetime, timezone
 
 import requests
@@ -16,32 +14,24 @@ from iqoptionapi.stable_api import IQ_Option
 
 MOMENTUM_PERIOD = 10
 MOMENTUM_LOOKBACK = 50
-
-# Stronger extremes
 EXTREME_PERCENTILE = 0.10
 
-# Require a clear turn
 REQUIRE_TURN = True
-
-# Require the current Momentum to move a minimum amount
 MIN_TURN_DISTANCE = 0.03
 
-# 1-minute strategy
 CANDLE_SECONDS = 60
 EXPIRY_MINUTES = 1
 
-# Trading
 AUTO_TRADE = True
 BALANCE_MODE = "PRACTICE"
 STAKE = 1.0
 
-# Target
 TARGET_TRADES = 50
 
-# Scanner
 SCAN_INTERVAL = 3
 ASSET_REFRESH_SECONDS = 1800
 HEARTBEAT_SECONDS = 300
+RECONNECT_SECONDS = 20
 
 MAX_ASSETS = 70
 
@@ -60,7 +50,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 
 # ============================================================
-# GLOBAL STATE
+# GLOBALS
 # ============================================================
 
 total_trades = 0
@@ -70,7 +60,8 @@ losses = 0
 last_signal_candle = {}
 extreme_state = {}
 
-trade_records = {}
+last_heartbeat = 0
+last_asset_refresh = 0
 
 
 # ============================================================
@@ -79,6 +70,7 @@ trade_records = {}
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram credentials are missing.")
         return False
 
     url = (
@@ -99,11 +91,20 @@ def send_telegram(message):
             timeout=20
         )
 
-        return response.ok
+        if response.ok:
+            print("Telegram message sent.")
+            return True
+
+        print(
+            "Telegram HTTP error:",
+            response.status_code,
+            response.text[:300]
+        )
 
     except Exception as exc:
         print("Telegram error:", exc)
-        return False
+
+    return False
 
 
 # ============================================================
@@ -146,23 +147,14 @@ def create_log_file():
             writer.writerow(headers)
 
     except Exception as exc:
-        print("Log creation error:", exc)
+        print("CSV creation error:", exc)
 
 
 def log_signal(
     asset,
     direction,
     candle_time,
-    momentum,
-    previous,
-    previous_previous,
-    recent_low,
-    recent_high,
-    low_threshold,
-    high_threshold,
-    extreme,
-    strength,
-    price,
+    analysis,
     signal_id,
     trade_id="",
     result=""
@@ -173,16 +165,16 @@ def log_signal(
         direction,
         candle_time,
         EXPIRY_MINUTES,
-        round(momentum, 5),
-        round(previous, 5),
-        round(previous_previous, 5),
-        round(recent_low, 5),
-        round(recent_high, 5),
-        round(low_threshold, 5),
-        round(high_threshold, 5),
-        extreme,
-        round(strength, 2),
-        price,
+        round(analysis["momentum"], 5),
+        round(analysis["previous"], 5),
+        round(analysis["previous_previous"], 5),
+        round(analysis["recent_low"], 5),
+        round(analysis["recent_high"], 5),
+        round(analysis["low_threshold"], 5),
+        round(analysis["high_threshold"], 5),
+        analysis["extreme"],
+        round(analysis["strength"], 2),
+        analysis["price"],
         signal_id,
         trade_id,
         result
@@ -199,7 +191,7 @@ def log_signal(
             writer.writerow(row)
 
     except Exception as exc:
-        print("Log error:", exc)
+        print("CSV log error:", exc)
 
 
 # ============================================================
@@ -209,27 +201,31 @@ def log_signal(
 def connect_iq():
     print("Connecting to IQ Option...")
 
-    api = IQ_Option(
-        IQ_EMAIL,
-        IQ_PASSWORD
-    )
+    if not IQ_EMAIL or not IQ_PASSWORD:
+        print("IQ credentials are missing.")
+        return None
 
     try:
+        api = IQ_Option(
+            IQ_EMAIL,
+            IQ_PASSWORD
+        )
+
         connected = api.connect()
 
     except Exception as exc:
-        print("Connection error:", exc)
+        print("IQ connection exception:", exc)
         return None
 
     if not connected:
         print("IQ Option connection failed.")
         return None
 
-    print("IQ Option connected.")
+    print("IQ Option connection successful.")
 
     try:
         api.change_balance(BALANCE_MODE)
-        print("Balance:", BALANCE_MODE)
+        print("Balance mode:", BALANCE_MODE)
 
     except Exception as exc:
         print("Balance mode warning:", exc)
@@ -254,9 +250,10 @@ def extract_otc_assets(data):
         for key, value in obj.items():
 
             if isinstance(key, str):
-                name = key.upper()
+                upper_key = key.upper()
 
-                if "-OTC" in name:
+                if "-OTC" in upper_key:
+
                     if isinstance(value, dict):
                         opened = value.get("open")
 
@@ -277,7 +274,7 @@ def extract_otc_assets(data):
 
 
 def get_otc_assets(api):
-    print("Refreshing OTC assets...")
+    print("Refreshing IQ Option OTC assets...")
 
     data = None
 
@@ -297,18 +294,18 @@ def get_otc_assets(api):
     assets = extract_otc_assets(data)
 
     if not assets:
-        print("No OTC assets found.")
+        print("No OTC assets returned.")
         return []
 
     assets = assets[:MAX_ASSETS]
 
-    print("OTC assets:", len(assets))
+    print("OTC assets found:", len(assets))
 
     return assets
 
 
 # ============================================================
-# CANDLE VALIDATION
+# CANDLE DATA
 # ============================================================
 
 def get_candles(api, asset, count):
@@ -333,14 +330,14 @@ def get_candles(api, asset, count):
 
     for candle in candles:
         try:
-            timestamp = int(candle["from"])
+            candle_time = int(candle["from"])
             close = float(candle["close"])
 
             if close <= 0:
                 continue
 
             valid.append({
-                "time": timestamp,
+                "time": candle_time,
                 "open": float(candle["open"]),
                 "high": float(candle["max"]),
                 "low": float(candle["min"]),
@@ -350,7 +347,7 @@ def get_candles(api, asset, count):
         except Exception:
             continue
 
-    valid.sort(key=lambda x: x["time"])
+    valid.sort(key=lambda item: item["time"])
 
     return valid
 
@@ -375,33 +372,32 @@ def remove_open_candle(candles):
 # MOMENTUM 10
 # ============================================================
 
-def calculate_momentum(closes, period):
+def calculate_momentum(closes):
     values = []
 
-    if len(closes) <= period:
+    if len(closes) <= MOMENTUM_PERIOD:
         return values
 
-    for i in range(period, len(closes)):
-        previous_close = closes[i - period]
+    for index in range(
+        MOMENTUM_PERIOD,
+        len(closes)
+    ):
+        old_close = closes[
+            index - MOMENTUM_PERIOD
+        ]
 
-        if previous_close <= 0:
+        if old_close <= 0:
             continue
 
         value = (
-            closes[i] / previous_close
+            closes[index] / old_close
         ) * 100.0
 
-        if math_is_valid(value):
-            values.append(value)
+        if value == value:
+            if value != float("inf"):
+                values.append(value)
 
     return values
-
-
-def math_is_valid(value):
-    try:
-        return value == value and value != float("inf")
-    except Exception:
-        return False
 
 
 # ============================================================
@@ -417,7 +413,9 @@ def percentile(values, percent):
     if len(ordered) == 1:
         return ordered[0]
 
-    position = (len(ordered) - 1) * percent
+    position = (
+        len(ordered) - 1
+    ) * percent
 
     lower = int(position)
     upper = lower + 1
@@ -430,7 +428,8 @@ def percentile(values, percent):
     return (
         ordered[lower]
         + (
-            ordered[upper] - ordered[lower]
+            ordered[upper]
+            - ordered[lower]
         ) * fraction
     )
 
@@ -445,17 +444,19 @@ def analyze_momentum(candles):
     for candle in candles:
         closes.append(candle["close"])
 
-    momentum = calculate_momentum(
-        closes,
-        MOMENTUM_PERIOD
-    )
+    momentum = calculate_momentum(closes)
 
-    required = MOMENTUM_LOOKBACK + 3
+    required = (
+        MOMENTUM_LOOKBACK
+        + 3
+    )
 
     if len(momentum) < required:
         return None
 
-    recent = momentum[-MOMENTUM_LOOKBACK:]
+    recent = momentum[
+        -MOMENTUM_LOOKBACK:
+    ]
 
     current = momentum[-1]
     previous = momentum[-2]
@@ -474,15 +475,16 @@ def analyze_momentum(candles):
     recent_low = min(recent)
     recent_high = max(recent)
 
-    # --------------------------------------------------------
-    # TURN CONFIRMATION
-    # --------------------------------------------------------
-
     rising_now = current > previous
     falling_now = current < previous
 
-    previous_falling = previous < previous_previous
-    previous_rising = previous > previous_previous
+    previous_falling = (
+        previous < previous_previous
+    )
+
+    previous_rising = (
+        previous > previous_previous
+    )
 
     upward_turn = (
         rising_now
@@ -494,10 +496,6 @@ def analyze_momentum(candles):
         and previous_rising
     )
 
-    # --------------------------------------------------------
-    # DISTANCE FROM PREVIOUS MOMENTUM
-    # --------------------------------------------------------
-
     turn_distance = abs(
         current - previous
     )
@@ -506,26 +504,31 @@ def analyze_momentum(candles):
         turn_distance >= MIN_TURN_DISTANCE
     )
 
-    # --------------------------------------------------------
-    # EXTREME DETECTION
-    # --------------------------------------------------------
+    low_extreme = (
+        current <= low_threshold
+    )
 
-    low_extreme = current <= low_threshold
-    high_extreme = current >= high_threshold
+    high_extreme = (
+        current >= high_threshold
+    )
 
     direction = None
     extreme = None
 
     if low_extreme and upward_turn:
-        if REQUIRE_TURN and not strong_turn:
-            return None
+
+        if REQUIRE_TURN:
+            if not strong_turn:
+                return None
 
         direction = "CALL"
         extreme = "LOW"
 
     elif high_extreme and downward_turn:
-        if REQUIRE_TURN and not strong_turn:
-            return None
+
+        if REQUIRE_TURN:
+            if not strong_turn:
+                return None
 
         direction = "PUT"
         extreme = "HIGH"
@@ -533,35 +536,33 @@ def analyze_momentum(candles):
     else:
         return None
 
-    # --------------------------------------------------------
-    # STRENGTH
-    # --------------------------------------------------------
+    threshold_range = (
+        high_threshold
+        - low_threshold
+    )
 
-    if extreme == "LOW":
-        distance = high_threshold - low_threshold
+    if threshold_range <= 0:
+        strength = 0.0
 
-        if distance <= 0:
-            strength = 0.0
-        else:
-            strength = (
-                (low_threshold - current)
-                / distance
-            ) * 100.0
-
-            strength = abs(strength)
+    elif extreme == "LOW":
+        strength = (
+            (
+                low_threshold
+                - current
+            )
+            / threshold_range
+        ) * 100.0
 
     else:
-        distance = high_threshold - low_threshold
+        strength = (
+            (
+                current
+                - high_threshold
+            )
+            / threshold_range
+        ) * 100.0
 
-        if distance <= 0:
-            strength = 0.0
-        else:
-            strength = (
-                (current - high_threshold)
-                / distance
-            ) * 100.0
-
-            strength = abs(strength)
+    strength = abs(strength)
 
     if strength < 50:
         strength = 50.0
@@ -589,7 +590,11 @@ def analyze_momentum(candles):
 # SIGNAL ID
 # ============================================================
 
-def make_signal_id(asset, direction, candle_time):
+def make_signal_id(
+    asset,
+    direction,
+    candle_time
+):
     clean_asset = asset.replace("/", "")
     clean_asset = clean_asset.replace("-", "")
 
@@ -604,36 +609,26 @@ def make_signal_id(asset, direction, candle_time):
 
 
 # ============================================================
-# DUPLICATE PROTECTION
+# SIGNAL DUPLICATE CHECK
 # ============================================================
 
-def is_duplicate_signal(asset, candle_time):
-    previous_time = last_signal_candle.get(asset)
+def is_duplicate(
+    asset,
+    candle_time
+):
+    previous = last_signal_candle.get(asset)
 
-    if previous_time is None:
+    if previous is None:
         return False
 
-    return previous_time == candle_time
+    return previous == candle_time
 
 
-def mark_signal(asset, candle_time):
+def mark_signal(
+    asset,
+    candle_time
+):
     last_signal_candle[asset] = candle_time
-
-
-# ============================================================
-# EXTREME STATE
-# ============================================================
-
-def update_state(asset, current_extreme):
-    previous = extreme_state.get(asset)
-
-    if current_extreme is None:
-        extreme_state[asset] = "CENTER"
-
-    else:
-        extreme_state[asset] = current_extreme
-
-    return previous
 
 
 # ============================================================
@@ -645,42 +640,69 @@ def build_signal_message(
     analysis,
     signal_id
 ):
-    direction = analysis["direction"]
-    extreme = analysis["extreme"]
-
     message = (
         "🔔 MOMENTUM 10 SIGNAL\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        "Asset: " + asset + "\n"
-        "Direction: " + direction + "\n"
+        "Asset: "
+        + asset
+        + "\n"
+        "Direction: "
+        + analysis["direction"]
+        + "\n"
         "Timeframe: 1M\n"
         "Expiry: 1 minute\n"
         "Strategy: Momentum 10 Extreme-Reversal\n"
-        "Extreme: " + extreme + "\n"
+        "Extreme: "
+        + analysis["extreme"]
+        + "\n"
         "━━━━━━━━━━━━━━━━━━\n"
         "Momentum: "
-        + str(round(analysis["momentum"], 5))
+        + str(round(
+            analysis["momentum"],
+            5
+        ))
         + "\n"
         "Previous: "
-        + str(round(analysis["previous"], 5))
+        + str(round(
+            analysis["previous"],
+            5
+        ))
         + "\n"
         "Previous 2: "
-        + str(round(analysis["previous_previous"], 5))
+        + str(round(
+            analysis["previous_previous"],
+            5
+        ))
         + "\n"
         "Recent Low: "
-        + str(round(analysis["recent_low"], 5))
+        + str(round(
+            analysis["recent_low"],
+            5
+        ))
         + "\n"
         "Recent High: "
-        + str(round(analysis["recent_high"], 5))
+        + str(round(
+            analysis["recent_high"],
+            5
+        ))
         + "\n"
         "Low Threshold: "
-        + str(round(analysis["low_threshold"], 5))
+        + str(round(
+            analysis["low_threshold"],
+            5
+        ))
         + "\n"
         "High Threshold: "
-        + str(round(analysis["high_threshold"], 5))
+        + str(round(
+            analysis["high_threshold"],
+            5
+        ))
         + "\n"
         "Reversal Strength: "
-        + str(round(analysis["strength"], 1))
+        + str(round(
+            analysis["strength"],
+            1
+        ))
         + "%\n"
         "Price: "
         + str(analysis["price"])
@@ -693,10 +715,14 @@ def build_signal_message(
 
 
 # ============================================================
-# TRADE EXECUTION
+# TRADE
 # ============================================================
 
-def execute_trade(api, asset, direction):
+def execute_trade(
+    api,
+    asset,
+    direction
+):
     global total_trades
 
     if not AUTO_TRADE:
@@ -720,9 +746,9 @@ def execute_trade(api, asset, direction):
 
     except Exception as exc:
         print(
+            "Trade error:",
             asset,
             direction,
-            "trade error:",
             exc
         )
 
@@ -730,15 +756,18 @@ def execute_trade(api, asset, direction):
 
     if not success:
         print(
+            "Trade rejected:",
             asset,
-            direction,
-            "trade rejected"
+            direction
         )
 
         send_telegram(
             "❌ TRADE REJECTED\n"
-            "Asset: " + asset + "\n"
-            "Direction: " + direction
+            "Asset: "
+            + asset
+            + "\n"
+            "Direction: "
+            + direction
         )
 
         return None
@@ -746,50 +775,54 @@ def execute_trade(api, asset, direction):
     total_trades += 1
 
     print(
-        "TRADE ACCEPTED:",
+        "TRADE ACCEPTED",
         asset,
         direction,
-        "ID:",
-        trade_id
+        "Trade ID:",
+        trade_id,
+        "Trade:",
+        total_trades,
+        "/",
+        TARGET_TRADES
     )
 
     return str(trade_id)
 
 
 # ============================================================
-# RESULT CHECK
+# RESULT
 # ============================================================
 
-def check_trade_result(api, trade_id):
+def check_result(
+    api,
+    trade_id
+):
     try:
-        result = api.check_win_v4(trade_id)
-
-        if result is None:
-            return None
-
-        if result > 0:
-            return "WIN"
-
-        if result < 0:
-            return "LOSS"
-
-        return "DRAW"
+        result = api.check_win_v4(
+            trade_id
+        )
 
     except Exception as exc:
         print(
-            "Result error:",
-            trade_id,
+            "Result check error:",
             exc
         )
 
         return None
 
+    if result is None:
+        return None
 
-# ============================================================
-# TRADE RESULT WAIT
-# ============================================================
+    if result > 0:
+        return "WIN"
 
-def process_trade_result(
+    if result < 0:
+        return "LOSS"
+
+    return "DRAW"
+
+
+def wait_for_result(
     api,
     asset,
     direction,
@@ -804,19 +837,25 @@ def process_trade_result(
         EXPIRY_MINUTES * 60
     ) + 5
 
+    print(
+        "Waiting",
+        wait_seconds,
+        "seconds for result:",
+        trade_id
+    )
+
     time.sleep(wait_seconds)
 
-    result = check_trade_result(
+    result = check_result(
         api,
         trade_id
     )
 
     if result is None:
         print(
-            "Could not determine result:",
+            "Result unavailable:",
             trade_id
         )
-
         return
 
     if result == "WIN":
@@ -825,11 +864,11 @@ def process_trade_result(
     elif result == "LOSS":
         losses += 1
 
-    total_closed = wins + losses
+    closed = wins + losses
 
-    if total_closed > 0:
+    if closed > 0:
         win_rate = (
-            wins / total_closed
+            wins / closed
         ) * 100.0
     else:
         win_rate = 0.0
@@ -843,22 +882,46 @@ def process_trade_result(
         wins,
         "L:",
         losses,
-        "Rate:",
+        "RATE:",
         round(win_rate, 1),
         "%"
+    )
+
+    log_signal(
+        asset,
+        direction,
+        analysis["candle_time"],
+        analysis,
+        signal_id,
+        trade_id,
+        result
     )
 
     message = (
         "📊 TRADE RESULT\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        "Asset: " + asset + "\n"
-        "Direction: " + direction + "\n"
-        "Result: " + result + "\n"
-        "Trade ID: " + trade_id + "\n"
-        "Signal ID: " + signal_id + "\n"
+        "Asset: "
+        + asset
+        + "\n"
+        "Direction: "
+        + direction
+        + "\n"
+        "Result: "
+        + result
+        + "\n"
+        "Trade ID: "
+        + trade_id
+        + "\n"
+        "Signal ID: "
+        + signal_id
+        + "\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        "Wins: " + str(wins) + "\n"
-        "Losses: " + str(losses) + "\n"
+        "Wins: "
+        + str(wins)
+        + "\n"
+        "Losses: "
+        + str(losses)
+        + "\n"
         "Win Rate: "
         + str(round(win_rate, 1))
         + "%"
@@ -866,87 +929,79 @@ def process_trade_result(
 
     send_telegram(message)
 
-    log_signal(
-        asset,
-        direction,
-        analysis["candle_time"],
-        analysis["momentum"],
-        analysis["previous"],
-        analysis["previous_previous"],
-        analysis["recent_low"],
-        analysis["recent_high"],
-        analysis["low_threshold"],
-        analysis["high_threshold"],
-        analysis["extreme"],
-        analysis["strength"],
-        analysis["price"],
-        signal_id,
-        trade_id,
-        result
-    )
-
 
 # ============================================================
-# PROCESS ONE ASSET
+# PROCESS ASSET
 # ============================================================
 
-def process_asset(api, asset):
+def process_asset(
+    api,
+    asset
+):
     candles = get_candles(
         api,
         asset,
-        MOMENTUM_LOOKBACK + MOMENTUM_PERIOD + 10
+        MOMENTUM_LOOKBACK
+        + MOMENTUM_PERIOD
+        + 10
     )
 
     if not candles:
-        return None
+        return
 
-    # Never analyze an unfinished candle.
-    candles = remove_open_candle(candles)
+    candles = remove_open_candle(
+        candles
+    )
 
-    minimum_candles = (
+    minimum = (
         MOMENTUM_LOOKBACK
         + MOMENTUM_PERIOD
         + 5
     )
 
-    if len(candles) < minimum_candles:
-        return None
+    if len(candles) < minimum:
+        return
 
-    analysis = analyze_momentum(candles)
+    analysis = analyze_momentum(
+        candles
+    )
 
     if analysis is None:
-        update_state(asset, None)
-        return None
+        return
 
-    candle_time = analysis["candle_time"]
+    candle_time = analysis[
+        "candle_time"
+    ]
 
-    if is_duplicate_signal(
+    if is_duplicate(
         asset,
         candle_time
     ):
-        return None
+        return
 
-    signal_id = make_signal_id(
-        asset,
-        analysis["direction"],
-        candle_time
-    )
+    current_extreme = analysis[
+        "extreme"
+    ]
 
     previous_state = extreme_state.get(
         asset,
         "CENTER"
     )
 
-    current_state = analysis["extreme"]
+    # --------------------------------------------------------
+    # One signal per extreme episode.
+    # A new signal requires the previous state to be different.
+    # --------------------------------------------------------
 
-    # Only allow a new signal when entering
-    # a new extreme state.
-    if previous_state == current_state:
-        return None
+    if previous_state == current_extreme:
+        return
 
-    update_state(
+    extreme_state[asset] = current_extreme
+
+    signal_id = make_signal_id(
         asset,
-        current_state
+        analysis["direction"],
+        candle_time
     )
 
     mark_signal(
@@ -960,7 +1015,9 @@ def process_asset(api, asset):
         signal_id
     )
 
-    print("\n" + message)
+    print("")
+    print(message)
+    print("")
 
     send_telegram(message)
 
@@ -974,16 +1031,7 @@ def process_asset(api, asset):
         asset,
         analysis["direction"],
         candle_time,
-        analysis["momentum"],
-        analysis["previous"],
-        analysis["previous_previous"],
-        analysis["recent_low"],
-        analysis["recent_high"],
-        analysis["low_threshold"],
-        analysis["high_threshold"],
-        analysis["extreme"],
-        analysis["strength"],
-        analysis["price"],
+        analysis,
         signal_id,
         trade_id or "",
         ""
@@ -991,7 +1039,7 @@ def process_asset(api, asset):
 
     if trade_id:
         trade_message = (
-            "🟢 DEMO TRADE ACCEPTED\n"
+            "🟢 PRACTICE TRADE ACCEPTED\n"
             "━━━━━━━━━━━━━━━━━━\n"
             "Trade: "
             + str(total_trades)
@@ -1008,14 +1056,14 @@ def process_asset(api, asset):
             + str(STAKE)
             + "\n"
             "Expiry: 1 minute\n"
-            "Extreme: "
-            + analysis["extreme"]
-            + "\n"
             "Momentum: "
             + str(round(
                 analysis["momentum"],
                 5
             ))
+            + "\n"
+            "Extreme: "
+            + analysis["extreme"]
             + "\n"
             "Trade ID: "
             + trade_id
@@ -1024,23 +1072,40 @@ def process_asset(api, asset):
             + signal_id
         )
 
-        send_telegram(trade_message)
+        send_telegram(
+            trade_message
+        )
 
-        trade_records[trade_id] = {
-            "asset": asset,
-            "direction": analysis["direction"],
-            "signal_id": signal_id,
-            "analysis": analysis
-        }
-
-    return True
+        wait_for_result(
+            api,
+            asset,
+            analysis["direction"],
+            trade_id,
+            signal_id,
+            analysis
+        )
 
 
 # ============================================================
 # HEARTBEAT
 # ============================================================
 
-def send_heartbeat(assets):
+def heartbeat(
+    api,
+    assets
+):
+    global last_heartbeat
+
+    now = time.time()
+
+    if (
+        now - last_heartbeat
+        < HEARTBEAT_SECONDS
+    ):
+        return
+
+    last_heartbeat = now
+
     closed = wins + losses
 
     if closed > 0:
@@ -1051,7 +1116,7 @@ def send_heartbeat(assets):
         rate = 0.0
 
     message = (
-        "🟢 MOMENTUM 10 SCANNER ONLINE\n"
+        "💚 MOMENTUM 10 BOT ALIVE\n"
         "━━━━━━━━━━━━━━━━━━\n"
         "Connection: OK\n"
         "Balance: PRACTICE\n"
@@ -1059,7 +1124,7 @@ def send_heartbeat(assets):
         "Strategy: Momentum 10\n"
         "Timeframe: 1M\n"
         "Expiry: 1 minute\n"
-        "Assets: "
+        "OTC Assets: "
         + str(len(assets))
         + "\n"
         "Trades: "
@@ -1078,35 +1143,21 @@ def send_heartbeat(assets):
         + "%"
     )
 
-    send_telegram(message)
-
     print(message)
+    send_telegram(message)
 
 
 # ============================================================
-# MAIN
+# MAIN CONTINUOUS LOOP
 # ============================================================
 
 def main():
-    if not IQ_EMAIL or not IQ_PASSWORD:
-        print("Missing IQ_EMAIL or IQ_PASSWORD.")
-        return
+    global last_asset_refresh
 
     create_log_file()
 
-    api = connect_iq()
-
-    if api is None:
-        return
-
-    assets = get_otc_assets(api)
-
-    if not assets:
-        print("No OTC assets available.")
-        return
-
     send_telegram(
-        "🚀 MOMENTUM 10 SCANNER STARTED\n"
+        "🚀 MOMENTUM 10 BOT STARTING\n"
         "━━━━━━━━━━━━━━━━━━\n"
         "Mode: PRACTICE\n"
         "Auto Trading: ON\n"
@@ -1118,33 +1169,148 @@ def main():
         + "\n"
         "Target: "
         + str(TARGET_TRADES)
-        + " trades"
+        + "\n"
+        "Continuous scanning: ON"
     )
 
-    last_refresh = time.time()
-    last_heartbeat = 0
+    api = None
+    assets = []
 
-    while total_trades < TARGET_TRADES:
+    while True:
+
+        # ----------------------------------------------------
+        # CONNECTION
+        # ----------------------------------------------------
+
+        if api is None:
+
+            api = connect_iq()
+
+            if api is None:
+                send_telegram(
+                    "⚠️ IQ OPTION CONNECTION FAILED\n"
+                    "Retrying automatically..."
+                )
+
+                time.sleep(
+                    RECONNECT_SECONDS
+                )
+
+                continue
+
+            send_telegram(
+                "🟢 IQ OPTION CONNECTED\n"
+                "Practice mode active.\n"
+                "Continuous scanning started."
+            )
+
+            assets = []
+            last_asset_refresh = 0
+
+        # ----------------------------------------------------
+        # ASSET REFRESH
+        # ----------------------------------------------------
 
         now = time.time()
 
         if (
-            now - last_refresh
+            not assets
+            or now - last_asset_refresh
             >= ASSET_REFRESH_SECONDS
         ):
-            new_assets = get_otc_assets(api)
 
-            if new_assets:
-                assets = new_assets
+            try:
+                new_assets = get_otc_assets(
+                    api
+                )
 
-            last_refresh = now
+                if new_assets:
+                    assets = new_assets
 
-        if (
-            now - last_heartbeat
-            >= HEARTBEAT_SECONDS
-        ):
-            send_heartbeat(assets)
-            last_heartbeat = now
+                    send_telegram(
+                        "🔎 OTC ASSETS READY\n"
+                        "Found "
+                        + str(len(assets))
+                        + " OTC assets.\n"
+                        "Scanning continuously."
+                    )
+
+                else:
+                    print(
+                        "No OTC assets yet."
+                    )
+
+            except Exception as exc:
+                print(
+                    "Asset refresh error:",
+                    exc
+                )
+
+            last_asset_refresh = now
+
+        # ----------------------------------------------------
+        # NO ASSETS
+        # ----------------------------------------------------
+
+        if not assets:
+            print(
+                "Waiting for OTC assets..."
+            )
+
+            time.sleep(
+                RECONNECT_SECONDS
+            )
+
+            continue
+
+        # ----------------------------------------------------
+        # HEARTBEAT
+        # ----------------------------------------------------
+
+        heartbeat(
+            api,
+            assets
+        )
+
+        # ----------------------------------------------------
+        # TARGET CHECK
+        # ----------------------------------------------------
+
+        if total_trades >= TARGET_TRADES:
+
+            send_telegram(
+                "🏁 TARGET REACHED\n"
+                "Trades: "
+                + str(total_trades)
+                + "\n"
+                "Wins: "
+                + str(wins)
+                + "\n"
+                "Losses: "
+                + str(losses)
+            )
+
+            print(
+                "Target reached."
+            )
+
+            # Keep the process alive rather than exiting.
+            # This prevents the workflow from looking like
+            # a scanner crash or silent stop.
+            while True:
+                send_telegram(
+                    "⏸️ TARGET REACHED\n"
+                    "Scanner is staying online.\n"
+                    "No new trades will be opened."
+                )
+
+                time.sleep(
+                    HEARTBEAT_SECONDS
+                )
+
+        # ----------------------------------------------------
+        # SCAN ALL OTC ASSETS
+        # ----------------------------------------------------
 
         for asset in assets:
 
@@ -1159,43 +1325,50 @@ def main():
 
             except Exception as exc:
                 print(
-                    "Asset processing error:",
+                    "Asset error:",
                     asset,
                     exc
                 )
 
-            time.sleep(SCAN_INTERVAL)
+            time.sleep(
+                SCAN_INTERVAL
+            )
 
-    final_message = (
-        "🏁 MOMENTUM 10 TARGET REACHED\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "Trades: "
-        + str(total_trades)
-        + "\n"
-        "Wins: "
-        + str(wins)
-        + "\n"
-        "Losses: "
-        + str(losses)
-    )
+        # ----------------------------------------------------
+        # CONNECTION TEST
+        # ----------------------------------------------------
 
-    closed = wins + losses
+        try:
+            connected = api.check_connect()
 
-    if closed > 0:
-        final_rate = (
-            wins / closed
-        ) * 100.0
+            if not connected:
+                print(
+                    "IQ Option disconnected."
+                )
 
-        final_message += (
-            "\nWin Rate: "
-            + str(round(final_rate, 1))
-            + "%"
-        )
+                send_telegram(
+                    "⚠️ IQ OPTION DISCONNECTED\n"
+                    "Attempting automatic reconnect..."
+                )
 
-    send_telegram(final_message)
+                api = None
 
-    print(final_message)
+                time.sleep(
+                    RECONNECT_SECONDS
+                )
+
+        except Exception as exc:
+            print(
+                "Connection check error:",
+                exc
+            )
+
+            api = None
+
+            time.sleep(
+                RECONNECT_SECONDS
+            )
 
 
 if __name__ == "__main__":
-    main()
+    main()n()
