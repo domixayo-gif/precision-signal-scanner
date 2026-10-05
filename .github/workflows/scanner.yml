@@ -1,13 +1,13 @@
-name: Momentum 10 IQ Option Scanner
+name: Controlled Momentum 10 Scanner
 
 on:
   workflow_dispatch:
 
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: "0 */5 * * *"
 
 concurrency:
-  group: momentum-10-iq-option-scanner
+  group: controlled-momentum-10-scanner
   cancel-in-progress: false
 
 jobs:
@@ -34,12 +34,11 @@ jobs:
         run: |
           python -m py_compile scanner.py
 
-      - name: Run Momentum 10 scanner
+      - name: Run Controlled Momentum 10 Scanner
         env:
           IQ_EMAIL: ${{ secrets.IQ_EMAIL }}
           IQ_PASSWORD: ${{ secrets.IQ_PASSWORD }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
         run: |
           python scanner.py
