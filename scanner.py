@@ -1184,6 +1184,5 @@ def run_scanner():
 
         time.sleep(SCAN_INTERVAL)
 
-
 if __name__ == "__main__":
-    run_scanner())
+    run_scanner()
