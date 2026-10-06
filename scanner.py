@@ -1432,6 +1432,18 @@ def send_completion():
     )
 
 
+def get_trade_asset_name(asset_name):
+    name = str(asset_name).strip()
+
+    if name.lower().startswith("front."):
+        name = name[6:]
+
+    if name.lower().startswith("front_"):
+        name = name[6:]
+
+    return name
+
+
 def run_scanner():
     global active_assets
     global total_trades
@@ -1739,10 +1751,21 @@ def run_scanner():
 
                 try:
 
+                    trade_asset = (
+                        get_trade_asset_name(
+                            asset_name
+                        )
+                    )
+
+                    print(
+                        "Trading asset:",
+                        trade_asset
+                    )
+
                     success, order_id = (
                         api.buy(
                             STAKE,
-                            asset_name,
+                            trade_asset,
                             action.lower(),
                             EXPIRY_MINUTES
                         )
@@ -1760,7 +1783,7 @@ def run_scanner():
                         send_telegram(
                             "⚠️ <b>Trade not opened</b>\n\n"
                             "<b>Asset:</b> "
-                            + asset_name
+                            + trade_asset
                             + "\n"
                             "<b>Action:</b> "
                             + action
@@ -1797,7 +1820,7 @@ def run_scanner():
                     send_telegram(
                         "🚀 <b>TRADE OPENED</b>\n\n"
                         "<b>Asset:</b> "
-                        + asset_name
+                        + trade_asset
                         + "\n"
                         "<b>Action:</b> "
                         + action
@@ -1818,7 +1841,7 @@ def run_scanner():
                         args=(
                             order_id,
                             signal_id,
-                            asset_name,
+                            trade_asset,
                             action,
                             analysis
                         )
@@ -1840,6 +1863,13 @@ def run_scanner():
 
                     send_telegram(
                         "❌ <b>Trade opening error</b>\n\n"
+                        "<b>Asset:</b> "
+                        + str(
+                            get_trade_asset_name(
+                                asset_name
+                            )
+                        )
+                        + "\n"
                         + str(exc)
                     )
 
@@ -1920,6 +1950,7 @@ def run_scanner():
         time.sleep(
             SCAN_INTERVAL
         )
+
 
 if __name__ == "__main__":
     run_scanner()
