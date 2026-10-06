@@ -45,12 +45,7 @@ LOG_FILE = "momentum_signal_log.csv"
 # ============================================================
 
 WATCHLIST = [
-    "TAO-OTC",
-    "ONDO-OTC",
-    "PALLADIUM-OTC",
-    "USD/BRL-OTC",
-    "EURUSD-OTC",
-    "EURUSD",
+    "EURUSD-OTC"
 ]
 
 
