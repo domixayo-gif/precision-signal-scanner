@@ -3,9 +3,6 @@ name: Controlled Momentum 10 Scanner
 on:
   workflow_dispatch:
 
-  schedule:
-    - cron: "0 */5 * * *"
-
 concurrency:
   group: controlled-momentum-10-scanner
   cancel-in-progress: false
