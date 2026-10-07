@@ -1831,11 +1831,19 @@ def run_scanner():
                             key
                         )
                     )
+                with state_lock:
+
+                    previous_candle = (
+                        last_signal_candle.get(
+                            key
+                        )
+                    )
 
                     previous_extreme = (
                         last_extreme_state.get(
                             key
                         )
+                    )
 
                     if (
                         previous_candle
