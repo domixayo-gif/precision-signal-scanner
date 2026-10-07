@@ -56,8 +56,15 @@ state_lock = threading.Lock()
 
 
 def send_telegram(message):
-    token = os.getenv("TELEGRAM_TOKEN", "")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    token = os.getenv(
+        "TELEGRAM_TOKEN",
+        ""
+    )
+
+    chat_id = os.getenv(
+        "TELEGRAM_CHAT_ID",
+        ""
+    )
 
     if not token or not chat_id:
         return
@@ -71,11 +78,16 @@ def send_telegram(message):
     parts = []
 
     while message:
-        parts.append(message[:3900])
+        parts.append(
+            message[:3900]
+        )
+
         message = message[3900:]
 
     for part in parts:
+
         try:
+
             requests.post(
                 url,
                 data={
@@ -85,8 +97,13 @@ def send_telegram(message):
                 },
                 timeout=15
             )
+
         except Exception as exc:
-            print("Telegram error:", exc)
+
+            print(
+                "Telegram error:",
+                exc
+            )
 
 
 def clean_asset_name(name):
@@ -95,24 +112,38 @@ def clean_asset_name(name):
 
     text = str(name).strip()
 
-    if text.lower().startswith("front."):
+    if text.lower().startswith(
+        "front."
+    ):
         text = text[6:]
 
-    if text.lower().startswith("front_"):
+    if text.lower().startswith(
+        "front_"
+    ):
         text = text[6:]
 
-    text = text.replace("_", "-")
-    text = text.replace(" ", "")
+    text = text.replace(
+        "_",
+        "-"
+    )
+
+    text = text.replace(
+        " ",
+        ""
+    )
 
     return text.upper()
 
 
 def asset_key(name):
-    text = clean_asset_name(name)
+    text = clean_asset_name(
+        name
+    )
 
     chars = []
 
     for char in text:
+
         if char.isalnum():
             chars.append(char)
 
@@ -123,14 +154,26 @@ def is_allowed_asset(name):
     key = asset_key(name)
 
     for wanted in WATCHLIST:
-        if key == asset_key(wanted):
+
+        if key == asset_key(
+            wanted
+        ):
             return True
 
     return False
 
 
-def add_asset(found, name, active_id):
-    if name is None or active_id is None:
+def add_asset(
+    found,
+    name,
+    active_id,
+    option_type="unknown",
+    open_state=False
+):
+    if name is None:
+        return
+
+    if active_id is None:
         return
 
     if not is_allowed_asset(name):
@@ -143,12 +186,20 @@ def add_asset(found, name, active_id):
 
     found[key] = {
         "name": str(name),
-        "id": active_id
+        "id": active_id,
+        "option_type": option_type,
+        "open": bool(open_state)
     }
 
 
-def extract_asset_name(info, fallback):
-    if not isinstance(info, dict):
+def extract_asset_name(
+    info,
+    fallback
+):
+    if not isinstance(
+        info,
+        dict
+    ):
         return fallback
 
     fields = [
@@ -162,7 +213,10 @@ def extract_asset_name(info, fallback):
     ]
 
     for field in fields:
-        value = info.get(field)
+
+        value = info.get(
+            field
+        )
 
         if value:
             return str(value)
@@ -170,173 +224,11 @@ def extract_asset_name(info, fallback):
     return fallback
 
 
-def scan_active_container(container, found):
-    if not isinstance(container, dict):
-        return
-
-    for raw_key, info in container.items():
-
-        active_id = None
-        fallback_name = None
-
-        if isinstance(raw_key, int):
-            active_id = raw_key
-
-        elif isinstance(raw_key, str):
-
-            if raw_key.isdigit():
-                active_id = int(raw_key)
-            else:
-                fallback_name = raw_key
-
-        if isinstance(info, dict):
-
-            if info.get("id") is not None:
-                active_id = info.get("id")
-
-            if info.get("active_id") is not None:
-                active_id = info.get("active_id")
-
-            if info.get("activeId") is not None:
-                active_id = info.get("activeId")
-
-        name = extract_asset_name(
-            info,
-            fallback_name
-        )
-
-        if name and active_id is not None:
-            add_asset(
-                found,
-                name,
-                active_id
-            )
-
-
-def scan_active_section(section, found):
-    if not isinstance(section, dict):
-        return
-
-    actives = section.get("actives")
-
-    if isinstance(actives, dict):
-
-        scan_active_container(
-            actives,
-            found
-        )
-
-    elif isinstance(actives, list):
-
-        for item in actives:
-
-            if not isinstance(item, dict):
-                continue
-
-            active_id = item.get("id")
-
-            if active_id is None:
-                active_id = item.get(
-                    "active_id"
-                )
-
-            if active_id is None:
-                active_id = item.get(
-                    "activeId"
-                )
-
-            name = extract_asset_name(
-                item,
-                None
-            )
-
-            if name and active_id is not None:
-                add_asset(
-                    found,
-                    name,
-                    active_id
-                )
-
-
-def recursive_asset_scan(
-    obj,
-    found,
-    depth=0
-):
-    if depth > 15:
-        return
-
-    if isinstance(obj, dict):
-
-        if "actives" in obj:
-            scan_active_section(
-                obj,
-                found
-            )
-
-        for key, value in obj.items():
-
-            key_text = str(key).lower()
-
-            if key_text in [
-                "binary",
-                "turbo",
-                "digital",
-                "otc",
-                "forex"
-            ]:
-
-                if isinstance(value, dict):
-                    scan_active_section(
-                        value,
-                        found
-                    )
-
-            recursive_asset_scan(
-                value,
-                found,
-                depth + 1
-            )
-
-    elif isinstance(obj, list):
-
-        for item in obj:
-            recursive_asset_scan(
-                item,
-                found,
-                depth + 1
-            )
-
-
-def get_asset_match(text):
-    if not text:
-        return None
-
-    value = str(text).strip()
-
-    if value.lower().startswith("front."):
-        value = value[6:]
-
-    if value.lower().startswith("front_"):
-        value = value[6:]
-
-    value = value.upper()
-    value = value.replace("_", "")
-    value = value.replace("-", "")
-    value = value.replace("/", "")
-    value = value.replace(" ", "")
-
-    if value == "EURUSDOTC":
-        return "EURUSDOTC"
-
-    if value == "EURUSD":
-        return "EURUSD"
-
-    return None
-
-
 def extract_active_id(info):
-    if not isinstance(info, dict):
+    if not isinstance(
+        info,
+        dict
+    ):
         return None
 
     fields = [
@@ -349,15 +241,331 @@ def extract_active_id(info):
 
     for field in fields:
 
-        value = info.get(field)
+        value = info.get(
+            field
+        )
 
         if value is not None:
 
             try:
+
                 return int(value)
 
             except Exception:
+
                 return value
+
+    return None
+
+
+def get_open_state_value(info):
+    if not isinstance(
+        info,
+        dict
+    ):
+        return None
+
+    if "open" in info:
+        return bool(
+            info["open"]
+        )
+
+    if "enabled" in info:
+
+        enabled = bool(
+            info["enabled"]
+        )
+
+        suspended = bool(
+            info.get(
+                "is_suspended",
+                False
+            )
+        )
+
+        return (
+            enabled
+            and not suspended
+        )
+
+    return None
+
+
+def scan_active_container(
+    container,
+    found,
+    option_type
+):
+    if not isinstance(
+        container,
+        dict
+    ):
+        return
+
+    for raw_key, info in (
+        container.items()
+    ):
+
+        fallback_name = None
+        active_id = None
+
+        if isinstance(
+            raw_key,
+            int
+        ):
+
+            active_id = raw_key
+
+        elif isinstance(
+            raw_key,
+            str
+        ):
+
+            if raw_key.isdigit():
+
+                active_id = int(
+                    raw_key
+                )
+
+            else:
+
+                fallback_name = raw_key
+
+        if isinstance(
+            info,
+            dict
+        ):
+
+            detected_id = (
+                extract_active_id(
+                    info
+                )
+            )
+
+            if detected_id is not None:
+                active_id = detected_id
+
+        name = extract_asset_name(
+            info,
+            fallback_name
+        )
+
+        if not name:
+            continue
+
+        if active_id is None:
+            continue
+
+        open_state = (
+            get_open_state_value(
+                info
+            )
+        )
+
+        if open_state is None:
+            open_state = False
+
+        add_asset(
+            found,
+            name,
+            active_id,
+            option_type,
+            open_state
+        )
+
+
+def scan_open_time_section(
+    section,
+    found,
+    option_type
+):
+    if not isinstance(
+        section,
+        dict
+    ):
+        return
+
+    actives = section.get(
+        "actives"
+    )
+
+    if isinstance(
+        actives,
+        dict
+    ):
+
+        scan_active_container(
+            actives,
+            found,
+            option_type
+        )
+
+    elif isinstance(
+        actives,
+        list
+    ):
+
+        for item in actives:
+
+            if not isinstance(
+                item,
+                dict
+            ):
+                continue
+
+            name = extract_asset_name(
+                item,
+                None
+            )
+
+            active_id = (
+                extract_active_id(
+                    item
+                )
+            )
+
+            if name and active_id is not None:
+
+                open_state = (
+                    get_open_state_value(
+                        item
+                    )
+                )
+
+                if open_state is None:
+                    open_state = False
+
+                add_asset(
+                    found,
+                    name,
+                    active_id,
+                    option_type,
+                    open_state
+                )
+
+
+def robust_asset_scan(
+    obj,
+    found,
+    depth=0
+):
+    if depth > 15:
+        return
+
+    if isinstance(
+        obj,
+        dict
+    ):
+
+        for key, value in obj.items():
+
+            key_text = str(
+                key
+            ).lower()
+
+            option_type = (
+                key_text
+                if key_text in [
+                    "binary",
+                    "turbo"
+                ]
+                else "unknown"
+            )
+
+            if option_type != "unknown":
+
+                if isinstance(
+                    value,
+                    dict
+                ):
+
+                    scan_active_section(
+                        value,
+                        found,
+                        option_type
+                    )
+
+            if isinstance(
+                value,
+                dict
+            ):
+
+                robust_asset_scan(
+                    value,
+                    found,
+                    depth + 1
+                )
+
+            elif isinstance(
+                value,
+                list
+            ):
+
+                robust_asset_scan(
+                    value,
+                    found,
+                    depth + 1
+                )
+
+    elif isinstance(
+        obj,
+        list
+    ):
+
+        for item in obj:
+
+            robust_asset_scan(
+                item,
+                found,
+                depth + 1
+            )
+
+
+def get_asset_match(text):
+    if not text:
+        return None
+
+    value = str(
+        text
+    ).strip()
+
+    if value.lower().startswith(
+        "front."
+    ):
+        value = value[6:]
+
+    if value.lower().startswith(
+        "front_"
+    ):
+        value = value[6:]
+
+    value = value.upper()
+
+    value = value.replace(
+        "_",
+        ""
+    )
+
+    value = value.replace(
+        "-",
+        ""
+    )
+
+    value = value.replace(
+        "/",
+        ""
+    )
+
+    value = value.replace(
+        " ",
+        ""
+    )
+
+    if value == "EURUSDOTC":
+        return "EURUSDOTC"
+
+    if value == "EURUSD":
+        return "EURUSD"
 
     return None
 
@@ -371,11 +579,16 @@ def inspect_asset_object(
     key_text = ""
 
     if raw_key is not None:
-        key_text = str(raw_key)
+        key_text = str(
+            raw_key
+        )
 
     name = ""
 
-    if isinstance(info, dict):
+    if isinstance(
+        info,
+        dict
+    ):
 
         fields = [
             "name",
@@ -389,19 +602,29 @@ def inspect_asset_object(
 
         for field in fields:
 
-            value = info.get(field)
+            value = info.get(
+                field
+            )
 
             if value:
-                name = str(value)
+
+                name = str(
+                    value
+                )
+
                 break
 
     possible_names = []
 
     if key_text:
-        possible_names.append(key_text)
+        possible_names.append(
+            key_text
+        )
 
     if name:
-        possible_names.append(name)
+        possible_names.append(
+            name
+        )
 
     matched_key = None
     matched_name = None
@@ -416,13 +639,16 @@ def inspect_asset_object(
 
             matched_key = match
             matched_name = possible
+
             break
 
     if matched_key is None:
         return
 
-    active_id = extract_active_id(
-        info
+    active_id = (
+        extract_active_id(
+            info
+        )
     )
 
     if active_id is None:
@@ -430,6 +656,7 @@ def inspect_asset_object(
         if key_text.isdigit():
 
             try:
+
                 active_id = int(
                     key_text
                 )
@@ -437,12 +664,19 @@ def inspect_asset_object(
             except Exception:
                 pass
 
+    open_state = (
+        get_open_state_value(
+            info
+        )
+    )
+
     diagnostics.append(
         (
             key_text,
             name,
             active_id,
-            matched_key
+            matched_key,
+            open_state
         )
     )
 
@@ -451,58 +685,12 @@ def inspect_asset_object(
 
     found[matched_key] = {
         "name": matched_name,
-        "id": active_id
+        "id": active_id,
+        "option_type": "raw",
+        "open": bool(
+            open_state
+        )
     }
-
-
-def robust_asset_scan(
-    obj,
-    found,
-    diagnostics,
-    depth=0
-):
-    if depth > 15:
-        return
-
-    if isinstance(obj, dict):
-
-        for key, value in obj.items():
-
-            inspect_asset_object(
-                key,
-                value,
-                found,
-                diagnostics
-            )
-
-            if isinstance(value, dict):
-
-                robust_asset_scan(
-                    value,
-                    found,
-                    diagnostics,
-                    depth + 1
-                )
-
-            elif isinstance(value, list):
-
-                robust_asset_scan(
-                    value,
-                    found,
-                    diagnostics,
-                    depth + 1
-                )
-
-    elif isinstance(obj, list):
-
-        for item in obj:
-
-            robust_asset_scan(
-                item,
-                found,
-                diagnostics,
-                depth + 1
-            )
 
 
 def find_eurusd_candidates(
@@ -513,11 +701,16 @@ def find_eurusd_candidates(
     if depth > 12:
         return
 
-    if isinstance(obj, dict):
+    if isinstance(
+        obj,
+        dict
+    ):
 
         for key, value in obj.items():
 
-            key_text = str(key)
+            key_text = str(
+                key
+            )
 
             if (
                 "eur" in key_text.lower()
@@ -528,7 +721,10 @@ def find_eurusd_candidates(
                     key_text
                 )
 
-            if isinstance(value, dict):
+            if isinstance(
+                value,
+                dict
+            ):
 
                 name = extract_asset_name(
                     value,
@@ -550,7 +746,10 @@ def find_eurusd_candidates(
                 depth + 1
             )
 
-    elif isinstance(obj, list):
+    elif isinstance(
+        obj,
+        list
+    ):
 
         for item in obj:
 
@@ -561,14 +760,328 @@ def find_eurusd_candidates(
             )
 
 
-def get_controlled_assets():
+def get_explicit_open_time_assets():
     found = {}
-    diagnostics = []
 
     print("")
-    print("=" * 60)
-    print("SEARCHING FOR EUR/USD AND EUR/USD OTC")
-    print("=" * 60)
+    print(
+        "=" * 60
+    )
+    print(
+        "CHECKING IQ OPTION OPEN-TIME TABLES"
+    )
+    print(
+        "=" * 60
+    )
+
+    try:
+
+        open_data = (
+            api.get_all_open_time()
+        )
+
+    except Exception as exc:
+
+        print(
+            "Open-time discovery error:",
+            repr(exc)
+        )
+
+        return found
+
+    if not isinstance(
+        open_data,
+        dict
+    ):
+
+        print(
+            "IQ Option returned no open-time data."
+        )
+
+        return found
+
+    sections = [
+        (
+            "turbo",
+            "TURBO"
+        ),
+        (
+            "binary",
+            "BINARY"
+        )
+    ]
+
+    for section_key, label in sections:
+
+        section = open_data.get(
+            section_key
+        )
+
+        print("")
+        print(
+            label,
+            "SECTION"
+        )
+
+        if not isinstance(
+            section,
+            dict
+        ):
+
+            print(
+                "Section unavailable."
+            )
+
+            continue
+
+        for wanted in WATCHLIST:
+
+            wanted_key = asset_key(
+                wanted
+            )
+
+            matched = None
+
+            for raw_name, info in (
+                section.items()
+            ):
+
+                current_key = asset_key(
+                    raw_name
+                )
+
+                if current_key == wanted_key:
+
+                    matched = (
+                        raw_name,
+                        info
+                    )
+
+                    break
+
+            if matched is None:
+
+                print(
+                    wanted,
+                    ": NOT FOUND"
+                )
+
+                continue
+
+            raw_name, info = matched
+
+            active_id = (
+                extract_active_id(
+                    info
+                )
+            )
+
+            open_state = (
+                get_open_state_value(
+                    info
+                )
+            )
+
+            if open_state is None:
+                open_state = False
+
+            print(
+                wanted,
+                ":",
+                "OPEN"
+                if open_state
+                else "CLOSED",
+                "| Name:",
+                raw_name,
+                "| ID:",
+                active_id
+            )
+
+            if (
+                active_id is not None
+                and open_state
+            ):
+
+                add_asset(
+                    found,
+                    raw_name,
+                    active_id,
+                    section_key,
+                    True
+                )
+
+    print("")
+    print(
+        "NORMAL EUR/USD BINARY/TURBO CHECK"
+    )
+
+    normal_key = asset_key(
+        "EURUSD"
+    )
+
+    if normal_key in found:
+
+        item = found[
+            normal_key
+        ]
+
+        print(
+            "NORMAL EURUSD IS AVAILABLE."
+        )
+
+        print(
+            "Name:",
+            item["name"]
+        )
+
+        print(
+            "Active ID:",
+            item["id"]
+        )
+
+        print(
+            "Option type:",
+            item["option_type"]
+        )
+
+    else:
+
+        print(
+            "NORMAL EURUSD IS NOT CURRENTLY "
+            "AVAILABLE FOR BINARY/TURBO."
+        )
+
+    return found
+
+
+def check_forex_availability():
+    print("")
+    print(
+        "=" * 60
+    )
+    print(
+        "CHECKING NORMAL FOREX EUR/USD"
+    )
+    print(
+        "=" * 60
+    )
+
+    try:
+
+        open_data = (
+            api.get_all_open_time()
+        )
+
+    except Exception as exc:
+
+        print(
+            "Forex availability error:",
+            repr(exc)
+        )
+
+        return None
+
+    if not isinstance(
+        open_data,
+        dict
+    ):
+        return None
+
+    forex = open_data.get(
+        "forex"
+    )
+
+    if not isinstance(
+        forex,
+        dict
+    ):
+
+        print(
+            "Forex section unavailable."
+        )
+
+        return None
+
+    info = forex.get(
+        "EURUSD"
+    )
+
+    if info is None:
+
+        print(
+            "EURUSD was not found in Forex section."
+        )
+
+        return False
+
+    open_state = (
+        get_open_state_value(
+            info
+        )
+    )
+
+    print(
+        "Forex EURUSD:",
+        "OPEN"
+        if open_state
+        else "CLOSED"
+    )
+
+    if isinstance(
+        info,
+        dict
+    ):
+
+        print(
+            "Forex details:",
+            {
+                "name": info.get(
+                    "name"
+                ),
+                "open": info.get(
+                    "open"
+                ),
+                "enabled": info.get(
+                    "enabled"
+                ),
+                "is_suspended": info.get(
+                    "is_suspended"
+                )
+            }
+        )
+
+    return bool(
+        open_state
+    )
+
+
+def get_controlled_assets():
+    found = {}
+
+    print("")
+    print(
+        "=" * 60
+    )
+    print(
+        "SEARCHING FOR EUR/USD AND EUR/USD OTC"
+    )
+    print(
+        "=" * 60
+    )
+
+    explicit_assets = (
+        get_explicit_open_time_assets()
+    )
+
+    for key, item in (
+        explicit_assets.items()
+    ):
+
+        found[key] = item
+
+    forex_open = (
+        check_forex_availability()
+    )
 
     data_sources = []
 
@@ -592,8 +1105,8 @@ def get_controlled_assets():
     except Exception as exc:
 
         print(
-            "V2 asset discovery error:",
-            exc
+            "V2 initialization error:",
+            repr(exc)
         )
 
     try:
@@ -616,138 +1129,207 @@ def get_controlled_assets():
     except Exception as exc:
 
         print(
-            "Legacy asset discovery error:",
-            exc
+            "Legacy initialization error:",
+            repr(exc)
         )
 
-    for source_name, data in data_sources:
+    diagnostics = []
 
-        before = len(found)
+    for source_name, data in (
+        data_sources
+    ):
+
+        before = len(
+            found
+        )
 
         robust_asset_scan(
             data,
-            found,
-            diagnostics
+            found
         )
 
-        after = len(found)
+        after = len(
+            found
+        )
 
         print(
             source_name,
-            "EUR/USD matches added:",
+            "matches added:",
             after - before
         )
 
-    if found:
+        extra = []
 
-        print("")
-        print(
-            "CONTROLLED EUR/USD ASSETS FOUND"
+        find_eurusd_candidates(
+            data,
+            extra
         )
 
-        for key, item in found.items():
+        diagnostics.extend(
+            extra
+        )
+
+    print("")
+    print(
+        "=" * 60
+    )
+    print(
+        "FINAL CONTROLLED ASSET LIST"
+    )
+    print(
+        "=" * 60
+    )
+
+    if found:
+
+        for key, item in (
+            found.items()
+        ):
 
             print(
                 "Asset:",
                 item["name"],
-                "| Active ID:",
-                item["id"]
-            )
-
-        return found
-
-    print("")
-    print(
-        "EUR/USD ASSETS NOT FOUND"
-    )
-
-    if diagnostics:
-
-        print("")
-        print(
-            "EUR/USD candidates returned:"
-        )
-
-        seen = set()
-
-        for (
-            key_text,
-            name,
-            active_id,
-            matched_key
-        ) in diagnostics:
-
-            entry = (
-                str(key_text),
-                str(name),
-                str(active_id),
-                str(matched_key)
-            )
-
-            if entry in seen:
-                continue
-
-            seen.add(entry)
-
-            print(
-                "KEY:",
-                key_text,
-                "| NAME:",
-                name,
                 "| ID:",
-                active_id,
-                "| MATCH:",
-                matched_key
+                item["id"],
+                "| Type:",
+                item.get(
+                    "option_type",
+                    "unknown"
+                ),
+                "| Open:",
+                item.get(
+                    "open",
+                    False
+                )
             )
 
     else:
 
-        extra_diagnostics = []
+        print(
+            "No EUR/USD binary/turbo assets "
+            "are currently available."
+        )
 
-        try:
+    normal_key = asset_key(
+        "EURUSD"
+    )
 
-            data = api.get_all_init_v2()
+    otc_key = asset_key(
+        "EURUSD-OTC"
+    )
 
-            if data:
+    print("")
+    print(
+        "=" * 60
+    )
+    print(
+        "EUR/USD AVAILABILITY RESULT"
+    )
+    print(
+        "=" * 60
+    )
 
-                find_eurusd_candidates(
-                    data,
-                    extra_diagnostics
-                )
+    if normal_key in found:
 
-        except Exception:
-            pass
+        normal_item = found[
+            normal_key
+        ]
 
-        if extra_diagnostics:
+        print(
+            "NORMAL EURUSD: AVAILABLE"
+        )
 
-            print("")
+        print(
+            "Trading name:",
+            normal_item["name"]
+        )
+
+        print(
+            "Active ID:",
+            normal_item["id"]
+        )
+
+        print(
+            "Option type:",
+            normal_item["option_type"]
+        )
+
+    else:
+
+        print(
+            "NORMAL EURUSD: NOT AVAILABLE "
+            "FOR CURRENT BINARY/TURBO TEST"
+        )
+
+        if forex_open:
+
             print(
-                "EUR/USD diagnostic candidates:"
+                "IMPORTANT: Normal EURUSD exists "
+                "as Forex, but not as an available "
+                "binary/turbo asset right now."
             )
-
-            seen = set()
-
-            for item in extra_diagnostics:
-
-                if item in seen:
-                    continue
-
-                seen.add(item)
-
-                print(
-                    "-",
-                    item
-                )
 
         else:
 
-            print("")
             print(
-                "No EUR/USD-related instrument "
-                "was found in IQ Option data."
+                "Normal EURUSD is not currently "
+                "open as Forex either."
             )
 
-    return {}
+    if otc_key in found:
+
+        otc_item = found[
+            otc_key
+        ]
+
+        print(
+            "EURUSD OTC: AVAILABLE"
+        )
+
+        print(
+            "Trading name:",
+            otc_item["name"]
+        )
+
+        print(
+            "Active ID:",
+            otc_item["id"]
+        )
+
+        print(
+            "Option type:",
+            otc_item["option_type"]
+        )
+
+    else:
+
+        print(
+            "EURUSD OTC: NOT AVAILABLE "
+            "FOR BINARY/TURBO"
+        )
+
+    if not found:
+
+        print("")
+        print(
+            "EUR/USD diagnostic candidates:"
+        )
+
+        seen = set()
+
+        for item in diagnostics:
+
+            if item in seen:
+                continue
+
+            seen.add(item)
+
+            print(
+                "-",
+                item
+            )
+
+    return found
 
 
 def get_candles(
@@ -795,7 +1377,9 @@ def get_candles(
 
                 return candles
 
-            time.sleep(0.2)
+            time.sleep(
+                0.2
+            )
 
         candles = (
             api.api.candles.candles_data
@@ -808,7 +1392,7 @@ def get_candles(
 
         print(
             "Candle error:",
-            exc
+            repr(exc)
         )
 
     return []
@@ -887,7 +1471,10 @@ def percentile(
         len(ordered) - 1
     ) * percent
 
-    lower = int(position)
+    lower = int(
+        position
+    )
+
     upper = lower + 1
 
     if upper >= len(ordered):
@@ -939,16 +1526,17 @@ def analyze_momentum(candles):
         low_level is None
         or high_level is None
     ):
-
         return None
 
     extreme = "NONE"
     action = None
 
     if current <= low_level:
+
         extreme = "LOW"
 
     elif current >= high_level:
+
         extreme = "HIGH"
 
     if extreme == "LOW":
@@ -1038,6 +1626,7 @@ def build_signal_message(
 
     if action == "CALL":
         direction = "🟢 CALL"
+
     else:
         direction = "🔴 PUT"
 
@@ -1085,7 +1674,9 @@ def build_signal_message(
 
 
 def ensure_log_file():
-    if os.path.exists(LOG_FILE):
+    if os.path.exists(
+        LOG_FILE
+    ):
         return
 
     try:
@@ -1119,7 +1710,7 @@ def ensure_log_file():
 
         print(
             "Log setup error:",
-            exc
+            repr(exc)
         )
 
 
@@ -1178,7 +1769,7 @@ def log_trade(
 
         print(
             "Log error:",
-            exc
+            repr(exc)
         )
 
 
@@ -1226,9 +1817,13 @@ def monitor_trade(
         )
 
         try:
-            profit = float(result)
+
+            profit = float(
+                result
+            )
 
         except Exception:
+
             profit = 0.0
 
         if profit > 0:
@@ -1259,7 +1854,9 @@ def monitor_trade(
             current_wins = wins
             current_losses = losses
             current_draws = draws
-            current_completed = completed_trades
+            current_completed = (
+                completed_trades
+            )
 
         log_trade(
             signal_id,
@@ -1433,7 +2030,9 @@ def connect_iq():
             password
         )
 
-        check, reason = api.connect()
+        check, reason = (
+            api.connect()
+        )
 
         if check:
 
@@ -1470,7 +2069,7 @@ def send_startup():
         "<b>Target:</b> 50 bot trades\n\n"
         "Controlled EUR/USD test started.\n\n"
         "🟢 <b>IQ Option connected</b>\n\n"
-        "Searching for EUR/USD and EUR/USD OTC..."
+        "Checking normal EUR/USD and EUR/USD OTC..."
     )
 
     send_telegram(
@@ -1540,13 +2139,21 @@ def send_completion():
     )
 
 
-def get_trade_asset_name(asset_name):
-    name = str(asset_name).strip()
+def get_trade_asset_name(
+    asset_name
+):
+    name = str(
+        asset_name
+    ).strip()
 
-    if name.lower().startswith("front."):
+    if name.lower().startswith(
+        "front."
+    ):
         name = name[6:]
 
-    if name.lower().startswith("front_"):
+    if name.lower().startswith(
+        "front_"
+    ):
         name = name[6:]
 
     return name
@@ -1557,8 +2164,10 @@ def open_practice_trade(
     active_id,
     action
 ):
-    trade_asset = get_trade_asset_name(
-        asset_name
+    trade_asset = (
+        get_trade_asset_name(
+            asset_name
+        )
     )
 
     print("")
@@ -1615,7 +2224,10 @@ def open_practice_trade(
             repr(result)
         )
 
-        if isinstance(result, tuple):
+        if isinstance(
+            result,
+            tuple
+        ):
 
             if len(result) >= 2:
 
@@ -1634,7 +2246,10 @@ def open_practice_trade(
 
         else:
 
-            success = bool(result)
+            success = bool(
+                result
+            )
+
             order_id = None
 
         print(
@@ -1657,8 +2272,8 @@ def open_practice_trade(
             )
 
         reason = (
-            "IQ Option returned success=False. "
-            "API response: "
+            "IQ Option returned "
+            "success=False. API response: "
             + repr(order_id)
         )
 
@@ -1694,7 +2309,9 @@ def run_scanner():
     global pending_results
 
     print("")
-    print("=" * 60)
+    print(
+        "=" * 60
+    )
     print(
         "MOMENTUM 10 EXTREME-REVERSAL"
     )
@@ -1704,24 +2321,31 @@ def run_scanner():
     print(
         "PRACTICE MODE"
     )
-    print("=" * 60)
+    print(
+        "=" * 60
+    )
+
     print("")
     print(
         "EUR/USD OTC + EUR/USD"
     )
+
     print(
         "Target trades:",
         TARGET_TRADES
     )
+
     print(
         "Stake:",
         STAKE
     )
+
     print(
         "Expiry:",
         EXPIRY_MINUTES,
         "minute"
     )
+
     print("")
 
     if not connect_iq():
@@ -1812,7 +2436,12 @@ def run_scanner():
                         "Controlled asset:",
                         item["name"],
                         "| ID:",
-                        item["id"]
+                        item["id"],
+                        "| Type:",
+                        item.get(
+                            "option_type",
+                            "unknown"
+                        )
                     )
 
                 found_names = []
@@ -1828,7 +2457,9 @@ def run_scanner():
                 send_telegram(
                     "🟢 <b>EUR/USD asset scan complete</b>\n\n"
                     "<b>Available:</b> "
-                    + ", ".join(found_names)
+                    + ", ".join(
+                        found_names
+                    )
                     + "\n\n"
                     "<b>Starting controlled scan.</b>"
                 )
@@ -1836,8 +2467,15 @@ def run_scanner():
             else:
 
                 print(
-                    "Controlled EUR/USD assets "
-                    "unavailable. Retrying..."
+                    "Controlled EUR/USD binary/"
+                    "turbo assets unavailable."
+                )
+
+                send_telegram(
+                    "🟡 <b>EUR/USD binary scan waiting</b>\n\n"
+                    "No EUR/USD binary/turbo "
+                    "asset is currently available.\n\n"
+                    "The scanner will retry."
                 )
 
                 time.sleep(
@@ -1852,7 +2490,10 @@ def run_scanner():
 
             with state_lock:
 
-                if total_trades >= TARGET_TRADES:
+                if (
+                    total_trades
+                    >= TARGET_TRADES
+                ):
                     break
 
             asset_name = item["name"]
@@ -1877,7 +2518,9 @@ def run_scanner():
                     candles[:-1]
                 )
 
-                if len(closed_candles) < 20:
+                if len(
+                    closed_candles
+                ) < 20:
                     continue
 
                 signal_candle = (
@@ -1894,8 +2537,10 @@ def run_scanner():
                     )
                 )
 
-                analysis = analyze_momentum(
-                    closed_candles
+                analysis = (
+                    analyze_momentum(
+                        closed_candles
+                    )
                 )
 
                 if not analysis:
@@ -1949,8 +2594,10 @@ def run_scanner():
                     analysis["action"]
                 )
 
-                asset_id_text = asset_key(
-                    asset_name
+                asset_id_text = (
+                    asset_key(
+                        asset_name
+                    )
                 )
 
                 signal_id = (
@@ -1967,29 +2614,55 @@ def run_scanner():
                 )
 
                 print("")
-                print("=" * 50)
-                print("SIGNAL")
+                print(
+                    "=" * 50
+                )
+
+                print(
+                    "SIGNAL"
+                )
+
                 print(
                     "Asset:",
                     asset_name
                 )
+
                 print(
                     "Action:",
                     action
                 )
+
+                print(
+                    "Option type:",
+                    item.get(
+                        "option_type",
+                        "unknown"
+                    )
+                )
+
+                print(
+                    "Active ID:",
+                    active_id
+                )
+
                 print(
                     "Signal ID:",
                     signal_id
                 )
+
                 print(
                     "Momentum:",
                     analysis["current"]
                 )
+
                 print(
                     "Extreme:",
                     analysis["extreme"]
                 )
-                print("=" * 50)
+
+                print(
+                    "=" * 50
+                )
 
                 send_telegram(
                     build_signal_message(
@@ -2004,41 +2677,22 @@ def run_scanner():
 
                 with state_lock:
 
-                    if total_trades >= TARGET_TRADES:
+                    if (
+                        total_trades
+                        >= TARGET_TRADES
+                    ):
                         continue
 
-                success = False
-                order_id = None
-                trade_asset = (
-                    get_trade_asset_name(
-                        asset_name
-                    )
+                (
+                    success,
+                    order_id,
+                    trade_asset,
+                    trade_error
+                ) = open_practice_trade(
+                    asset_name,
+                    active_id,
+                    action
                 )
-                trade_error = ""
-
-                try:
-
-                    (
-                        success,
-                        order_id,
-                        trade_asset,
-                        trade_error
-                    ) = open_practice_trade(
-                        asset_name,
-                        active_id,
-                        action
-                    )
-
-                except Exception as exc:
-
-                    success = False
-                    order_id = None
-
-                    trade_error = (
-                        "Unexpected trade opening "
-                        "exception: "
-                        + repr(exc)
-                    )
 
                 if not success:
 
@@ -2049,17 +2703,23 @@ def run_scanner():
 
                     print(
                         "Asset:",
-                        repr(trade_asset)
+                        repr(
+                            trade_asset
+                        )
                     )
 
                     print(
                         "Active ID:",
-                        repr(active_id)
+                        repr(
+                            active_id
+                        )
                     )
 
                     print(
                         "Action:",
-                        repr(action)
+                        repr(
+                            action
+                        )
                     )
 
                     print(
@@ -2073,7 +2733,9 @@ def run_scanner():
                         + trade_asset
                         + "\n"
                         + "<b>Active ID:</b> "
-                        + str(active_id)
+                        + str(
+                            active_id
+                        )
                         + "\n"
                         + "<b>Action:</b> "
                         + action
@@ -2103,7 +2765,9 @@ def run_scanner():
 
                 print(
                     "Order ID:",
-                    repr(order_id)
+                    repr(
+                        order_id
+                    )
                 )
 
                 print(
@@ -2122,13 +2786,19 @@ def run_scanner():
                     + action
                     + "\n"
                     + "<b>Stake:</b> $"
-                    + str(STAKE)
+                    + str(
+                        STAKE
+                    )
                     + "\n"
                     + "<b>Expiry:</b> 1 minute\n"
                     + "<b>Bot Trade #:</b> "
-                    + str(opened_number)
+                    + str(
+                        opened_number
+                    )
                     + "/"
-                    + str(TARGET_TRADES)
+                    + str(
+                        TARGET_TRADES
+                    )
                     + "\n"
                     + "<b>Signal ID:</b> "
                     + signal_id
@@ -2180,12 +2850,15 @@ def run_scanner():
                 heartbeat_wins = wins
                 heartbeat_losses = losses
                 heartbeat_draws = draws
+
                 heartbeat_unknown = (
                     unknown_results
                 )
 
             print("")
-            print("HEARTBEAT")
+            print(
+                "HEARTBEAT"
+            )
 
             print(
                 "Opened:",
@@ -2219,27 +2892,45 @@ def run_scanner():
                 "💓 <b>Scanner heartbeat</b>\n\n"
                 "<b>EUR/USD + EUR/USD OTC</b>\n"
                 "<b>Bot trades opened:</b> "
-                + str(heartbeat_opened)
+                + str(
+                    heartbeat_opened
+                )
                 + "/"
-                + str(TARGET_TRADES)
+                + str(
+                    TARGET_TRADES
+                )
                 + "\n"
                 + "<b>Completed:</b> "
-                + str(heartbeat_completed)
+                + str(
+                    heartbeat_completed
+                )
                 + "\n"
                 + "<b>Pending:</b> "
-                + str(heartbeat_pending)
+                + str(
+                    heartbeat_pending
+                )
                 + "\n"
                 + "<b>W/L/D/U:</b> "
-                + str(heartbeat_wins)
+                + str(
+                    heartbeat_wins
+                )
                 + "/"
-                + str(heartbeat_losses)
+                + str(
+                    heartbeat_losses
+                )
                 + "/"
-                + str(heartbeat_draws)
+                + str(
+                    heartbeat_draws
+                )
                 + "/"
-                + str(heartbeat_unknown)
+                + str(
+                    heartbeat_unknown
+                )
             )
 
-            last_heartbeat = time.time()
+            last_heartbeat = (
+                time.time()
+            )
 
         time.sleep(
             SCAN_INTERVAL
