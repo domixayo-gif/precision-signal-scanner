@@ -8,7 +8,10 @@ import requests
 from iqoptionapi.stable_api import IQ_Option
 
 
-WATCHLIST = ["EURUSD-OTC"]
+WATCHLIST = [
+    "EURUSD-OTC",
+    "EURUSD"
+]
 
 MOMENTUM_PERIOD = 10
 MOMENTUM_LOOKBACK = 50
@@ -60,7 +63,11 @@ def send_telegram(message):
     if not token or not chat_id:
         return
 
-    url = "https://api.telegram.org/bot" + token + "/sendMessage"
+    url = (
+        "https://api.telegram.org/bot"
+        + token
+        + "/sendMessage"
+    )
 
     parts = []
 
@@ -80,7 +87,10 @@ def send_telegram(message):
                 timeout=15
             )
         except Exception as exc:
-            print("Telegram error:", exc)
+            print(
+                "Telegram error:",
+                exc
+            )
 
 
 def clean_asset_name(name):
@@ -162,6 +172,7 @@ def scan_active_container(container, found):
         return
 
     for raw_key, info in container.items():
+
         active_id = None
         fallback_name = None
 
@@ -169,20 +180,26 @@ def scan_active_container(container, found):
             active_id = raw_key
 
         elif isinstance(raw_key, str):
+
             if raw_key.isdigit():
                 active_id = int(raw_key)
             else:
                 fallback_name = raw_key
 
         if isinstance(info, dict):
+
             if info.get("id") is not None:
                 active_id = info.get("id")
 
             if info.get("active_id") is not None:
-                active_id = info.get("active_id")
+                active_id = info.get(
+                    "active_id"
+                )
 
             if info.get("activeId") is not None:
-                active_id = info.get("activeId")
+                active_id = info.get(
+                    "activeId"
+                )
 
         name = extract_asset_name(
             info,
@@ -204,23 +221,30 @@ def scan_active_section(section, found):
     actives = section.get("actives")
 
     if isinstance(actives, dict):
+
         scan_active_container(
             actives,
             found
         )
 
     elif isinstance(actives, list):
+
         for item in actives:
+
             if not isinstance(item, dict):
                 continue
 
             active_id = item.get("id")
 
             if active_id is None:
-                active_id = item.get("active_id")
+                active_id = item.get(
+                    "active_id"
+                )
 
             if active_id is None:
-                active_id = item.get("activeId")
+                active_id = item.get(
+                    "activeId"
+                )
 
             name = extract_asset_name(
                 item,
@@ -235,13 +259,18 @@ def scan_active_section(section, found):
                 )
 
 
-def recursive_asset_scan(obj, found, depth=0):
+def recursive_asset_scan(
+    obj,
+    found,
+    depth=0
+):
     if depth > 15:
         return
 
     if isinstance(obj, dict):
 
         if "actives" in obj:
+
             scan_active_section(
                 obj,
                 found
@@ -260,6 +289,7 @@ def recursive_asset_scan(obj, found, depth=0):
             ]:
 
                 if isinstance(value, dict):
+
                     scan_active_section(
                         value,
                         found
@@ -274,6 +304,7 @@ def recursive_asset_scan(obj, found, depth=0):
     elif isinstance(obj, list):
 
         for item in obj:
+
             recursive_asset_scan(
                 item,
                 found,
@@ -281,9 +312,9 @@ def recursive_asset_scan(obj, found, depth=0):
             )
 
 
-def looks_like_eurusd_otc(text):
+def get_asset_match(text):
     if not text:
-        return False
+        return None
 
     value = str(text).upper()
 
@@ -307,7 +338,13 @@ def looks_like_eurusd_otc(text):
         ""
     )
 
-    return "EURUSDOTC" in value
+    if value == "EURUSDOTC":
+        return "EURUSDOTC"
+
+    if value == "EURUSD":
+        return "EURUSD"
+
+    return None
 
 
 def extract_active_id(info):
@@ -323,11 +360,14 @@ def extract_active_id(info):
     ]
 
     for field in fields:
+
         value = info.get(field)
 
         if value is not None:
+
             try:
                 return int(value)
+
             except Exception:
                 return value
 
@@ -379,17 +419,22 @@ def inspect_asset_object(
             name
         )
 
+    matched_key = None
     matched_name = None
 
     for possible in possible_names:
 
-        if looks_like_eurusd_otc(
+        match = get_asset_match(
             possible
-        ):
+        )
+
+        if match:
+
+            matched_key = match
             matched_name = possible
             break
 
-    if matched_name is None:
+    if matched_key is None:
         return
 
     active_id = extract_active_id(
@@ -399,10 +444,12 @@ def inspect_asset_object(
     if active_id is None:
 
         if key_text.isdigit():
+
             try:
                 active_id = int(
                     key_text
                 )
+
             except Exception:
                 pass
 
@@ -410,14 +457,15 @@ def inspect_asset_object(
         (
             key_text,
             name,
-            active_id
+            active_id,
+            matched_key
         )
     )
 
     if active_id is None:
         return
 
-    found["EURUSDOTC"] = {
+    found[matched_key] = {
         "name": matched_name,
         "id": active_id
     }
@@ -473,7 +521,7 @@ def robust_asset_scan(
             )
 
 
-def find_otc_candidates(
+def find_eurusd_candidates(
     obj,
     results,
     depth=0
@@ -491,6 +539,7 @@ def find_otc_candidates(
                 "eur" in key_text.lower()
                 or "usd" in key_text.lower()
             ):
+
                 results.append(
                     key_text
                 )
@@ -506,11 +555,12 @@ def find_otc_candidates(
                     "eur" in name.lower()
                     or "usd" in name.lower()
                 ):
+
                     results.append(
                         name
                     )
 
-            find_otc_candidates(
+            find_eurusd_candidates(
                 value,
                 results,
                 depth + 1
@@ -520,7 +570,7 @@ def find_otc_candidates(
 
         for item in obj:
 
-            find_otc_candidates(
+            find_eurusd_candidates(
                 item,
                 results,
                 depth + 1
@@ -533,15 +583,19 @@ def get_controlled_assets():
 
     print("")
     print("=" * 60)
-    print("SEARCHING FOR EUR/USD OTC")
+    print(
+        "SEARCHING FOR EUR/USD AND EUR/USD OTC"
+    )
     print("=" * 60)
 
     data_sources = []
 
     try:
+
         data = api.get_all_init_v2()
 
         if data:
+
             data_sources.append(
                 (
                     "V2",
@@ -554,15 +608,18 @@ def get_controlled_assets():
             )
 
     except Exception as exc:
+
         print(
             "V2 asset discovery error:",
             exc
         )
 
     try:
+
         data = api.get_all_init()
 
         if data:
+
             data_sources.append(
                 (
                     "LEGACY",
@@ -575,6 +632,7 @@ def get_controlled_assets():
             )
 
     except Exception as exc:
+
         print(
             "Legacy asset discovery error:",
             exc
@@ -598,14 +656,11 @@ def get_controlled_assets():
             after - before
         )
 
-        if found:
-            break
-
     if found:
 
         print("")
         print(
-            "EUR/USD OTC FOUND"
+            "CONTROLLED EUR/USD ASSETS FOUND"
         )
 
         for key, item in found.items():
@@ -621,14 +676,14 @@ def get_controlled_assets():
 
     print("")
     print(
-        "EUR/USD OTC NOT FOUND"
+        "EUR/USD ASSETS NOT FOUND"
     )
 
     if diagnostics:
 
         print("")
         print(
-            "EUR/USD OTC candidates returned:"
+            "EUR/USD candidates returned:"
         )
 
         seen = set()
@@ -636,13 +691,15 @@ def get_controlled_assets():
         for (
             key_text,
             name,
-            active_id
+            active_id,
+            matched_key
         ) in diagnostics:
 
             entry = (
                 str(key_text),
                 str(name),
-                str(active_id)
+                str(active_id),
+                str(matched_key)
             )
 
             if entry in seen:
@@ -656,7 +713,9 @@ def get_controlled_assets():
                 "| NAME:",
                 name,
                 "| ID:",
-                active_id
+                active_id,
+                "| MATCH:",
+                matched_key
             )
 
     else:
@@ -664,10 +723,12 @@ def get_controlled_assets():
         extra_diagnostics = []
 
         try:
+
             data = api.get_all_init_v2()
 
             if data:
-                find_otc_candidates(
+
+                find_eurusd_candidates(
                     data,
                     extra_diagnostics
                 )
@@ -745,7 +806,11 @@ def get_candles(
                 api.api.candles.candles_data
             )
 
-            if candles and len(candles) >= count:
+            if (
+                candles
+                and len(candles) >= count
+            ):
+
                 return candles
 
             time.sleep(
@@ -790,6 +855,7 @@ def calculate_momentum(candles):
     if len(closes) < (
         MOMENTUM_PERIOD + 3
     ):
+
         return []
 
     momentum = []
@@ -893,6 +959,7 @@ def analyze_momentum(candles):
         low_level is None
         or high_level is None
     ):
+
         return None
 
     extreme = "NONE"
@@ -921,6 +988,7 @@ def analyze_momentum(candles):
                 turn_distance
                 >= MIN_TURN_DISTANCE
             ):
+
                 action = "CALL"
 
     elif extreme == "HIGH":
@@ -940,6 +1008,7 @@ def analyze_momentum(candles):
                 turn_distance
                 >= MIN_TURN_DISTANCE
             ):
+
                 action = "PUT"
 
     if action is None:
@@ -996,6 +1065,7 @@ def build_signal_message(
     previous = analysis["previous"]
     previous_two = analysis["previous_two"]
     extreme = analysis["extreme"]
+
     strength = analysis.get(
         "reversal_strength",
         0.0
@@ -1173,6 +1243,7 @@ def monitor_trade(
 
         try:
             profit = float(result)
+
         except Exception:
             profit = 0.0
 
@@ -1295,11 +1366,17 @@ def monitor_trade(
         )
 
         with state_lock:
+
             unknown_results += 1
             completed_trades += 1
 
-            current_completed = completed_trades
-            current_unknown = unknown_results
+            current_completed = (
+                completed_trades
+            )
+
+            current_unknown = (
+                unknown_results
+            )
 
         log_trade(
             signal_id,
@@ -1401,14 +1478,15 @@ def send_startup():
     message = (
         "<b>🤖 Crypto Signal Bot</b>\n\n"
         "<b>Strategy:</b> Momentum 10\n"
-        "<b>Asset:</b> <b>EUR/USD OTC ONLY</b>\n"
+        "<b>Assets:</b> "
+        "<b>EUR/USD OTC + EUR/USD</b>\n"
         "<b>Mode:</b> PRACTICE\n"
         "<b>Auto Trading:</b> ON\n"
         "<b>Expiry:</b> 1 MINUTE\n"
         "<b>Target:</b> 50 bot trades\n\n"
-        "Controlled EUR/USD OTC test started.\n\n"
+        "Controlled EUR/USD test started.\n\n"
         "🟢 <b>IQ Option connected</b>\n\n"
-        "Searching for EUR/USD OTC..."
+        "Searching for EUR/USD and EUR/USD OTC..."
     )
 
     send_telegram(
@@ -1439,33 +1517,35 @@ def send_completion():
         ) * 100.0
 
     else:
+
         win_rate = 0.0
 
     message = (
-        "<b>🏁 EUR/USD OTC TEST COMPLETE</b>\n\n"
+        "<b>🏁 EUR/USD TEST COMPLETE</b>\n\n"
         "<b>Strategy:</b> Momentum 10\n"
         "<b>Mode:</b> PRACTICE\n"
+        "<b>Assets:</b> EUR/USD OTC + EUR/USD\n"
         "<b>Bot Trades Opened:</b> "
         + str(final_opened)
         + "/"
         + str(TARGET_TRADES)
         + "\n"
-        "<b>Completed:</b> "
+        + "<b>Completed:</b> "
         + str(final_completed)
         + "\n"
-        "<b>Wins:</b> "
+        + "<b>Wins:</b> "
         + str(final_wins)
         + "\n"
-        "<b>Losses:</b> "
+        + "<b>Losses:</b> "
         + str(final_losses)
         + "\n"
-        "<b>Draws:</b> "
+        + "<b>Draws:</b> "
         + str(final_draws)
         + "\n"
-        "<b>Unknown:</b> "
+        + "<b>Unknown:</b> "
         + str(final_unknown)
         + "\n"
-        "<b>Win Rate:</b> "
+        + "<b>Win Rate:</b> "
         + str(round(win_rate, 2))
         + "%\n\n"
         "Controlled test finished."
@@ -1498,31 +1578,40 @@ def open_practice_trade(
     )
 
     print("")
-    print("TRADE OPEN ATTEMPT")
+    print(
+        "TRADE OPEN ATTEMPT"
+    )
+
     print(
         "Original asset:",
         repr(asset_name)
     )
+
     print(
         "Trading asset:",
         repr(trade_asset)
     )
+
     print(
         "Active ID:",
         repr(active_id)
     )
+
     print(
         "Action:",
         repr(action.lower())
     )
+
     print(
         "Stake:",
         repr(STAKE)
     )
+
     print(
         "Expiry:",
         repr(EXPIRY_MINUTES)
     )
+
     print(
         "Balance mode:",
         repr(BALANCE_MODE)
@@ -1576,7 +1665,12 @@ def open_practice_trade(
 
         if success:
 
-            return True, order_id, trade_asset, ""
+            return (
+                True,
+                order_id,
+                trade_asset,
+                ""
+            )
 
         reason = (
             "IQ Option returned success=False. "
@@ -1584,7 +1678,12 @@ def open_practice_trade(
             + repr(order_id)
         )
 
-        return False, None, trade_asset, reason
+        return (
+            False,
+            None,
+            trade_asset,
+            reason
+        )
 
     except Exception as exc:
 
@@ -1597,7 +1696,12 @@ def open_practice_trade(
             reason
         )
 
-        return False, None, trade_asset, reason
+        return (
+            False,
+            None,
+            trade_asset,
+            reason
+        )
 
 
 def run_scanner():
@@ -1611,7 +1715,7 @@ def run_scanner():
         "MOMENTUM 10 EXTREME-REVERSAL"
     )
     print(
-        "IQ OPTION OTC"
+        "IQ OPTION EUR/USD + EUR/USD OTC"
     )
     print(
         "PRACTICE MODE"
@@ -1619,7 +1723,7 @@ def run_scanner():
     print("=" * 60)
     print("")
     print(
-        "EUR/USD OTC ONLY"
+        "EUR/USD OTC + EUR/USD"
     )
     print(
         "Target trades:",
@@ -1640,7 +1744,7 @@ def run_scanner():
 
         send_telegram(
             "❌ <b>IQ Option connection failed.</b>\n"
-            "Controlled EUR/USD OTC test stopped."
+            "Controlled EUR/USD test stopped."
         )
 
         return
@@ -1675,10 +1779,6 @@ def run_scanner():
     while True:
 
         with state_lock:
-
-            current_completed = (
-                completed_trades
-            )
 
             current_pending = (
                 pending_results
@@ -1732,23 +1832,29 @@ def run_scanner():
                         item["id"]
                     )
 
-                first_asset = list(
+                found_names = []
+
+                for item in (
                     active_assets.values()
-                )[0]
+                ):
+
+                    found_names.append(
+                        item["name"]
+                    )
 
                 send_telegram(
-                    "🟢 <b>EUR/USD OTC found</b>\n\n"
-                    "<b>Asset:</b> "
-                    + first_asset["name"]
-                    + "\n"
+                    "🟢 <b>EUR/USD asset scan complete</b>\n\n"
+                    "<b>Available:</b> "
+                    + ", ".join(found_names)
+                    + "\n\n"
                     "<b>Starting controlled scan.</b>"
                 )
 
             else:
 
                 print(
-                    "Controlled EUR/USD OTC unavailable. "
-                    "Retrying..."
+                    "Controlled EUR/USD assets "
+                    "unavailable. Retrying..."
                 )
 
                 time.sleep(
@@ -1831,13 +1937,6 @@ def run_scanner():
                             key
                         )
                     )
-                with state_lock:
-
-                    previous_candle = (
-                        last_signal_candle.get(
-                            key
-                        )
-                    )
 
                     previous_extreme = (
                         last_extreme_state.get(
@@ -1869,8 +1968,14 @@ def run_scanner():
                     analysis["action"]
                 )
 
+                asset_id_text = asset_key(
+                    asset_name
+                )
+
                 signal_id = (
-                    "M10-EURUSDOTC-"
+                    "M10-"
+                    + asset_id_text
+                    + "-"
                     + action
                     + "-"
                     + str(
@@ -1923,9 +2028,13 @@ def run_scanner():
 
                 success = False
                 order_id = None
-                trade_asset = get_trade_asset_name(
-                    asset_name
+
+                trade_asset = (
+                    get_trade_asset_name(
+                        asset_name
+                    )
                 )
+
                 trade_error = ""
 
                 try:
@@ -1945,6 +2054,7 @@ def run_scanner():
 
                     success = False
                     order_id = None
+
                     trade_error = (
                         "Unexpected trade opening "
                         "exception: "
@@ -2092,7 +2202,9 @@ def run_scanner():
                 heartbeat_wins = wins
                 heartbeat_losses = losses
                 heartbeat_draws = draws
-                heartbeat_unknown = unknown_results
+                heartbeat_unknown = (
+                    unknown_results
+                )
 
             print("")
             print("HEARTBEAT")
@@ -2127,7 +2239,7 @@ def run_scanner():
 
             send_telegram(
                 "💓 <b>Scanner heartbeat</b>\n\n"
-                "<b>EUR/USD OTC</b>\n"
+                "<b>EUR/USD + EUR/USD OTC</b>\n"
                 "<b>Bot trades opened:</b> "
                 + str(heartbeat_opened)
                 + "/"
