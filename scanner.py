@@ -86,10 +86,7 @@ def send_telegram(message):
                 timeout=15
             )
         except Exception as exc:
-            print(
-                "Telegram error:",
-                exc
-            )
+            print("Telegram error:", exc)
 
 
 def clean_asset_name(name):
@@ -272,7 +269,6 @@ def recursive_asset_scan(
     if isinstance(obj, dict):
 
         if "actives" in obj:
-
             scan_active_section(
                 obj,
                 found
@@ -291,7 +287,6 @@ def recursive_asset_scan(
             ]:
 
                 if isinstance(value, dict):
-
                     scan_active_section(
                         value,
                         found
@@ -306,7 +301,6 @@ def recursive_asset_scan(
     elif isinstance(obj, list):
 
         for item in obj:
-
             recursive_asset_scan(
                 item,
                 found,
@@ -327,26 +321,10 @@ def get_asset_match(text):
         value = value[6:]
 
     value = value.upper()
-
-    value = value.replace(
-        "_",
-        ""
-    )
-
-    value = value.replace(
-        "-",
-        ""
-    )
-
-    value = value.replace(
-        "/",
-        ""
-    )
-
-    value = value.replace(
-        " ",
-        ""
-    )
+    value = value.replace("_", "")
+    value = value.replace("-", "")
+    value = value.replace("/", "")
+    value = value.replace(" ", "")
 
     if value == "EURUSDOTC":
         return "EURUSDOTC"
@@ -420,14 +398,10 @@ def inspect_asset_object(
     possible_names = []
 
     if key_text:
-        possible_names.append(
-            key_text
-        )
+        possible_names.append(key_text)
 
     if name:
-        possible_names.append(
-            name
-        )
+        possible_names.append(name)
 
     matched_key = None
     matched_name = None
@@ -593,9 +567,7 @@ def get_controlled_assets():
 
     print("")
     print("=" * 60)
-    print(
-        "SEARCHING FOR EUR/USD AND EUR/USD OTC"
-    )
+    print("SEARCHING FOR EUR/USD AND EUR/USD OTC")
     print("=" * 60)
 
     data_sources = []
@@ -823,9 +795,7 @@ def get_candles(
 
                 return candles
 
-            time.sleep(
-                0.2
-            )
+            time.sleep(0.2)
 
         candles = (
             api.api.candles.candles_data
@@ -1240,6 +1210,10 @@ def monitor_trade(
         print(
             "Order ID:",
             order_id
+        )
+
+        time.sleep(
+            EXPIRY_MINUTES * 60
         )
 
         result = api.check_win_v4(
@@ -1799,8 +1773,7 @@ def run_scanner():
             )
 
         if (
-            current_opened
-            >= TARGET_TRADES
+            current_opened >= TARGET_TRADES
             and current_pending == 0
         ):
 
@@ -1911,32 +1884,19 @@ def run_scanner():
                     closed_candles[-1]
                 )
 
-        api.api.getcandles(
-            active_id,
-            CANDLE_SECONDS,
-            count,
-            server_time
-        )
+                candle_time = (
+                    signal_candle.get(
+                        "from",
+                        signal_candle.get(
+                            "to",
+                            0
+                        )
+                    )
+                )
 
-        started = time.time()
-
-        while (
-            time.time() - started
-            < CANDLE_REQUEST_TIMEOUT
-        ):
-
-            candles = (
-                api.api.candles.candles_data
-            )
-
-            if (
-                candles
-                and len(candles) >= count
-            ):
-
-                return candles
-
-            time.sleep(
+                analysis = analyze_momentum(
+                    closed_candles
+                )
 
                 if not analysis:
                     continue
@@ -2049,13 +2009,11 @@ def run_scanner():
 
                 success = False
                 order_id = None
-
                 trade_asset = (
                     get_trade_asset_name(
                         asset_name
                     )
                 )
-
                 trade_error = ""
 
                 try:
@@ -2188,7 +2146,6 @@ def run_scanner():
                 )
 
                 worker.daemon = True
-
                 worker.start()
 
             except Exception as exc:
