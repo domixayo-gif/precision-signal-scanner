@@ -2,7 +2,7 @@ import os
 import csv
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 
 import requests
 from iqoptionapi.stable_api import IQ_Option
@@ -42,6 +42,7 @@ active_assets = {}
 wins = 0
 losses = 0
 draws = 0
+unknown_results = 0
 completed_trades = 0
 total_trades = 0
 pending_results = 0
@@ -604,7 +605,7 @@ def get_controlled_assets():
 
         print("")
         print(
-            "✅ EUR/USD OTC FOUND"
+            "EUR/USD OTC FOUND"
         )
 
         for key, item in found.items():
@@ -620,7 +621,7 @@ def get_controlled_assets():
 
     print("")
     print(
-        "❌ EUR/USD OTC NOT FOUND"
+        "EUR/USD OTC NOT FOUND"
     )
 
     if diagnostics:
@@ -1095,7 +1096,9 @@ def log_trade(
             )
 
             writer.writerow([
-                datetime.utcnow().isoformat(),
+                datetime.now(
+                    timezone.utc
+                ).isoformat(),
                 signal_id,
                 asset,
                 action,
@@ -1139,6 +1142,7 @@ def monitor_trade(
     global wins
     global losses
     global draws
+    global unknown_results
     global completed_trades
     global pending_results
 
@@ -1160,6 +1164,11 @@ def monitor_trade(
 
         result = api.check_win_v4(
             order_id
+        )
+
+        print(
+            "Raw trade result:",
+            repr(result)
         )
 
         try:
@@ -1282,11 +1291,15 @@ def monitor_trade(
 
         print(
             "Trade monitoring error:",
-            exc
+            repr(exc)
         )
 
         with state_lock:
+            unknown_results += 1
             completed_trades += 1
+
+            current_completed = completed_trades
+            current_unknown = unknown_results
 
         log_trade(
             signal_id,
@@ -1295,6 +1308,29 @@ def monitor_trade(
             result_name,
             profit,
             analysis
+        )
+
+        send_telegram(
+            "⚠️ <b>TRADE RESULT UNKNOWN</b>\n\n"
+            "<b>Asset:</b> "
+            + asset
+            + "\n"
+            + "<b>Action:</b> "
+            + action
+            + "\n"
+            + "<b>Signal ID:</b> "
+            + signal_id
+            + "\n"
+            + "<b>Reason:</b> "
+            + str(exc)
+            + "\n\n"
+            + "<b>Completed:</b> "
+            + str(current_completed)
+            + "/"
+            + str(TARGET_TRADES)
+            + "\n"
+            + "<b>Unknown:</b> "
+            + str(current_unknown)
         )
 
     finally:
@@ -1355,7 +1391,7 @@ def connect_iq():
 
         print(
             "Connection error:",
-            exc
+            repr(exc)
         )
 
     return False
@@ -1386,7 +1422,9 @@ def send_completion():
         final_wins = wins
         final_losses = losses
         final_draws = draws
+        final_unknown = unknown_results
         final_completed = completed_trades
+        final_opened = total_trades
 
     decided = (
         final_wins
@@ -1407,10 +1445,13 @@ def send_completion():
         "<b>🏁 EUR/USD OTC TEST COMPLETE</b>\n\n"
         "<b>Strategy:</b> Momentum 10\n"
         "<b>Mode:</b> PRACTICE\n"
-        "<b>Completed Trades:</b> "
-        + str(final_completed)
+        "<b>Bot Trades Opened:</b> "
+        + str(final_opened)
         + "/"
         + str(TARGET_TRADES)
+        + "\n"
+        "<b>Completed:</b> "
+        + str(final_completed)
         + "\n"
         "<b>Wins:</b> "
         + str(final_wins)
@@ -1420,6 +1461,9 @@ def send_completion():
         + "\n"
         "<b>Draws:</b> "
         + str(final_draws)
+        + "\n"
+        "<b>Unknown:</b> "
+        + str(final_unknown)
         + "\n"
         "<b>Win Rate:</b> "
         + str(round(win_rate, 2))
@@ -1442,6 +1486,118 @@ def get_trade_asset_name(asset_name):
         name = name[6:]
 
     return name
+
+
+def open_practice_trade(
+    asset_name,
+    active_id,
+    action
+):
+    trade_asset = get_trade_asset_name(
+        asset_name
+    )
+
+    print("")
+    print("TRADE OPEN ATTEMPT")
+    print(
+        "Original asset:",
+        repr(asset_name)
+    )
+    print(
+        "Trading asset:",
+        repr(trade_asset)
+    )
+    print(
+        "Active ID:",
+        repr(active_id)
+    )
+    print(
+        "Action:",
+        repr(action.lower())
+    )
+    print(
+        "Stake:",
+        repr(STAKE)
+    )
+    print(
+        "Expiry:",
+        repr(EXPIRY_MINUTES)
+    )
+    print(
+        "Balance mode:",
+        repr(BALANCE_MODE)
+    )
+
+    try:
+
+        result = api.buy(
+            STAKE,
+            trade_asset,
+            action.lower(),
+            EXPIRY_MINUTES
+        )
+
+        print(
+            "RAW api.buy() RESULT:",
+            repr(result)
+        )
+
+        if isinstance(result, tuple):
+
+            if len(result) >= 2:
+
+                success = result[0]
+                order_id = result[1]
+
+            elif len(result) == 1:
+
+                success = result[0]
+                order_id = None
+
+            else:
+
+                success = False
+                order_id = None
+
+        else:
+
+            success = bool(result)
+            order_id = None
+
+        print(
+            "api.buy success:",
+            repr(success)
+        )
+
+        print(
+            "api.buy order/error:",
+            repr(order_id)
+        )
+
+        if success:
+
+            return True, order_id, trade_asset, ""
+
+        reason = (
+            "IQ Option returned success=False. "
+            "API response: "
+            + repr(order_id)
+        )
+
+        return False, None, trade_asset, reason
+
+    except Exception as exc:
+
+        reason = (
+            "Exception during api.buy(): "
+            + repr(exc)
+        )
+
+        print(
+            reason
+        )
+
+        return False, None, trade_asset, reason
 
 
 def run_scanner():
@@ -1497,11 +1653,16 @@ def run_scanner():
             BALANCE_MODE
         )
 
+        print(
+            "Balance mode set to:",
+            BALANCE_MODE
+        )
+
     except Exception as exc:
 
         print(
             "Balance mode error:",
-            exc
+            repr(exc)
         )
 
     ensure_log_file()
@@ -1523,16 +1684,21 @@ def run_scanner():
                 pending_results
             )
 
+            current_opened = (
+                total_trades
+            )
+
         if (
-            current_completed
+            current_opened
             >= TARGET_TRADES
             and current_pending == 0
         ):
 
             print("")
             print(
-                "Target of 50 resolved "
-                "bot trades reached."
+                "Target of 50 opened bot "
+                "trades reached and all "
+                "results resolved."
             )
 
             send_completion()
@@ -1594,6 +1760,11 @@ def run_scanner():
         for key, item in list(
             active_assets.items()
         ):
+
+            with state_lock:
+
+                if total_trades >= TARGET_TRADES:
+                    break
 
             asset_name = item["name"]
             active_id = item["id"]
@@ -1665,7 +1836,6 @@ def run_scanner():
                         last_extreme_state.get(
                             key
                         )
-                    )
 
                     if (
                         previous_candle
@@ -1740,138 +1910,147 @@ def run_scanner():
 
                 with state_lock:
 
-                    if (
-                        completed_trades
-                        + pending_results
-                        >= TARGET_TRADES
-                    ):
+                    if total_trades >= TARGET_TRADES:
                         continue
 
-                    pending_results += 1
+                success = False
+                order_id = None
+                trade_asset = get_trade_asset_name(
+                    asset_name
+                )
+                trade_error = ""
 
                 try:
 
-                    trade_asset = (
-                        get_trade_asset_name(
-                            asset_name
-                        )
+                    (
+                        success,
+                        order_id,
+                        trade_asset,
+                        trade_error
+                    ) = open_practice_trade(
+                        asset_name,
+                        active_id,
+                        action
                     )
-
-                    print(
-                        "Trading asset:",
-                        trade_asset
-                    )
-
-                    success, order_id = (
-                        api.buy(
-                            STAKE,
-                            trade_asset,
-                            action.lower(),
-                            EXPIRY_MINUTES
-                        )
-                    )
-
-                    if not success:
-
-                        print(
-                            "Trade was not opened."
-                        )
-
-                        with state_lock:
-                            pending_results -= 1
-
-                        send_telegram(
-                            "⚠️ <b>Trade not opened</b>\n\n"
-                            "<b>Asset:</b> "
-                            + trade_asset
-                            + "\n"
-                            "<b>Action:</b> "
-                            + action
-                            + "\n"
-                            "<b>Signal ID:</b> "
-                            + signal_id
-                        )
-
-                        continue
-
-                    with state_lock:
-
-                        total_trades += 1
-
-                        opened_number = (
-                            total_trades
-                        )
-
-                    print("")
-                    print(
-                        "Trade opened successfully."
-                    )
-
-                    print(
-                        "Order ID:",
-                        order_id
-                    )
-
-                    print(
-                        "Bot trade:",
-                        opened_number
-                    )
-
-                    send_telegram(
-                        "🚀 <b>TRADE OPENED</b>\n\n"
-                        "<b>Asset:</b> "
-                        + trade_asset
-                        + "\n"
-                        "<b>Action:</b> "
-                        + action
-                        + "\n"
-                        "<b>Stake:</b> $"
-                        + str(STAKE)
-                        + "\n"
-                        "<b>Expiry:</b> 1 minute\n"
-                        "<b>Bot Trade #:</b> "
-                        + str(opened_number)
-                        + "\n"
-                        "<b>Signal ID:</b> "
-                        + signal_id
-                    )
-
-                    worker = threading.Thread(
-                        target=monitor_trade,
-                        args=(
-                            order_id,
-                            signal_id,
-                            trade_asset,
-                            action,
-                            analysis
-                        )
-                    )
-
-                    worker.daemon = True
-
-                    worker.start()
 
                 except Exception as exc:
 
-                    print(
-                        "Trade opening error:",
-                        exc
+                    success = False
+                    order_id = None
+                    trade_error = (
+                        "Unexpected trade opening "
+                        "exception: "
+                        + repr(exc)
                     )
 
-                    with state_lock:
-                        pending_results -= 1
+                if not success:
+
+                    print("")
+                    print(
+                        "TRADE WAS NOT OPENED"
+                    )
+
+                    print(
+                        "Asset:",
+                        repr(trade_asset)
+                    )
+
+                    print(
+                        "Active ID:",
+                        repr(active_id)
+                    )
+
+                    print(
+                        "Action:",
+                        repr(action)
+                    )
+
+                    print(
+                        "Reason:",
+                        trade_error
+                    )
 
                     send_telegram(
-                        "❌ <b>Trade opening error</b>\n\n"
+                        "⚠️ <b>TRADE NOT OPENED</b>\n\n"
                         "<b>Asset:</b> "
-                        + str(
-                            get_trade_asset_name(
-                                asset_name
-                            )
-                        )
+                        + trade_asset
                         + "\n"
-                        + str(exc)
+                        + "<b>Active ID:</b> "
+                        + str(active_id)
+                        + "\n"
+                        + "<b>Action:</b> "
+                        + action
+                        + "\n"
+                        + "<b>Signal ID:</b> "
+                        + signal_id
+                        + "\n\n"
+                        + "<b>API response:</b>\n"
+                        + trade_error
                     )
+
+                    continue
+
+                with state_lock:
+
+                    total_trades += 1
+                    pending_results += 1
+
+                    opened_number = (
+                        total_trades
+                    )
+
+                print("")
+                print(
+                    "TRADE OPENED SUCCESSFULLY"
+                )
+
+                print(
+                    "Order ID:",
+                    repr(order_id)
+                )
+
+                print(
+                    "Bot trade:",
+                    opened_number,
+                    "/",
+                    TARGET_TRADES
+                )
+
+                send_telegram(
+                    "🚀 <b>TRADE OPENED</b>\n\n"
+                    "<b>Asset:</b> "
+                    + trade_asset
+                    + "\n"
+                    + "<b>Action:</b> "
+                    + action
+                    + "\n"
+                    + "<b>Stake:</b> $"
+                    + str(STAKE)
+                    + "\n"
+                    + "<b>Expiry:</b> 1 minute\n"
+                    + "<b>Bot Trade #:</b> "
+                    + str(opened_number)
+                    + "/"
+                    + str(TARGET_TRADES)
+                    + "\n"
+                    + "<b>Signal ID:</b> "
+                    + signal_id
+                )
+
+                worker = threading.Thread(
+                    target=monitor_trade,
+                    args=(
+                        order_id,
+                        signal_id,
+                        trade_asset,
+                        action,
+                        analysis
+                    )
+                )
+
+                worker.daemon = True
+
+                worker.start()
 
             except Exception as exc:
 
@@ -1879,7 +2058,7 @@ def run_scanner():
                     "Scan error for",
                     asset_name,
                     ":",
-                    exc
+                    repr(exc)
                 )
 
         if (
@@ -1889,6 +2068,10 @@ def run_scanner():
         ):
 
             with state_lock:
+
+                heartbeat_opened = (
+                    total_trades
+                )
 
                 heartbeat_completed = (
                     completed_trades
@@ -1901,15 +2084,21 @@ def run_scanner():
                 heartbeat_wins = wins
                 heartbeat_losses = losses
                 heartbeat_draws = draws
+                heartbeat_unknown = unknown_results
 
             print("")
             print("HEARTBEAT")
 
             print(
-                "Completed:",
-                heartbeat_completed,
+                "Opened:",
+                heartbeat_opened,
                 "/",
                 TARGET_TRADES
+            )
+
+            print(
+                "Completed:",
+                heartbeat_completed
             )
 
             print(
@@ -1918,31 +2107,38 @@ def run_scanner():
             )
 
             print(
-                "W/L/D:",
+                "W/L/D/U:",
                 heartbeat_wins,
                 "/",
                 heartbeat_losses,
                 "/",
-                heartbeat_draws
+                heartbeat_draws,
+                "/",
+                heartbeat_unknown
             )
 
             send_telegram(
                 "💓 <b>Scanner heartbeat</b>\n\n"
                 "<b>EUR/USD OTC</b>\n"
-                "<b>Completed:</b> "
-                + str(heartbeat_completed)
+                "<b>Bot trades opened:</b> "
+                + str(heartbeat_opened)
                 + "/"
                 + str(TARGET_TRADES)
                 + "\n"
-                "<b>Pending:</b> "
+                + "<b>Completed:</b> "
+                + str(heartbeat_completed)
+                + "\n"
+                + "<b>Pending:</b> "
                 + str(heartbeat_pending)
                 + "\n"
-                "<b>W/L/D:</b> "
+                + "<b>W/L/D/U:</b> "
                 + str(heartbeat_wins)
                 + "/"
                 + str(heartbeat_losses)
                 + "/"
                 + str(heartbeat_draws)
+                + "/"
+                + str(heartbeat_unknown)
             )
 
             last_heartbeat = time.time()
@@ -1950,7 +2146,6 @@ def run_scanner():
         time.sleep(
             SCAN_INTERVAL
         )
-
 
 if __name__ == "__main__":
     run_scanner()
