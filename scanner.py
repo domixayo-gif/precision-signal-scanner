@@ -1911,20 +1911,32 @@ def run_scanner():
                     closed_candles[-1]
                 )
 
-                candle_time = (
-                    signal_candle.get(
-                        "from",
-                        signal_candle.get(
-                            "to",
-                            0
-                        )
-                    )
+        api.api.getcandles(
+            active_id,
+            CANDLE_SECONDS,
+            count,
+            server_time
+        )
 
-                analysis = (
-                    analyze_momentum(
-                        closed_candles
-                    )
-                )
+        started = time.time()
+
+        while (
+            time.time() - started
+            < CANDLE_REQUEST_TIMEOUT
+        ):
+
+            candles = (
+                api.api.candles.candles_data
+            )
+
+            if (
+                candles
+                and len(candles) >= count
+            ):
+
+                return candles
+
+            time.sleep(
 
                 if not analysis:
                     continue
