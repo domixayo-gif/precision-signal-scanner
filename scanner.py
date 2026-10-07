@@ -39,7 +39,6 @@ LOG_FILE = "momentum_signal_log.csv"
 
 
 api = None
-
 active_assets = {}
 
 wins = 0
@@ -97,7 +96,14 @@ def clean_asset_name(name):
     if not name:
         return ""
 
-    text = str(name)
+    text = str(name).strip()
+
+    if text.lower().startswith("front."):
+        text = text[6:]
+
+    if text.lower().startswith("front_"):
+        text = text[6:]
+
     text = text.replace("_", "-")
     text = text.replace(" ", "")
 
@@ -192,14 +198,10 @@ def scan_active_container(container, found):
                 active_id = info.get("id")
 
             if info.get("active_id") is not None:
-                active_id = info.get(
-                    "active_id"
-                )
+                active_id = info.get("active_id")
 
             if info.get("activeId") is not None:
-                active_id = info.get(
-                    "activeId"
-                )
+                active_id = info.get("activeId")
 
         name = extract_asset_name(
             info,
@@ -316,7 +318,15 @@ def get_asset_match(text):
     if not text:
         return None
 
-    value = str(text).upper()
+    value = str(text).strip()
+
+    if value.lower().startswith("front."):
+        value = value[6:]
+
+    if value.lower().startswith("front_"):
+        value = value[6:]
+
+    value = value.upper()
 
     value = value.replace(
         "_",
@@ -1909,7 +1919,6 @@ def run_scanner():
                             0
                         )
                     )
-                )
 
                 analysis = (
                     analyze_momentum(
@@ -2266,6 +2275,7 @@ def run_scanner():
         time.sleep(
             SCAN_INTERVAL
         )
+
 
 if __name__ == "__main__":
     run_scanner()
