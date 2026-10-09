@@ -1,3 +1,4 @@
+
 import os
 import csv
 import time
@@ -13,7 +14,6 @@ WATCHLIST = ["EURUSD-OTC"]
 MOMENTUM_PERIOD = 10
 MOMENTUM_LOOKBACK = 50
 EXTREME_PERCENTILE = 0.10
-
 REQUIRE_TURN = True
 MIN_TURN_DISTANCE = 0.03
 
@@ -54,6 +54,7 @@ def send_telegram(message):
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
 
     if not token or not chat_id:
+        print("Telegram credentials are missing.")
         return
 
     url = "https://api.telegram.org/bot" + token + "/sendMessage"
@@ -63,7 +64,7 @@ def send_telegram(message):
         message = message[3900:]
 
         try:
-            requests.post(
+            response = requests.post(
                 url,
                 data={
                     "chat_id": chat_id,
@@ -72,6 +73,10 @@ def send_telegram(message):
                 },
                 timeout=15
             )
+
+            if not response.ok:
+                print("Telegram HTTP error:", response.status_code)
+
         except Exception as exc:
             print("Telegram error:", exc)
 
@@ -80,7 +85,7 @@ def clean_asset_name(name):
     if not name:
         return ""
 
-    text = str(name)
+    text = str(name).strip()
     text = text.replace("_", "-")
     text = text.replace(" ", "")
 
@@ -89,6 +94,11 @@ def clean_asset_name(name):
 
 def asset_key(name):
     text = clean_asset_name(name)
+
+    for prefix in ["FRONT-", "TURBO-", "BINARY-"]:
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+
     chars = []
 
     for char in text:
@@ -123,8 +133,8 @@ def extract_asset_name(info, fallback=None):
         for field in fields:
             value = info.get(field)
 
-            if value:
-                return str(value)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
 
     return fallback
 
@@ -153,8 +163,43 @@ def extract_active_id(info):
     return None
 
 
+def show_currency_names(obj, depth=0):
+    if depth > 12:
+        return
+
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            key_text = str(key)
+            name = extract_asset_name(value, key_text)
+
+            key_lower = key_text.lower()
+            name_lower = str(name).lower() if name else ""
+
+            if (
+                "eur" in key_lower
+                or "usd" in key_lower
+                or "eur" in name_lower
+                or "usd" in name_lower
+            ):
+                print(
+                    "DEBUG ASSET:",
+                    key_text[:100],
+                    "| Name:",
+                    str(name)[:100],
+                    "| ID:",
+                    extract_active_id(value)
+                )
+
+            if isinstance(value, (dict, list)):
+                show_currency_names(value, depth + 1)
+
+    elif isinstance(obj, list):
+        for item in obj:
+            show_currency_names(item, depth + 1)
+
+
 def recursive_asset_scan(obj, found, depth=0):
-    if depth > 15:
+    if depth > 20:
         return
 
     if isinstance(obj, dict):
@@ -166,12 +211,34 @@ def recursive_asset_scan(obj, found, depth=0):
             if active_id is None and key_text.isdigit():
                 active_id = int(key_text)
 
-            if name and active_id is not None:
-                if is_allowed_asset(name):
-                    key = asset_key(name)
+            candidates = [key_text]
+
+            if name:
+                candidates.append(name)
+
+            matched_name = None
+
+            for candidate in candidates:
+                if is_allowed_asset(candidate):
+                    matched_name = candidate
+                    break
+
+            if matched_name and active_id is not None:
+                enabled = True
+                suspended = False
+
+                if isinstance(value, dict):
+                    if value.get("enabled") is False:
+                        enabled = False
+
+                    if value.get("is_suspended") is True:
+                        suspended = True
+
+                if enabled and not suspended:
+                    key = asset_key(matched_name)
 
                     found[key] = {
-                        "name": name,
+                        "name": matched_name,
                         "id": active_id
                     }
 
@@ -207,20 +274,23 @@ def get_controlled_assets():
         if data:
             sources.append(("V2", data))
             print("V2 initialization data received.")
+        else:
+            print("V2 initialization data was empty.")
 
     except Exception as exc:
         print("V2 discovery error:", exc)
 
-    if not found:
-        try:
-            data = api.get_all_init()
+    try:
+        data = api.get_all_init()
 
-            if data:
-                sources.append(("LEGACY", data))
-                print("Legacy initialization data received.")
+        if data:
+            sources.append(("LEGACY", data))
+            print("Legacy initialization data received.")
+        else:
+            print("Legacy initialization data was empty.")
 
-        except Exception as exc:
-            print("Legacy discovery error:", exc)
+    except Exception as exc:
+        print("Legacy discovery error:", exc)
 
     for source_name, data in sources:
         before = len(found)
@@ -232,6 +302,24 @@ def get_controlled_assets():
             "matches added:",
             len(found) - before
         )
+
+        if not found:
+            print(
+                "DEBUG:",
+                source_name,
+                "data type:",
+                type(data).__name__
+            )
+
+            if isinstance(data, dict):
+                print(
+                    "DEBUG:",
+                    source_name,
+                    "top-level keys:",
+                    list(data.keys())[:30]
+                )
+
+            show_currency_names(data)
 
         if found:
             break
@@ -248,6 +336,7 @@ def get_controlled_assets():
         return found
 
     print("EUR/USD OTC was not found in initialization data.")
+    print("The debug lines above show what the API returned.")
     return {}
 
 
@@ -609,7 +698,7 @@ def monitor_trade(order_id, signal_id, asset, action, analysis):
 
     finally:
         with state_lock:
-            pending_results -= 1
+            pending_results = max(0, pending_results - 1)
 
 
 def connect_iq():
@@ -872,7 +961,10 @@ def run_scanner():
                         print("Trade was not opened.")
 
                         with state_lock:
-                            pending_results -= 1
+                            pending_results = max(
+                                0,
+                                pending_results - 1
+                            )
 
                         send_telegram(
                             "⚠️ <b>Trade not opened</b>\n"
@@ -916,7 +1008,10 @@ def run_scanner():
                     print("Trade opening error:", exc)
 
                     with state_lock:
-                        pending_results -= 1
+                        pending_results = max(
+                            0,
+                            pending_results - 1
+                        )
 
                     send_telegram(
                         "❌ <b>Trade opening error</b>\n"
