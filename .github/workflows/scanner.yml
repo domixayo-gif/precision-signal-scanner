@@ -1,16 +1,21 @@
+
 name: Controlled Momentum 10 Scanner
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "0 */5 * * *"
+
+permissions:
+  contents: read
 
 concurrency:
-  group: controlled-momentum-10-scanner
+  group: momentum-10-scanner
   cancel-in-progress: false
 
 jobs:
   scan:
     runs-on: ubuntu-latest
-
     timeout-minutes: 350
 
     steps:
@@ -22,20 +27,19 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install requirements
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Check scanner
+      - name: Check Python syntax
         run: |
           python -m py_compile scanner.py
 
-      - name: Run Controlled Momentum 10 Scanner
+      - name: Run Momentum 10 scanner
         env:
           IQ_EMAIL: ${{ secrets.IQ_EMAIL }}
           IQ_PASSWORD: ${{ secrets.IQ_PASSWORD }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python scanner.py
+        run: python -u scanner.py
