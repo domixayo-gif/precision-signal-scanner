@@ -1,4 +1,3 @@
-
 import os
 import csv
 import time
@@ -9,6 +8,9 @@ import requests
 from iqoptionapi.stable_api import IQ_Option
 
 
+# CONTROLLED MOMENTUM 10 TEST
+WATCHLIST = ["EURUSD-OTC"]
+
 MOMENTUM_PERIOD = 10
 MOMENTUM_LOOKBACK = 50
 EXTREME_PERCENTILE = 0.10
@@ -17,31 +19,34 @@ MIN_TURN_DISTANCE = 0.03
 CANDLE_SECONDS = 60
 EXPIRY_MINUTES = 1
 
+AUTO_TRADE = True
 BALANCE_MODE = "PRACTICE"
 STAKE = 1.0
-AUTO_TRADE = True
 TARGET_TRADES = 50
 
-MAX_OPENED_TRADES = 100
-MAX_PENDING_TRADES = 3
-SCAN_INTERVAL = 1
-ASSET_REFRESH_SECONDS = 900
+SCAN_INTERVAL = 5
 HEARTBEAT_SECONDS = 300
+RECONNECT_SECONDS = 30
+CANDLE_REQUEST_TIMEOUT = 10
 
 LOG_FILE = "momentum_signal_log.csv"
 
 api = None
-assets = {}
-last_signal_candle = {}
+asset_id = None
+asset_name = None
 
+stop_event = threading.Event()
+state_lock = threading.Lock()
+
+resolved_trades = 0
 wins = 0
 losses = 0
 draws = 0
-completed = 0
-opened = 0
-pending = 0
+unknown = 0
 
-lock = threading.Lock()
+last_signal_candle = {}
+last_heartbeat = 0
+candle_worker = None
 
 
 def telegram(message):
@@ -49,641 +54,591 @@ def telegram(message):
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
 
     if not token or not chat_id:
-        print("Telegram credentials missing.", flush=True)
+        print("Telegram secrets are missing.")
         return
+
+    url = "https://api.telegram.org/bot" + token + "/sendMessage"
 
     try:
         response = requests.post(
-            "https://api.telegram.org/bot" + token + "/sendMessage",
+            url,
             data={
                 "chat_id": chat_id,
-                "text": message[:3900],
+                "text": message,
                 "parse_mode": "HTML"
             },
-            timeout=15
+            timeout=10
         )
-
-        if not response.ok:
-            print("Telegram HTTP error:", response.status_code, flush=True)
-
+        if response.status_code != 200:
+            print("Telegram error:", response.status_code)
     except Exception as exc:
-        print("Telegram error:", str(exc)[:200], flush=True)
+        print("Telegram connection error:", exc)
 
 
-def normalize_name(name):
-    text = str(name).strip().upper()
+def log_trade(values):
+    fields = [
+        "time", "asset", "direction", "score",
+        "candle_time", "order_id", "result", "profit"
+    ]
 
-    for prefix in ["FRONT.", "FRONT_", "FRONT-"]:
-        if text.startswith(prefix):
-            text = text[len(prefix):]
-            break
-
-    return text.replace("_", "-")
-
-
-def discover_assets():
-    print("Discovering assets...", flush=True)
-    found = {}
+    exists = os.path.exists(LOG_FILE)
 
     try:
-        data = api.get_all_ACTIVES_OPCODE()
+        with open(LOG_FILE, "a", newline="", encoding="utf-8") as file:
+            writer = csv.DictWriter(file, fieldnames=fields)
 
-        if isinstance(data, dict):
-            for name, active_id in data.items():
-                symbol = normalize_name(name)
+            if not exists:
+                writer.writeheader()
 
-                try:
-                    number = int(active_id)
-                except (ValueError, TypeError):
-                    continue
-
-                if symbol and len(symbol) >= 5:
-                    found[symbol] = number
-
+            writer.writerow(values)
     except Exception as exc:
-        print("Asset discovery error:", str(exc)[:200], flush=True)
-
-    if not found:
-        print("No active-ID assets returned by the API.", flush=True)
-        return {}
-
-    print("Assets discovered:", len(found), flush=True)
-
-    for name, active_id in list(found.items())[:10]:
-        print("ASSET:", name, "| ID:", active_id, flush=True)
-
-    return found
+        print("CSV error:", exc)
 
 
-def get_candles(symbol, count):
+def normalize_name(value):
+    return "".join(
+        char for char in str(value).upper()
+        if char.isalnum()
+    )
+
+
+def find_id_in_data(data, target):
+    target_normalized = normalize_name(target)
+    id_keys = (
+        "active_id", "activeid", "id",
+        "instrument_id", "instrumentid"
+    )
+    name_keys = (
+        "name", "active", "symbol",
+        "ticker", "instrument"
+    )
+
+    if isinstance(data, dict):
+        current_name = ""
+
+        for key in name_keys:
+            value = data.get(key)
+            if isinstance(value, str):
+                if normalize_name(value) == target_normalized:
+                    current_name = value
+                    break
+
+        if current_name:
+            for key in id_keys:
+                value = data.get(key)
+                if isinstance(value, (int, float)):
+                    return int(value)
+
+        for key, value in data.items():
+            if normalize_name(key) == target_normalized:
+                if isinstance(value, dict):
+                    for id_key in id_keys:
+                        found_id = value.get(id_key)
+                        if isinstance(found_id, (int, float)):
+                            return int(found_id)
+
+                    nested = find_id_in_data(value, target)
+                    if nested is not None:
+                        return nested
+
+                elif isinstance(value, (int, float)):
+                    return int(value)
+
+        for value in data.values():
+            found_id = find_id_in_data(value, target)
+            if found_id is not None:
+                return found_id
+
+    elif isinstance(data, list):
+        for item in data:
+            found_id = find_id_in_data(item, target)
+            if found_id is not None:
+                return found_id
+
+    return None
+
+
+def discover_asset():
+    global api
+
+    print("Looking for EURUSD-OTC in IQ Option data...")
+
+    sources = []
+
     try:
-        candles = api.get_candles(
-            symbol,
-            CANDLE_SECONDS,
-            count,
-            time.time()
-        )
-
-        if not isinstance(candles, list):
-            return []
-
-        candles = sorted(
-            candles,
-            key=lambda item: item.get("from", 0)
-        )
-
-        return candles
-
+        sources.append(api.get_all_init_v2())
     except Exception as exc:
-        print(
-            "CANDLE ERROR:",
-            symbol,
-            str(exc)[:150],
-            flush=True
-        )
-        return []
+        print("Init V2 unavailable:", exc)
 
+    try:
+        sources.append(api.get_all_init())
+    except Exception as exc:
+        print("Init data unavailable:", exc)
 
-def momentum_values(candles):
-    closes = []
-
-    for candle in candles:
-        try:
-            closes.append(float(candle["close"]))
-        except (KeyError, TypeError, ValueError):
+    for source in sources:
+        if not source:
             continue
 
-    if len(closes) < MOMENTUM_PERIOD + 3:
+        found_id = find_id_in_data(source, "EURUSD-OTC")
+
+        if found_id is not None:
+            print("Found EURUSD-OTC active ID:", found_id)
+            return found_id
+
+    print("EURUSD-OTC active ID was not found.")
+    print("The broker may not be exposing this asset right now.")
+    return None
+
+
+def connect_iq():
+    global api, asset_id, asset_name
+
+    email = os.getenv("IQ_EMAIL", "")
+    password = os.getenv("IQ_PASSWORD", "")
+
+    if not email or not password:
+        print("Missing IQ_EMAIL or IQ_PASSWORD GitHub Secrets.")
+        return False
+
+    try:
+        print("Connecting to IQ Option...")
+        new_api = IQ_Option(email, password)
+        connected, reason = new_api.connect()
+
+        if not connected:
+            print("IQ Option connection failed:", reason)
+            return False
+
+        new_api.change_balance(BALANCE_MODE)
+
+        if not new_api.check_connect():
+            print("Connection check failed.")
+            return False
+
+        api = new_api
+        print("Connected. Balance mode:", BALANCE_MODE)
+
+        asset_id = discover_asset()
+        asset_name = "EURUSD-OTC"
+
+        if asset_id is None:
+            print("Cannot scan until the asset ID is available.")
+            return False
+
+        telegram(
+            "Momentum 10 Scanner started\n"
+            "Mode: PRACTICE\n"
+            "Asset: EUR/USD OTC\n"
+            "Stake: $1\n"
+            "Expiry: 1 minute\n"
+            "Target: 50 resolved trades"
+        )
+
+        return True
+
+    except Exception as exc:
+        print("Connection error:", exc)
+        return False
+
+
+def candle_request_worker(api_instance, active_id, count, result):
+    try:
+        candle_api = api_instance.api.candles
+        candle_api.candles_data = []
+
+        try:
+            server_time = api_instance.get_server_timestamp()
+        except Exception:
+            server_time = None
+
+        if not server_time:
+            server_time = time.time()
+
+        api_instance.api.getcandles(
+            active_id,
+            CANDLE_SECONDS,
+            count,
+            server_time
+        )
+
+        started = time.time()
+
+        while time.time() - started < CANDLE_REQUEST_TIMEOUT:
+            candles = candle_api.candles_data
+
+            if candles and len(candles) >= count:
+                result["candles"] = list(candles)
+                return
+
+            time.sleep(0.2)
+
+        candles = candle_api.candles_data
+
+        if candles:
+            result["candles"] = list(candles)
+
+    except Exception as exc:
+        result["error"] = str(exc)
+
+
+def get_candles(active_id, count):
+    global candle_worker, api
+
+    if api is None:
         return []
 
-    values = []
+    if candle_worker is not None and candle_worker.is_alive():
+        print("Previous candle request is still running; skipping this pass.")
+        return []
+
+    result = {"candles": [], "error": ""}
+
+    worker = threading.Thread(
+        target=candle_request_worker,
+        args=(api, active_id, count, result),
+        daemon=True
+    )
+
+    candle_worker = worker
+    worker.start()
+    worker.join(CANDLE_REQUEST_TIMEOUT + 2)
+
+    if worker.is_alive():
+        print("Candle request timed out. Skipping this scan pass.")
+        return []
+
+    if result["error"]:
+        print("Candle error:", result["error"])
+
+    candles = result["candles"]
+
+    if not candles:
+        print("No candles returned.")
+        return []
+
+    try:
+        candles = sorted(
+            candles,
+            key=lambda item: float(item.get("from", 0))
+        )
+    except Exception:
+        pass
+
+    return candles
+
+
+def calculate_signal(candles):
+    if len(candles) < MOMENTUM_LOOKBACK + MOMENTUM_PERIOD + 2:
+        return None
+
+    try:
+        closes = [float(item["close"]) for item in candles]
+        candle_times = [int(item["from"]) for item in candles]
+    except Exception:
+        print("Invalid candle data.")
+        return None
+
+    momentums = []
 
     for index in range(MOMENTUM_PERIOD, len(closes)):
         old_price = closes[index - MOMENTUM_PERIOD]
+        new_price = closes[index]
 
         if old_price == 0:
             continue
 
-        change = (
-            (closes[index] - old_price) / old_price
-        ) * 100.0
+        value = ((new_price - old_price) / old_price) * 100
+        momentums.append(value)
 
-        values.append(change)
-
-    return values
-
-
-def percentile(values, fraction):
-    ordered = sorted(values)
-
-    if not ordered:
+    if len(momentums) < MOMENTUM_LOOKBACK + 1:
         return None
 
-    position = (len(ordered) - 1) * fraction
-    lower = int(position)
-    upper = min(lower + 1, len(ordered) - 1)
-    weight = position - lower
+    recent = momentums[-(MOMENTUM_LOOKBACK + 1):-1]
+    current = momentums[-1]
+    previous = momentums[-2]
 
-    return (
-        ordered[lower]
-        + (ordered[upper] - ordered[lower]) * weight
+    ordered = sorted(recent)
+    low_index = int((len(ordered) - 1) * EXTREME_PERCENTILE)
+    high_index = int(
+        (len(ordered) - 1) * (1 - EXTREME_PERCENTILE)
     )
 
+    low_limit = ordered[low_index]
+    high_limit = ordered[high_index]
 
-def analyze(candles):
-    values = momentum_values(candles)
+    turn_distance = abs(current - previous)
 
-    if len(values) < MOMENTUM_LOOKBACK:
+    if turn_distance < MIN_TURN_DISTANCE:
         return None
 
-    recent = values[-MOMENTUM_LOOKBACK:]
+    direction = None
 
-    current = recent[-1]
-    previous = recent[-2]
-    previous_two = recent[-3]
+    if current <= low_limit and current > previous:
+        direction = "call"
 
-    low = percentile(recent, EXTREME_PERCENTILE)
-    high = percentile(recent, 1.0 - EXTREME_PERCENTILE)
+    elif current >= high_limit and current < previous:
+        direction = "put"
 
-    action = None
+    if direction is None:
+        return None
 
-    if current <= low:
-        if (
-            previous < previous_two
-            and current > previous
-            and abs(current - previous) >= MIN_TURN_DISTANCE
-        ):
-            action = "CALL"
-
-    elif current >= high:
-        if (
-            previous > previous_two
-            and current < previous
-            and abs(current - previous) >= MIN_TURN_DISTANCE
-        ):
-            action = "PUT"
+    candle_time = candle_times[-1]
 
     return {
-        "action": action,
-        "current": current
+        "direction": direction,
+        "momentum": round(current, 5),
+        "previous": round(previous, 5),
+        "candle_time": candle_time,
+        "price": closes[-1]
     }
 
 
-def ensure_log():
-    if os.path.exists(LOG_FILE):
-        return
+def monitor_trade(order_id, direction, signal_info):
+    global resolved_trades, wins, losses, draws, unknown
 
-    with open(LOG_FILE, "w", newline="") as file:
-        writer = csv.writer(file)
-        writer.writerow([
-            "timestamp",
-            "signal_id",
-            "asset",
-            "action",
-            "stake",
-            "expiry",
-            "result",
-            "profit",
-            "momentum"
-        ])
-
-
-def log_result(signal_id, symbol, action, result, profit, analysis):
-    try:
-        ensure_log()
-
-        with open(LOG_FILE, "a", newline="") as file:
-            writer = csv.writer(file)
-            writer.writerow([
-                datetime.now(timezone.utc).isoformat(),
-                signal_id,
-                symbol,
-                action,
-                STAKE,
-                EXPIRY_MINUTES,
-                result,
-                profit,
-                analysis["current"]
-            ])
-
-    except Exception as exc:
-        print("CSV ERROR:", str(exc)[:150], flush=True)
-
-
-def monitor_trade(order_id, signal_id, symbol, action, analysis):
-    global wins, losses, draws, completed, pending
+    result_name = "UNKNOWN"
+    profit = 0.0
 
     try:
-        profit = float(api.check_win_v4(order_id))
+        time.sleep(EXPIRY_MINUTES * 60 + 5)
 
-        if profit > 0:
+        current_api = api
+
+        if current_api is None:
+            raise RuntimeError("IQ Option connection unavailable")
+
+        profit = current_api.check_win_v4(order_id)
+
+        if profit is None:
+            result_name = "UNKNOWN"
+        elif profit > 0:
             result_name = "WIN"
         elif profit < 0:
             result_name = "LOSS"
         else:
             result_name = "DRAW"
 
-        with lock:
-            if result_name == "WIN":
-                wins += 1
-            elif result_name == "LOSS":
-                losses += 1
-            else:
-                draws += 1
-
-            completed += 1
-            resolved = completed
-            current_wins = wins
-            current_losses = losses
-            current_draws = draws
-
-        log_result(
-            signal_id, symbol, action,
-            result_name, profit, analysis
-        )
-
-        print(
-            "RESULT:", result_name,
-            "|", symbol,
-            "| Profit:", profit,
-            "| Resolved:", resolved,
-            "/", TARGET_TRADES,
-            flush=True
-        )
-
-        telegram(
-            "<b>" + result_name + "</b>\n"
-            "<b>Asset:</b> " + symbol + "\n"
-            "<b>Direction:</b> " + action + "\n"
-            "<b>Profit:</b> $" + str(round(profit, 2)) + "\n"
-            "<b>Resolved:</b> " + str(resolved) + "/" +
-            str(TARGET_TRADES) + "\n"
-            "<b>W/L/D:</b> " + str(current_wins) + "/" +
-            str(current_losses) + "/" + str(current_draws)
-        )
-
     except Exception as exc:
-        print(
-            "RESULT CHECK ERROR:",
-            signal_id,
-            str(exc)[:200],
-            flush=True
-        )
+        print("Trade result error:", exc)
+        result_name = "UNKNOWN"
 
-        log_result(
-            signal_id, symbol, action,
-            "UNKNOWN", 0.0, analysis
-        )
+    with state_lock:
+        if result_name == "WIN":
+            wins += 1
+            resolved_trades += 1
+        elif result_name == "LOSS":
+            losses += 1
+            resolved_trades += 1
+        elif result_name == "DRAW":
+            draws += 1
+            resolved_trades += 1
+        else:
+            unknown += 1
 
+        total = resolved_trades
+        current_wins = wins
+        current_losses = losses
+        current_draws = draws
+
+    log_trade({
+        "time": datetime.now(timezone.utc).isoformat(),
+        "asset": asset_name,
+        "direction": direction.upper(),
+        "score": signal_info["momentum"],
+        "candle_time": signal_info["candle_time"],
+        "order_id": order_id,
+        "result": result_name,
+        "profit": profit
+    })
+
+    message = (
+        "Momentum 10 Trade Result\n"
+        "Asset: EUR/USD OTC\n"
+        "Direction: " + direction.upper() + "\n"
+        "Result: " + result_name + "\n"
+        "Profit: " + str(profit) + "\n"
+        "Resolved: " + str(total) + "/" + str(TARGET_TRADES) + "\n"
+        "Wins: " + str(current_wins) + "\n"
+        "Losses: " + str(current_losses) + "\n"
+        "Draws: " + str(current_draws)
+    )
+
+    print(message)
+    telegram(message)
+
+    if total >= TARGET_TRADES:
+        stop_event.set()
         telegram(
-            "⚠️ <b>Result unknown</b>\n"
-            "<b>Asset:</b> " + symbol + "\n"
-            "<b>Signal ID:</b> " + signal_id + "\n"
-            "Not counted as resolved."
+            "50-trade test target reached. "
+            "Please review the recorded results before another run."
         )
 
-    finally:
-        with lock:
-            pending = max(0, pending - 1)
 
-
-def connect():
+def place_trade(direction, signal_info):
     global api
 
-    email = os.getenv("IQ_EMAIL", "")
-    password = os.getenv("IQ_PASSWORD", "")
+    if not AUTO_TRADE:
+        print("Signal found, but auto trading is disabled.")
+        return
 
-    if not email or not password:
-        print("Missing IQ_OPTION GitHub Secrets.", flush=True)
-        return False
+    if api is None or not api.check_connect():
+        print("Not connected. Trade skipped.")
+        return
 
     try:
-        api = IQ_Option(email, password)
-        connected, reason = api.connect()
+        print("PRACTICE ORDER:", direction.upper())
 
-        if not connected:
-            print("Connection failed:", reason, flush=True)
-            return False
+        check_balance = api.get_balance()
+        print("Practice balance:", check_balance)
 
-        print("IQ Option connected.", flush=True)
+        success, order_id = api.buy(
+            STAKE,
+            asset_name,
+            direction,
+            EXPIRY_MINUTES
+        )
 
-        api.change_balance(BALANCE_MODE)
-        print("Balance mode:", BALANCE_MODE, flush=True)
+        if not success:
+            print("Order was rejected:", order_id)
+            telegram(
+                "Signal found but order was not accepted.\n"
+                "Asset: EUR/USD OTC\n"
+                "Direction: " + direction.upper()
+            )
+            return
 
-        return True
+        print("Practice order accepted. ID:", order_id)
+
+        telegram(
+            "PRACTICE TRADE OPENED\n"
+            "Asset: EUR/USD OTC\n"
+            "Direction: " + direction.upper().upper() + "\n"
+            "Stake: $1\n"
+            "Expiry: 1 minute\n"
+            "Order ID: " + str(order_id)
+        )
+
+        thread = threading.Thread(
+            target=monitor_trade,
+            args=(order_id, direction, signal_info),
+            daemon=True
+        )
+        thread.start()
 
     except Exception as exc:
-        print("Connection error:", str(exc)[:200], flush=True)
-        return False
+        print("Trade placement error:", exc)
+        telegram("Trade placement error: " + str(exc))
+
+
+def heartbeat():
+    global last_heartbeat
+
+    now = time.time()
+
+    if now - last_heartbeat < HEARTBEAT_SECONDS:
+        return
+
+    last_heartbeat = now
+
+    with state_lock:
+        total = resolved_trades
+        current_wins = wins
+        current_losses = losses
+        current_draws = draws
+
+    print(
+        "HEARTBEAT | Resolved:", total,
+        "| Wins:", current_wins,
+        "| Losses:", current_losses,
+        "| Draws:", current_draws
+    )
 
 
 def run_scanner():
-    global assets, opened, pending
+    global api, asset_id
 
-    print("=" * 45, flush=True)
-    print("MOMENTUM 10 ALL-ASSETS SCANNER", flush=True)
-    print("PRACTICE | $1 | 1-MINUTE EXPIRY", flush=True)
-    print("=" * 45, flush=True)
+    while not stop_event.is_set():
+        if api is None or not api.check_connect():
+            print("Connection unavailable. Reconnecting...")
+            if not connect_iq():
+                time.sleep(RECONNECT_SECONDS)
+                continue
 
-    if not connect():
-        telegram("❌ Scanner stopped. Check connection and secrets.")
-        return
+        with state_lock:
+            if resolved_trades >= TARGET_TRADES:
+                break
 
-    ensure_log()
+        print("Starting EURUSD-OTC candle scan...")
 
-    telegram(
-        "<b>🤖 Momentum 10 Scanner Started</b>\n"
-        "<b>Mode:</b> PRACTICE\n"
-        "<b>Stake:</b> $1\n"
-        "<b>Expiry:</b> 1 minute\n"
-        "<b>Target:</b> 50 resolved trades\n"
-        "<b>Strategy:</b> Momentum 10 Extreme-Reversal"
-    )
-
-    assets = discover_assets()
-
-    if not assets:
-        print("STOP: No assets discovered.", flush=True)
-        telegram("⚠️ No assets discovered. Scanner stopped.")
-        return
-
-    print("Starting candle scan now...", flush=True)
-
-    telegram(
-        "🟢 <b>Scan starting</b>\n"
-        "<b>Discovered:</b> " + str(len(assets)) + "\n"
-        "Checking candles and looking for valid signals."
-    )
-
-    last_refresh = time.time()
-    last_heartbeat = time.time()
-    candle_count = MOMENTUM_LOOKBACK + MOMENTUM_PERIOD + 5
-    pass_number = 0
-
-    while True:
-        with lock:
-            resolved = completed
-            opened_count = opened
-            pending_count = pending
-
-        if resolved >= TARGET_TRADES and pending_count == 0:
-            break
-
-        if opened_count >= MAX_OPENED_TRADES and pending_count == 0:
-            print("Safety limit reached.", flush=True)
-            break
-
-        if time.time() - last_refresh >= ASSET_REFRESH_SECONDS:
-            refreshed = discover_assets()
-
-            if refreshed:
-                assets = refreshed
-
-            last_refresh = time.time()
-
-        pass_number += 1
-        total = len(assets)
-        checked = 0
-        usable = 0
-        no_candles = 0
-        signal_count = 0
-
-        print(
-            "SCAN PASS:", pass_number,
-            "| Assets:", total,
-            "| Opened:", opened_count,
-            "| Resolved:", resolved,
-            flush=True
+        candles = get_candles(
+            asset_id,
+            MOMENTUM_LOOKBACK + MOMENTUM_PERIOD + 5
         )
 
-        for symbol, active_id in list(assets.items()):
-            with lock:
-                if completed >= TARGET_TRADES:
-                    break
-                if opened >= MAX_OPENED_TRADES:
-                    break
-                if pending >= MAX_PENDING_TRADES:
-                    break
+        if not candles:
+            heartbeat()
+            time.sleep(SCAN_INTERVAL)
+            continue
 
-            checked += 1
+        signal = calculate_signal(candles)
 
-            print(
-                "CHECKING:", checked, "/", total,
-                "|", symbol,
-                flush=True
-            )
+        if signal is None:
+            print("No valid Momentum 10 extreme-reversal signal.")
+        else:
+            direction = signal["direction"]
+            candle_time = signal["candle_time"]
+            key = (asset_name, direction)
 
-            candles = get_candles(symbol, candle_count)
-
-            if len(candles) < candle_count - 2:
-                no_candles += 1
-                continue
-
-            closed = candles[:-1]
-
-            if len(closed) < candle_count - 3:
-                no_candles += 1
-                continue
-
-            usable += 1
-
-            candle_time = closed[-1].get("from", 0)
-
-            if last_signal_candle.get(symbol) == candle_time:
-                continue
-
-            result = analyze(closed)
-
-            if not result or not result["action"]:
-                continue
-
-            action = result["action"]
-            signal_id = (
-                "M10-" + str(int(time.time())) +
-                "-" + str(active_id) + "-" + action
-            )
-
-            with lock:
-                if completed + pending >= TARGET_TRADES:
-                    break
-                if pending >= MAX_PENDING_TRADES:
-                    continue
-
-                last_signal_candle[symbol] = candle_time
-                pending += 1
-
-            signal_count += 1
-
-            print(
-                "SIGNAL:", action,
-                "| Asset:", symbol,
-                "| Momentum:", round(result["current"], 5),
-                "| ID:", signal_id,
-                flush=True
-            )
-
-            telegram(
-                "<b>📊 MOMENTUM 10 SIGNAL</b>\n"
-                "<b>Asset:</b> " + symbol + "\n"
-                "<b>Direction:</b> " + action + "\n"
-                "<b>Stake:</b> $1 PRACTICE\n"
-                "<b>Expiry:</b> 1 minute\n"
-                "<b>Momentum:</b> " +
-                str(round(result["current"], 5)) + "\n"
-                "<b>Signal ID:</b> " + signal_id
-            )
-
-            if not AUTO_TRADE:
-                with lock:
-                    pending = max(0, pending - 1)
-                continue
-
-            try:
-                success, order_id = api.buy(
-                    STAKE,
-                    symbol,
-                    action.lower(),
-                    EXPIRY_MINUTES
-                )
-
-                if not success:
-                    print(
-                        "ORDER REJECTED:", symbol,
-                        "| Check whether this asset supports binary/turbo trading.",
-                        flush=True
-                    )
-
-                    with lock:
-                        pending = max(0, pending - 1)
-
-                    telegram(
-                        "⚠️ <b>Order rejected</b>\n"
-                        "<b>Asset:</b> " + symbol + "\n"
-                        "<b>Signal ID:</b> " + signal_id
-                    )
-                    continue
-
-                with lock:
-                    opened += 1
-                    opened_number = opened
+            if last_signal_candle.get(key) == candle_time:
+                print("Duplicate signal candle skipped.")
+            else:
+                last_signal_candle[key] = candle_time
 
                 print(
-                    "TRADE OPENED:", opened_number,
-                    "|", symbol, "|", action,
-                    "| Order:", order_id,
-                    flush=True
+                    "SIGNAL:", direction.upper(),
+                    "| Momentum:", signal["momentum"],
+                    "| Candle:", candle_time
                 )
 
                 telegram(
-                    "🚀 <b>PRACTICE TRADE OPENED</b>\n"
-                    "<b>Asset:</b> " + symbol + "\n"
-                    "<b>Direction:</b> " + action + "\n"
-                    "<b>Stake:</b> $1\n"
-                    "<b>Opened:</b> " + str(opened_number) + "\n"
-                    "<b>Signal ID:</b> " + signal_id
+                    "Momentum 10 Signal\n"
+                    "Asset: EUR/USD OTC\n"
+                    "Direction: " + direction.upper() + "\n"
+                    "Momentum: " + str(signal["momentum"]) + "\n"
+                    "Mode: PRACTICE"
                 )
 
-                worker = threading.Thread(
-                    target=monitor_trade,
-                    args=(
-                        order_id, signal_id,
-                        symbol, action, result
-                    ),
-                    daemon=True
-                )
-                worker.start()
+                place_trade(direction, signal)
 
-            except Exception as exc:
-                print(
-                    "ORDER ERROR:", symbol,
-                    str(exc)[:200],
-                    flush=True
-                )
-
-                with lock:
-                    pending = max(0, pending - 1)
-
-                telegram(
-                    "❌ <b>Order error</b>\n"
-                    "<b>Asset:</b> " + symbol + "\n"
-                    "<b>Error:</b> " + str(exc)[:250]
-                )
-
-            if time.time() - last_heartbeat >= HEARTBEAT_SECONDS:
-                with lock:
-                    current_opened = opened
-                    current_completed = completed
-                    current_pending = pending
-
-                print(
-                    "HEARTBEAT:",
-                    "| Checked:", checked, "/", total,
-                    "| Usable candles:", usable,
-                    "| No candles:", no_candles,
-                    "| Opened:", current_opened,
-                    "| Resolved:", current_completed,
-                    "| Pending:", current_pending,
-                    flush=True
-                )
-
-                last_heartbeat = time.time()
-
-        print(
-            "PASS SUMMARY:",
-            "| Checked:", checked, "/", total,
-            "| Usable candles:", usable,
-            "| Insufficient candles:", no_candles,
-            "| Signals:", signal_count,
-            flush=True
-        )
-
-        with lock:
-            resolved = completed
-            opened_count = opened
-            pending_count = pending
-
-        if resolved >= TARGET_TRADES and pending_count == 0:
-            break
-
-        if opened_count >= MAX_OPENED_TRADES and pending_count == 0:
-            break
-
+        heartbeat()
         time.sleep(SCAN_INTERVAL)
 
-    with lock:
-        final_wins = wins
-        final_losses = losses
-        final_draws = draws
-        final_completed = completed
-        final_opened = opened
+    with state_lock:
+        total = resolved_trades
+        current_wins = wins
+        current_losses = losses
+        current_draws = draws
+        current_unknown = unknown
 
-    decided = final_wins + final_losses
-    rate = 0.0
-
-    if decided:
-        rate = final_wins * 100.0 / decided
-
-    print(
-        "FINAL:",
-        "| Opened:", final_opened,
-        "| Resolved:", final_completed,
-        "| W/L/D:", final_wins, final_losses, final_draws,
-        "| Win rate:", round(rate, 2), "%",
-        flush=True
+    summary = (
+        "MOMENTUM 10 TEST STOPPED\n"
+        "Resolved trades: " + str(total) + "/" + str(TARGET_TRADES) + "\n"
+        "Wins: " + str(current_wins) + "\n"
+        "Losses: " + str(current_losses) + "\n"
+        "Draws: " + str(current_draws) + "\n"
+        "Unknown results: " + str(current_unknown)
     )
 
-    telegram(
-        "<b>🏁 SCANNER FINISHED</b>\n"
-        "<b>Mode:</b> PRACTICE\n"
-        "<b>Opened:</b> " + str(final_opened) + "\n"
-        "<b>Resolved:</b> " + str(final_completed) + "\n"
-        "<b>Wins:</b> " + str(final_wins) + "\n"
-        "<b>Losses:</b> " + str(final_losses) + "\n"
-        "<b>Draws:</b> " + str(final_draws) + "\n"
-        "<b>Win rate excluding draws:</b> " +
-        str(round(rate, 2)) + "%"
-    )
+    print(summary)
+    telegram(summary)
 
 
 if __name__ == "__main__":
-    run_scanner()
+    try:
+        run_scanner()
+    except KeyboardInterrupt:
+        print("Scanner stopped.")
+    except Exception as exc:
+        print("Fatal scanner error:", exc)
+        telegram("Fatal scanner error: " + str(exc))
+        raise
