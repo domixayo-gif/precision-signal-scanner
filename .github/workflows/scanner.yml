@@ -4,14 +4,14 @@ name: Controlled Momentum 10 Scanner
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */5 * * *"
+    - cron: "*/5 * * * *"
 
 permissions:
   contents: read
 
 concurrency:
   group: momentum-10-scanner
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   scan:
@@ -33,8 +33,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Check Python syntax
-        run: |
-          python -m py_compile scanner.py
+        run: python -m py_compile scanner.py
 
       - name: Run Momentum 10 scanner
         env:
