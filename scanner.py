@@ -837,4 +837,13 @@ if __name__ == "__main__":
         raise
 
 
-if aise
+if __name__ == "__main__":
+    try:
+        run_scanner()
+    except KeyboardInterrupt:
+        print("Scanner stopped by user.")
+        stop_event.set()
+    except Exception as exc:
+        print("Fatal scanner error:", exc)
+        telegram("Fatal scanner error: " + str(exc))
+        raise
