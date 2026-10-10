@@ -142,7 +142,7 @@ def load_state():
         state["unknown"] = 0
         state["resolved"] = 0
 
-        # Keep any unresolved order across the daily reset.
+        # Preserve an unresolved order across the daily reset.
         save_state()
 
 
@@ -391,7 +391,6 @@ def get_candles(active_id, count):
 
         now = time.time()
 
-        # Use completed candles only, with a safety buffer.
         candles = [
             item for item in candles
             if float(item.get("from", 0))
@@ -458,7 +457,6 @@ def calculate_signal(candles):
     last_open = opens[-1]
     last_close = closes[-1]
 
-    # Require both momentum turning and candle confirmation.
     if current <= low_limit and current > previous:
         if last_close > last_open:
             direction = "call"
@@ -499,8 +497,9 @@ def trading_is_allowed():
         if state["resolved"] >= TARGET_TRADES:
             return False, "Resolved trade limit reached."
 
-        if state["active_order"] is not None:
-            return False, "An order is still unresolved."
+        # IMPORTANT:
+        # An unresolved order must pause new entries,
+        # not stop the entire scanner.
 
     return True, ""
 
@@ -534,8 +533,7 @@ def monitor_trade(order):
 
             profit = float(result)
 
-            # Per the test's accounting rule, zero profit on
-            # a $1 binary trade is counted as a $1 loss.
+            # Zero profit is counted as a $1 loss for this test.
             if profit > 0:
                 outcome = "WIN"
                 net_change = profit
@@ -602,10 +600,10 @@ def monitor_trade(order):
             return
 
         except Exception as exc:
-            # Keep the order saved and do not open another order
-            # until its result has been obtained.
             print("Result unresolved; will retry:", exc)
             stop_event.wait(RESULT_RETRY_SECONDS)
+
+    print("Result monitor ended because stop_event was set.")
 
 
 def place_trade(direction, signal):
@@ -629,6 +627,11 @@ def place_trade(direction, signal):
         if not allowed:
             print("Trade skipped:", reason)
             return
+
+        with state_lock:
+            if state["active_order"] is not None:
+                print("Trade skipped: previous order is unresolved.")
+                return
 
         if api is None or not api.check_connect():
             print("Disconnected. Trade skipped.")
@@ -673,10 +676,12 @@ def place_trade(direction, signal):
             "Order ID: " + str(order_id)
         )
 
+        # The main scanner stays alive while this monitor
+        # waits for the result.
         thread = threading.Thread(
             target=monitor_trade,
             args=(order,),
-            daemon=True
+            daemon=False
         )
         thread.start()
 
@@ -714,24 +719,26 @@ def run_scanner():
 
     load_state()
 
-    # Resume monitoring a previously saved order before scanning.
     with state_lock:
         saved_order = state["active_order"]
-
-    if not connect_iq():
-        print("Initial connection failed; retrying.")
 
     while not stop_event.is_set():
         if api is None or not api.check_connect():
             if not connect_iq():
+                print("Connection unavailable; retrying.")
                 stop_event.wait(RECONNECT_SECONDS)
                 continue
 
         if saved_order is not None:
+            print(
+                "Resuming saved order monitoring:",
+                saved_order["order_id"]
+            )
+
             thread = threading.Thread(
                 target=monitor_trade,
                 args=(saved_order,),
-                daemon=True
+                daemon=False
             )
             thread.start()
             saved_order = None
@@ -743,10 +750,10 @@ def run_scanner():
             telegram("SCANNER STOPPED\n" + reason)
             break
 
-        # Never place a second trade while one is unresolved.
         with state_lock:
             active = state["active_order"]
 
+        # Wait for the open order to settle. Do not exit.
         if active is not None:
             heartbeat()
             stop_event.wait(SCAN_INTERVAL)
@@ -828,3 +835,6 @@ if __name__ == "__main__":
         print("Fatal scanner error:", exc)
         telegram("Fatal scanner error: " + str(exc))
         raise
+
+
+if aise
