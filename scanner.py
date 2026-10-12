@@ -783,20 +783,79 @@ def run_scanner():
 
         allowed, reason = trading_is_allowed()
 
-        if not allowed:
-            print("Trading stopped:", reason)
-            telegram("SCANNER STOPPED\n" + reason)
-            break
-
-        with state_lock:
-            active = state["active_order"]
-
-        if active is not None:
-            heartbeat()
-            stop_event.wait(SCAN_INTERVAL)
+        
+        if not asset_ids:
+            print("No verified pairs. Retrying.")
+            stop_event.wait(RECONNECT_SECONDS)
             continue
 
-        if not asset_ids:
-            discover_assets()
+        for asset in list(asset_ids.keys()):
+            if stop_event.is_set():
+                break
 
-        if not
+            allowed, reason = trading_is_allowed()
+
+            if not allowed:
+                print("Trading stopped:", reason)
+                telegram("SCANNER STOPPED\n" + reason)
+                return
+
+            with state_lock:
+                if state["active_order"] is not None:
+                    break
+
+            active_id = asset_ids.get(asset)
+
+            if active_id is None:
+                continue
+
+            candles = get_candles(
+                active_id,
+                MOMENTUM_LOOKBACK + MOMENTUM_PERIOD + 5
+            )
+
+            if not candles:
+                print(asset, "| no usable candles.")
+                continue
+
+            signal = calculate_signal(candles)
+
+            if signal is None:
+                print(asset, "| no confirmed reversal signal.")
+                continue
+
+            candle_time = signal["candle_time"]
+
+            with state_lock:
+                last_seen = state["last_signal_candle"].get(asset, 0)
+                duplicate = last_seen == candle_time
+
+                if not duplicate:
+                    state["last_signal_candle"][asset] = candle_time
+                    save_state()
+
+            if duplicate:
+                print(asset, "| duplicate signal skipped.")
+                continue
+
+            print(
+                "SIGNAL:", asset,
+                signal["direction"].upper(),
+                "| Momentum:", signal["momentum"]
+            )
+
+            telegram(
+                "Momentum 10 Signal\n"
+                "Asset: " + asset + "\n"
+                "Direction: " + signal["direction"].upper() + "\n"
+                "Momentum: " + str(signal["momentum"])
+            )
+
+            place_trade(asset, signal["direction"], signal)
+
+            with state_lock:
+                if state["active_order"] is not None:
+                    break
+
+        heartbeat()
+        stop_event.wait(SCAN_INTERVAL)
