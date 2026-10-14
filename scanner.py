@@ -1,4 +1,4 @@
-qimport os
+import os
 import csv
 import json
 import time
