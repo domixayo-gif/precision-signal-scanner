@@ -22,8 +22,9 @@ AUTO_TRADE = True
 BALANCE_MODE = "PRACTICE"
 STAKE = 1.0
 TARGET_TRADES = 50
-DAILY_PROFIT_TARGET = 20.0
-DAILY_LOSS_LIMIT = 10.0
+DAILY_PROFIT_TARGET = 30.0
+DAILY_LOSS_LIMIT = 20.0
+MAX_GROUP_TRADES = 3
 SCAN_INTERVAL = 5
 HEARTBEAT_SECONDS = 300
 RECONNECT_SECONDS = 30
@@ -77,6 +78,10 @@ def new_state():
         "trades": 0,
         "wins": 0,
         "losses": 0,
+        "group_wins": 0,
+        "group_losses": 0,
+        "group_active": False,
+        "group_attempts": 0,
         "net_profit": 0.0
     }
 
@@ -359,8 +364,21 @@ def place_trade(direction, state, asset):
     if not trading_allowed(state):
         return
 
-    log("Signal confirmed: " + direction.upper() + " | Asset: " + asset + " | Stake: $" + format(STAKE, ".2f"))
-    telegram("Crypto signal confirmed: " + asset + "\nDirection: " + direction.upper() + "\nStake: $" + format(STAKE, ".2f") + "\nExpiry: 1 minute")
+    attempt_number = int(state.get("group_attempts", 0)) + 1
+    log(
+        "Signal confirmed: " + direction.upper()
+        + " | Asset: " + asset
+        + " | Stake: $" + format(STAKE, ".2f")
+        + " | Group attempt: " + str(attempt_number)
+        + "/" + str(MAX_GROUP_TRADES)
+    )
+    telegram(
+        "Crypto signal confirmed: " + asset
+        + "\nDirection: " + direction.upper()
+        + "\nStake: $" + format(STAKE, ".2f")
+        + "\nExpiry: 1 minute"
+        + "\nGroup attempt: " + str(attempt_number) + "/" + str(MAX_GROUP_TRADES)
+    )
 
     try:
         accepted, order_id = api.buy(STAKE, asset, direction, EXPIRY_MINUTES)
@@ -372,6 +390,11 @@ def place_trade(direction, state, asset):
         return
 
     state["trades"] += 1
+    if not state.get("group_active", False):
+        state["group_active"] = True
+        state["group_attempts"] = 0
+    state["group_attempts"] += 1
+    current_attempt = state["group_attempts"]
     save_state(state)
     log("Order accepted. ID: " + str(order_id))
 
@@ -411,16 +434,45 @@ def place_trade(direction, state, asset):
         profit = result
         state["wins"] += 1
         outcome = "WIN"
+        state["group_wins"] += 1
+        state["group_active"] = False
+        state["group_attempts"] = 0
+        group_message = "GROUP WIN: a trade won, so no replacement is needed."
     else:
         profit = -STAKE if result == 0 else result
         state["losses"] += 1
         outcome = "LOSS"
+        if current_attempt >= MAX_GROUP_TRADES:
+            state["group_losses"] += 1
+            state["group_active"] = False
+            state["group_attempts"] = 0
+            group_message = "GROUP LOSS: all " + str(MAX_GROUP_TRADES) + " attempts lost."
+        else:
+            state["group_active"] = True
+            group_message = (
+                "Replacement allowed after the next valid signal. Group attempt "
+                + str(current_attempt) + "/" + str(MAX_GROUP_TRADES) + " lost."
+            )
 
     state["net_profit"] = round(state["net_profit"] + profit, 2)
     save_state(state)
-    log(outcome + " | Asset: " + asset + " | Result: " + format(result, ".2f") + " | Counted P/L: " + format(profit, ".2f") + " | Daily P/L: " + format(state["net_profit"], ".2f"))
+    log(
+        outcome + " | Asset: " + asset
+        + " | Result: " + format(result, ".2f")
+        + " | Counted P/L: " + format(profit, ".2f")
+        + " | Daily P/L: " + format(state["net_profit"], ".2f")
+    )
+    log(group_message)
     write_csv([datetime.now(LAGOS).isoformat(), asset, direction, order_id, outcome, round(profit, 2)])
-    telegram("Crypto trade " + outcome + "\nAsset: " + asset + "\nCounted P/L: $" + format(profit, ".2f") + "\nDaily P/L: $" + format(state["net_profit"], ".2f") )
+    telegram(
+        "Crypto trade " + outcome
+        + "\nAsset: " + asset
+        + "\nCounted P/L: $" + format(profit, ".2f")
+        + "\nDaily P/L: $" + format(state["net_profit"], ".2f")
+        + "\n" + group_message
+        + "\nGroup wins: " + str(state["group_wins"])
+        + " | Group losses: " + str(state["group_losses"])
+    )
 
 
 # ==================== MAIN SCANNER ====================
@@ -435,8 +487,15 @@ def run_scanner():
     log("Trade cap: " + str(TARGET_TRADES))
     log("Profit target: $" + format(DAILY_PROFIT_TARGET, ".2f"))
     log("Loss limit: $" + format(DAILY_LOSS_LIMIT, ".2f"))
+    log("Group rule: stop after a win; replace losses on the next valid signal, up to 3 attempts")
     log("Discovery: binary/turbo only; no forex fallback")
-    telegram("Crypto Momentum 10 scanner starting.\nMode: " + BALANCE_MODE + "\nStake: $" + format(STAKE, ".2f"))
+    telegram(
+        "Crypto Momentum 10 scanner starting.\n"
+        + "Mode: " + BALANCE_MODE
+        + "\nStake: $" + format(STAKE, ".2f")
+        + "\nProfit target: $" + format(DAILY_PROFIT_TARGET, ".2f")
+        + "\nLoss limit: $" + format(DAILY_LOSS_LIMIT, ".2f")
+    )
 
     while True:
         try:
@@ -491,7 +550,15 @@ def run_scanner():
 
             now = time.time()
             if now - last_heartbeat >= HEARTBEAT_SECONDS:
-                log("HEARTBEAT | Trades: " + str(state["trades"]) + " | Wins: " + str(state["wins"]) + " | Losses: " + str(state["losses"]) + " | Daily P/L: $" + format(state["net_profit"], ".2f") + " | Crypto assets: " + str(len(crypto_assets)))
+                log(
+                    "HEARTBEAT | Trades: " + str(state["trades"])
+                    + " | Trade wins: " + str(state["wins"])
+                    + " | Trade losses: " + str(state["losses"])
+                    + " | Group wins: " + str(state["group_wins"])
+                    + " | Group losses: " + str(state["group_losses"])
+                    + " | Daily P/L: $" + format(state["net_profit"], ".2f")
+                    + " | Crypto assets: " + str(len(crypto_assets))
+                )
                 last_heartbeat = now
             time.sleep(SCAN_INTERVAL)
 
