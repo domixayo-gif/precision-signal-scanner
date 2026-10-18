@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 from iqoptionapi.stable_api import IQ_Option
+import iqoptionapi.constants as OP_code
 
 # ==================== SETTINGS ====================
 MOMENTUM_PERIOD = 10
@@ -38,6 +39,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 api = None
 crypto_assets = []
+crypto_active_ids = {}
 last_heartbeat = 0
 last_signal_candles = {}
 
@@ -125,8 +127,9 @@ def is_crypto_name(name):
 
 def discover_asset():
     """Read only binary/turbo initialization data; never call get_all_open_time()."""
-    global crypto_assets
+    global crypto_assets, crypto_active_ids
     crypto_assets = []
+    crypto_active_ids = {}
 
     if api is None:
         log("Crypto discovery skipped: API is not connected.")
@@ -159,7 +162,7 @@ def discover_asset():
         if not isinstance(actives, dict):
             continue
 
-        for details in actives.values():
+        for active_id, details in actives.items():
             if not isinstance(details, dict):
                 continue
             if details.get("enabled") is not True:
@@ -170,7 +173,14 @@ def discover_asset():
             raw_name = details.get("name", "")
             asset_name = normalize_asset_name(raw_name)
             if asset_name and is_crypto_name(asset_name):
+                try:
+                    numeric_active_id = int(active_id)
+                except (TypeError, ValueError):
+                    continue
                 found.add(asset_name)
+                crypto_active_ids[asset_name] = numeric_active_id
+                # stable_api.get_candles() requires a symbol-to-active-ID entry.
+                OP_code.ACTIVES[asset_name] = numeric_active_id
 
     crypto_assets = sorted(found)
     log("Open crypto option assets found: " + str(len(crypto_assets)))
@@ -184,9 +194,10 @@ def discover_asset():
 
 # ==================== CONNECTION ====================
 def connect_iq():
-    global api, crypto_assets
+    global api, crypto_assets, crypto_active_ids
     api = None
     crypto_assets = []
+    crypto_active_ids = {}
 
     if not EMAIL or not PASSWORD:
         log("Missing IQ_EMAIL or IQ_PASSWORD secret.")
