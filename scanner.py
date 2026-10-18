@@ -382,7 +382,22 @@ def place_trade(direction, state, asset):
                 log("Trade result pending; waiting.")
                 time.sleep(RESULT_RETRY_SECONDS)
                 continue
-            result = float(result)
+            # iqoptionapi 7.1.1 returns (status, profit), not a bare number.
+            if isinstance(result, (tuple, list)):
+                if len(result) < 2:
+                    log("Unexpected trade result format: " + repr(result))
+                    time.sleep(RESULT_RETRY_SECONDS)
+                    continue
+                result_status = str(result[0]).lower()
+                profit_value = result[1]
+                if profit_value is None:
+                    log("Trade result not finalized yet: " + result_status)
+                    time.sleep(RESULT_RETRY_SECONDS)
+                    continue
+                result = float(profit_value)
+                log("Broker result status: " + result_status)
+            else:
+                result = float(result)
             break
         except Exception as exc:
             log("Result check failed: " + str(exc))
