@@ -441,12 +441,60 @@ def calculate_signal(candles, asset):
     candle_open = float(current_candle["open"])
     candle_close = float(current_candle["close"])
     turn = current_momentum - previous_momentum
-    signal = None
 
-    if previous_momentum <= low_limit and turn >= MIN_TURN_DISTANCE and candle_close > candle_open:
+    previous_candle = candles[-2]
+    try:
+        previous_high = float(
+            previous_candle.get("max", previous_candle.get("high", closes[-2]))
+        )
+        previous_low = float(
+            previous_candle.get("min", previous_candle.get("low", closes[-2]))
+        )
+    except (TypeError, ValueError):
+        log("Previous candle high/low unavailable for " + asset + "; signal blocked.")
+        last_signal_candles[asset] = candle_id
+        return None
+
+    # An extreme is only a setup. Require price to break the previous
+    # completed candle's high/low before entering in the reversal direction.
+    call_momentum_setup = (
+        previous_momentum <= low_limit
+        and turn >= MIN_TURN_DISTANCE
+        and candle_close > candle_open
+    )
+    put_momentum_setup = (
+        previous_momentum >= high_limit
+        and turn <= -MIN_TURN_DISTANCE
+        and candle_close < candle_open
+    )
+
+    signal = None
+    if call_momentum_setup and candle_close > previous_high:
         signal = "call"
-    elif previous_momentum >= high_limit and turn <= -MIN_TURN_DISTANCE and candle_close < candle_open:
+        log(
+            "PRICE CONFIRMATION | " + asset
+            + " | CALL close broke previous candle high."
+        )
+    elif put_momentum_setup and candle_close < previous_low:
         signal = "put"
+        log(
+            "PRICE CONFIRMATION | " + asset
+            + " | PUT close broke previous candle low."
+        )
+    elif call_momentum_setup:
+        log(
+            "REVERSAL WAIT | " + asset
+            + " | CALL setup detected, but close did not break previous candle high."
+        )
+        last_signal_candles[asset] = candle_id
+        return None
+    elif put_momentum_setup:
+        log(
+            "REVERSAL WAIT | " + asset
+            + " | PUT setup detected, but close did not break previous candle low."
+        )
+        last_signal_candles[asset] = candle_id
+        return None
 
     if signal is None:
         return None
@@ -658,7 +706,7 @@ def run_scanner():
     log("Trade cap: " + str(TARGET_TRADES))
     log("Profit target: $" + format(DAILY_PROFIT_TARGET, ".2f"))
     log("Losing group stop: " + str(MAX_LOSING_GROUPS))
-    log("Recovery: same pair and direction, stakes $1, $2, $4; no new signal needed after a loss")
+    log("Recovery: same pair/direction, stakes $1/$2/$4, but each recovery waits for a fresh confirmed reversal signal.")
     log("ADX filter: period " + str(ADX_PERIOD) + ", opposing-trend block at ADX >= " + str(ADX_TREND_THRESHOLD))
     log("Discovery: binary/turbo only; no forex fallback")
     telegram(
@@ -723,17 +771,43 @@ def run_scanner():
                         time.sleep(1)
                         continue
                     log(
-                        "GROUP LOCK: immediate same-pair recovery " + locked_asset
-                        + " " + locked_direction.upper()
-                        + " | Next attempt " + str(int(state.get("group_attempts", 0)) + 1)
+                        "GROUP LOCK: waiting for fresh reversal confirmation on "
+                        + locked_asset + " " + locked_direction.upper()
+                        + " | Next attempt "
+                        + str(int(state.get("group_attempts", 0)) + 1)
                         + "/" + str(MAX_GROUP_TRADES)
                     )
-                    trades_before = state["trades"]
-                    place_trade(locked_direction, state, locked_asset)
-                    if state.get("group_active", False):
-                        # A completed loss retries immediately; a rejected order waits briefly.
-                        if state["trades"] == trades_before:
-                            time.sleep(1)
+                    recovery_candles = get_candles(locked_asset)
+                    recovery_signal = None
+                    if recovery_candles:
+                        recovery_signal = calculate_signal(
+                            recovery_candles, locked_asset
+                        )
+
+                    if recovery_signal == locked_direction:
+                        log(
+                            "RECOVERY CONFIRMED: fresh " + locked_direction.upper()
+                            + " setup on " + locked_asset
+                        )
+                        trades_before = state["trades"]
+                        place_trade(locked_direction, state, locked_asset)
+                        if state.get("group_active", False):
+                            if state["trades"] == trades_before:
+                                time.sleep(1)
+                            continue
+                    else:
+                        if recovery_signal and recovery_signal != locked_direction:
+                            log(
+                                "RECOVERY WAIT: opposite signal on " + locked_asset
+                                + "; no trade placed."
+                            )
+                        else:
+                            log(
+                                "RECOVERY WAIT: no fresh confirmed "
+                                + locked_direction.upper()
+                                + " setup on " + locked_asset + "."
+                            )
+                        time.sleep(SCAN_INTERVAL)
                         continue
                 else:
                     log("No active recovery group; returning to normal scanning.")
@@ -770,8 +844,8 @@ def run_scanner():
                         if AUTO_TRADE:
                             break
 
-                # If a first/second attempt lost, the next loop immediately recovers
-                # on the locked pair and direction instead of scanning a new pair.
+                # After a loss, recovery stays locked to the original pair/direction,
+                # but waits for a fresh confirmed signal instead of entering blindly.
                 if state.get("group_active", False):
                     continue
 
