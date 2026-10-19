@@ -11,24 +11,27 @@ from iqoptionapi.stable_api import IQ_Option
 import iqoptionapi.constants as OP_code
 
 # ==================== SETTINGS ====================
-MOMENTUM_PERIOD = 10
+MOMENTUM_PERIOD = 20
 MOMENTUM_LOOKBACK = 50
-EXTREME_PERCENTILE = 0.08
-MIN_TURN_DISTANCE = 0.06
+EXTREME_PERCENTILE = 0.07
+MIN_TURN_DISTANCE = 0.07
 CANDLE_SECONDS = 60
 EXPIRY_MINUTES = 1
 CANDLE_COUNT = 80
+ADX_PERIOD = 14
+ADX_TREND_THRESHOLD = 25.0
 AUTO_TRADE = True
 BALANCE_MODE = "PRACTICE"
 STAKE = 1.0
 TARGET_TRADES = 50
-DAILY_PROFIT_TARGET = 30.0
-DAILY_LOSS_LIMIT = 20.0
+DAILY_PROFIT_TARGET = 35.0
+MAX_LOSING_GROUPS = 20
 MAX_GROUP_TRADES = 3
+RECOVERY_STAKES = [1.0, 2.0, 4.0]
 SCAN_INTERVAL = 5
 HEARTBEAT_SECONDS = 300
 RECONNECT_SECONDS = 30
-RESULT_RETRY_SECONDS = 5
+RESULT_RETRY_SECONDS = 1
 CANDLE_TIMEOUT = 15
 LOG_FILE = "momentum_signal_log.csv"
 STATE_FILE = "momentum_state.json"
@@ -82,6 +85,8 @@ def new_state():
         "group_losses": 0,
         "group_active": False,
         "group_attempts": 0,
+        "group_asset": "",
+        "group_direction": "",
         "net_profit": 0.0
     }
 
@@ -114,6 +119,20 @@ def write_csv(row):
         if not exists:
             writer.writerow(["time", "asset", "direction", "order_id", "outcome", "profit"])
         writer.writerow(row)
+
+
+def last_logged_losing_trade():
+    try:
+        with open(LOG_FILE, "r", newline="", encoding="utf-8") as file:
+            rows = list(csv.DictReader(file))
+        if not rows:
+            return "", ""
+        latest = rows[-1]
+        if str(latest.get("outcome", "")).upper() == "LOSS":
+            return str(latest.get("asset", "")), str(latest.get("direction", "")).lower()
+    except (OSError, csv.Error):
+        pass
+    return "", ""
 
 
 # ==================== CRYPTO-ONLY DISCOVERY ====================
@@ -288,6 +307,103 @@ def percentile(values, fraction):
     return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
 
+def calculate_adx_di(candles, period=ADX_PERIOD):
+    """Return ADX, +DI and -DI from completed OHLC candles using Wilder smoothing."""
+    if len(candles) < (period * 2) + 2:
+        return None
+
+    try:
+        highs = [float(candle["max"]) if "max" in candle else float(candle["high"]) for candle in candles]
+        lows = [float(candle["min"]) if "min" in candle else float(candle["low"]) for candle in candles]
+        closes = [float(candle["close"]) for candle in candles]
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    true_ranges = []
+    plus_moves = []
+    minus_moves = []
+    for index in range(1, len(candles)):
+        high = highs[index]
+        low = lows[index]
+        previous_close = closes[index - 1]
+        true_range = max(
+            high - low,
+            abs(high - previous_close),
+            abs(low - previous_close)
+        )
+        up_move = high - highs[index - 1]
+        down_move = lows[index - 1] - low
+        plus_move = up_move if up_move > down_move and up_move > 0 else 0.0
+        minus_move = down_move if down_move > up_move and down_move > 0 else 0.0
+        true_ranges.append(true_range)
+        plus_moves.append(plus_move)
+        minus_moves.append(minus_move)
+
+    if len(true_ranges) < period * 2:
+        return None
+
+    smoothed_tr = sum(true_ranges[:period])
+    smoothed_plus = sum(plus_moves[:period])
+    smoothed_minus = sum(minus_moves[:period])
+    dx_values = []
+
+    for index in range(period - 1, len(true_ranges)):
+        if index >= period:
+            smoothed_tr = smoothed_tr - (smoothed_tr / period) + true_ranges[index]
+            smoothed_plus = smoothed_plus - (smoothed_plus / period) + plus_moves[index]
+            smoothed_minus = smoothed_minus - (smoothed_minus / period) + minus_moves[index]
+
+        if smoothed_tr <= 0:
+            plus_di = 0.0
+            minus_di = 0.0
+        else:
+            plus_di = 100.0 * smoothed_plus / smoothed_tr
+            minus_di = 100.0 * smoothed_minus / smoothed_tr
+
+        di_total = plus_di + minus_di
+        if di_total <= 0:
+            dx = 0.0
+        else:
+            dx = 100.0 * abs(plus_di - minus_di) / di_total
+        dx_values.append((dx, plus_di, minus_di))
+
+    if len(dx_values) < period:
+        return None
+
+    adx = sum(item[0] for item in dx_values[:period]) / period
+    for item in dx_values[period:]:
+        adx = ((adx * (period - 1)) + item[0]) / period
+
+    latest_plus_di = dx_values[-1][1]
+    latest_minus_di = dx_values[-1][2]
+    return adx, latest_plus_di, latest_minus_di
+
+
+def apply_adx_filter(direction, candles, asset):
+    """Block only reversal signals that oppose a strong ADX-confirmed trend."""
+    values = calculate_adx_di(candles, ADX_PERIOD)
+    if values is None:
+        log("ADX filter unavailable for " + asset + "; signal blocked for safety.")
+        return False
+
+    adx, plus_di, minus_di = values
+    log(
+        "ADX FILTER | " + asset
+        + " | ADX(" + str(ADX_PERIOD) + ")=" + format(adx, ".2f")
+        + " | +DI=" + format(plus_di, ".2f")
+        + " | -DI=" + format(minus_di, ".2f")
+    )
+
+    if adx >= ADX_TREND_THRESHOLD:
+        if direction == "put" and plus_di > minus_di:
+            log("ADX BLOCK: PUT rejected against strong upward trend on " + asset)
+            return False
+        if direction == "call" and minus_di > plus_di:
+            log("ADX BLOCK: CALL rejected against strong downward trend on " + asset)
+            return False
+    return True
+
+
 def calculate_signal(candles, asset):
     if len(candles) < MOMENTUM_LOOKBACK + MOMENTUM_PERIOD + 2:
         return None
@@ -325,26 +441,34 @@ def calculate_signal(candles, asset):
     candle_open = float(current_candle["open"])
     candle_close = float(current_candle["close"])
     turn = current_momentum - previous_momentum
+    signal = None
 
     if previous_momentum <= low_limit and turn >= MIN_TURN_DISTANCE and candle_close > candle_open:
+        signal = "call"
+    elif previous_momentum >= high_limit and turn <= -MIN_TURN_DISTANCE and candle_close < candle_open:
+        signal = "put"
+
+    if signal is None:
+        return None
+
+    if not apply_adx_filter(signal, candles, asset):
         last_signal_candles[asset] = candle_id
-        return "call"
-    if previous_momentum >= high_limit and turn <= -MIN_TURN_DISTANCE and candle_close < candle_open:
-        last_signal_candles[asset] = candle_id
-        return "put"
-    return None
+        return None
+
+    last_signal_candles[asset] = candle_id
+    return signal
 
 
 # ==================== RISK CONTROLS ====================
 def trading_allowed(state):
     if state["trades"] >= TARGET_TRADES:
-        log("Trade limit reached.")
+        log("Individual trade limit reached.")
+        return False
+    if state["group_losses"] >= MAX_LOSING_GROUPS:
+        log("Maximum losing groups reached: " + str(MAX_LOSING_GROUPS))
         return False
     if state["net_profit"] >= DAILY_PROFIT_TARGET:
         log("Daily profit target reached.")
-        return False
-    if state["net_profit"] <= -DAILY_LOSS_LIMIT:
-        log("Daily loss limit reached.")
         return False
     return True
 
@@ -364,37 +488,70 @@ def place_trade(direction, state, asset):
     if not trading_allowed(state):
         return
 
+    active_group = bool(state.get("group_active", False))
+    if active_group:
+        locked_asset = str(state.get("group_asset", ""))
+        locked_direction = str(state.get("group_direction", "")).lower()
+        if locked_asset != asset or locked_direction != direction.lower():
+            log("SAFETY BLOCK: recovery must use the original pair and direction.")
+            return
+
     attempt_number = int(state.get("group_attempts", 0)) + 1
+    if attempt_number > MAX_GROUP_TRADES:
+        log("Recovery group already reached its attempt limit.")
+        state["group_active"] = False
+        state["group_attempts"] = 0
+        state["group_asset"] = ""
+        state["group_direction"] = ""
+        save_state(state)
+        return
+
+    stake = RECOVERY_STAKES[attempt_number - 1]
+    if not active_group:
+        state["group_active"] = True
+        state["group_attempts"] = 0
+        state["group_asset"] = asset
+        state["group_direction"] = direction.lower()
+        save_state(state)
+
     log(
-        "Signal confirmed: " + direction.upper()
+        "Signal/recovery trade: " + direction.upper()
         + " | Asset: " + asset
-        + " | Stake: $" + format(STAKE, ".2f")
+        + " | Stake: $" + format(stake, ".2f")
         + " | Group attempt: " + str(attempt_number)
         + "/" + str(MAX_GROUP_TRADES)
     )
     telegram(
-        "Crypto signal confirmed: " + asset
+        "Crypto trade: " + asset
         + "\nDirection: " + direction.upper()
-        + "\nStake: $" + format(STAKE, ".2f")
-        + "\nExpiry: 1 minute"
+        + "\nStake: $" + format(stake, ".2f")
         + "\nGroup attempt: " + str(attempt_number) + "/" + str(MAX_GROUP_TRADES)
+        + "\nExpiry: 1 minute"
     )
 
     try:
-        accepted, order_id = api.buy(STAKE, asset, direction, EXPIRY_MINUTES)
+        accepted, order_id = api.buy(stake, asset, direction, EXPIRY_MINUTES)
     except Exception as exc:
         log("Order submission error: " + str(exc))
+        if not active_group:
+            state["group_active"] = False
+            state["group_attempts"] = 0
+            state["group_asset"] = ""
+            state["group_direction"] = ""
+            save_state(state)
         return
     if not accepted or not order_id:
         log("Broker did not accept order for " + asset)
+        if not active_group:
+            state["group_active"] = False
+            state["group_attempts"] = 0
+            state["group_asset"] = ""
+            state["group_direction"] = ""
+            save_state(state)
         return
 
     state["trades"] += 1
-    if not state.get("group_active", False):
-        state["group_active"] = True
-        state["group_attempts"] = 0
-    state["group_attempts"] += 1
-    current_attempt = state["group_attempts"]
+    state["group_attempts"] = attempt_number
     save_state(state)
     log("Order accepted. ID: " + str(order_id))
 
@@ -402,7 +559,7 @@ def place_trade(direction, state, asset):
         try:
             result = api.check_win_v4(order_id)
             if result is None:
-                log("Trade result pending; waiting.")
+                log("Trade result pending; checking again shortly.")
                 time.sleep(RESULT_RETRY_SECONDS)
                 continue
             # iqoptionapi 7.1.1 returns (status, profit), not a bare number.
@@ -433,40 +590,54 @@ def place_trade(direction, state, asset):
     if result > 0:
         profit = result
         state["wins"] += 1
-        outcome = "WIN"
         state["group_wins"] += 1
+        outcome = "WIN"
+        group_message = "GROUP WIN: sequence ended; no replacement trade."
         state["group_active"] = False
         state["group_attempts"] = 0
-        group_message = "GROUP WIN: a trade won, so no replacement is needed."
+        state["group_asset"] = ""
+        state["group_direction"] = ""
     else:
-        profit = -STAKE if result == 0 else result
+        profit = -stake if result == 0 else result
         state["losses"] += 1
         outcome = "LOSS"
-        if current_attempt >= MAX_GROUP_TRADES:
+        if attempt_number >= MAX_GROUP_TRADES:
             state["group_losses"] += 1
             state["group_active"] = False
             state["group_attempts"] = 0
-            group_message = "GROUP LOSS: all " + str(MAX_GROUP_TRADES) + " attempts lost."
+            state["group_asset"] = ""
+            state["group_direction"] = ""
+            group_message = (
+                "GROUP LOSS: all " + str(MAX_GROUP_TRADES)
+                + " attempts lost. Total group stakes: $7.00. Moving to another pair."
+            )
         else:
             state["group_active"] = True
+            state["group_asset"] = asset
+            state["group_direction"] = direction.lower()
             group_message = (
-                "Replacement allowed after the next valid signal. Group attempt "
-                + str(current_attempt) + "/" + str(MAX_GROUP_TRADES) + " lost."
+                "LOSS: immediate recovery next on SAME pair and SAME direction: "
+                + asset + " " + direction.upper()
+                + " | Next stake: $" + format(RECOVERY_STAKES[attempt_number], ".2f")
             )
 
     state["net_profit"] = round(state["net_profit"] + profit, 2)
     save_state(state)
     log(
         outcome + " | Asset: " + asset
+        + " | Direction: " + direction.upper()
+        + " | Stake: $" + format(stake, ".2f")
         + " | Result: " + format(result, ".2f")
         + " | Counted P/L: " + format(profit, ".2f")
-        + " | Daily P/L: " + format(state["net_profit"], ".2f")
+        + " | Daily P/L: $" + format(state["net_profit"], ".2f")
     )
     log(group_message)
     write_csv([datetime.now(LAGOS).isoformat(), asset, direction, order_id, outcome, round(profit, 2)])
     telegram(
         "Crypto trade " + outcome
         + "\nAsset: " + asset
+        + "\nDirection: " + direction.upper()
+        + "\nStake: $" + format(stake, ".2f")
         + "\nCounted P/L: $" + format(profit, ".2f")
         + "\nDaily P/L: $" + format(state["net_profit"], ".2f")
         + "\n" + group_message
@@ -486,15 +657,16 @@ def run_scanner():
     log("Expiry: " + str(EXPIRY_MINUTES) + " minute")
     log("Trade cap: " + str(TARGET_TRADES))
     log("Profit target: $" + format(DAILY_PROFIT_TARGET, ".2f"))
-    log("Loss limit: $" + format(DAILY_LOSS_LIMIT, ".2f"))
-    log("Group rule: stop after a win; replace losses on the next valid signal, up to 3 attempts")
+    log("Losing group stop: " + str(MAX_LOSING_GROUPS))
+    log("Recovery: same pair and direction, stakes $1, $2, $4; no new signal needed after a loss")
+    log("ADX filter: period " + str(ADX_PERIOD) + ", opposing-trend block at ADX >= " + str(ADX_TREND_THRESHOLD))
     log("Discovery: binary/turbo only; no forex fallback")
     telegram(
         "Crypto Momentum 10 scanner starting.\n"
         + "Mode: " + BALANCE_MODE
         + "\nStake: $" + format(STAKE, ".2f")
         + "\nProfit target: $" + format(DAILY_PROFIT_TARGET, ".2f")
-        + "\nLoss limit: $" + format(DAILY_LOSS_LIMIT, ".2f")
+        + "\nMaximum losing groups: " + str(MAX_LOSING_GROUPS)
     )
 
     while True:
@@ -526,27 +698,82 @@ def run_scanner():
                 time.sleep(RECONNECT_SECONDS)
                 continue
 
-            log("Scanning " + str(len(assets)) + " confirmed crypto assets.")
-            for asset in assets:
-                if not trading_allowed(state):
-                    break
-                if not is_crypto_name(asset):
-                    log("SAFETY BLOCK: skipped non-crypto asset " + str(asset))
+            if state.get("group_active", False):
+                locked_asset = str(state.get("group_asset", ""))
+                locked_direction = str(state.get("group_direction", "")).lower()
+                if not locked_asset or locked_direction not in ("call", "put"):
+                    recovered_asset, recovered_direction = last_logged_losing_trade()
+                    if recovered_asset and is_crypto_name(recovered_asset) and recovered_direction in ("call", "put"):
+                        locked_asset = recovered_asset
+                        locked_direction = recovered_direction
+                        state["group_asset"] = locked_asset
+                        state["group_direction"] = locked_direction
+                        save_state(state)
+                        log("Recovered unfinished group: " + locked_asset + " " + locked_direction.upper())
+                    else:
+                        log("Cannot safely recover unfinished group; resetting it.")
+                        state["group_active"] = False
+                        state["group_attempts"] = 0
+                        state["group_asset"] = ""
+                        state["group_direction"] = ""
+                        save_state(state)
+                if state.get("group_active", False):
+                    if locked_asset not in crypto_assets:
+                        log("GROUP LOCK: waiting for original pair " + locked_asset + "; other pairs blocked.")
+                        time.sleep(1)
+                        continue
+                    log(
+                        "GROUP LOCK: immediate same-pair recovery " + locked_asset
+                        + " " + locked_direction.upper()
+                        + " | Next attempt " + str(int(state.get("group_attempts", 0)) + 1)
+                        + "/" + str(MAX_GROUP_TRADES)
+                    )
+                    trades_before = state["trades"]
+                    place_trade(locked_direction, state, locked_asset)
+                    if state.get("group_active", False):
+                        # A completed loss retries immediately; a rejected order waits briefly.
+                        if state["trades"] == trades_before:
+                            time.sleep(1)
+                        continue
+                else:
+                    log("No active recovery group; returning to normal scanning.")
+
+            if not state.get("group_active", False):
+                assets = list(crypto_assets)
+                if not assets:
+                    log("Crypto list empty; retrying discovery.")
+                    assets = discover_asset()
+                if not assets:
+                    log("No confirmed crypto assets. No trade will be placed.")
+                    time.sleep(RECONNECT_SECONDS)
                     continue
-                if api is None or not api.check_connect():
-                    log("Connection lost. Reconnecting.")
-                    if not connect_iq():
+
+                log("Scanning " + str(len(assets)) + " confirmed crypto assets.")
+                for asset in assets:
+                    if not trading_allowed(state):
                         break
-                    break
-                candles = get_candles(asset)
-                if not candles:
+                    if not is_crypto_name(asset):
+                        log("SAFETY BLOCK: skipped non-crypto asset " + str(asset))
+                        continue
+                    if api is None or not api.check_connect():
+                        log("Connection lost. Reconnecting.")
+                        if not connect_iq():
+                            break
+                        break
+                    candles = get_candles(asset)
+                    if not candles:
+                        continue
+                    signal = calculate_signal(candles, asset)
+                    if signal:
+                        log("Confirmed crypto signal: " + asset + " " + signal.upper())
+                        place_trade(signal, state, asset)
+                        if AUTO_TRADE:
+                            break
+
+                # If a first/second attempt lost, the next loop immediately recovers
+                # on the locked pair and direction instead of scanning a new pair.
+                if state.get("group_active", False):
                     continue
-                signal = calculate_signal(candles, asset)
-                if signal:
-                    log("Confirmed crypto signal: " + asset + " " + signal.upper())
-                    place_trade(signal, state, asset)
-                    if AUTO_TRADE:
-                        break
 
             now = time.time()
             if now - last_heartbeat >= HEARTBEAT_SECONDS:
@@ -556,6 +783,7 @@ def run_scanner():
                     + " | Trade losses: " + str(state["losses"])
                     + " | Group wins: " + str(state["group_wins"])
                     + " | Group losses: " + str(state["group_losses"])
+                    + " / " + str(MAX_LOSING_GROUPS) + " max losing groups"
                     + " | Daily P/L: $" + format(state["net_profit"], ".2f")
                     + " | Crypto assets: " + str(len(crypto_assets))
                 )
