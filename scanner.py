@@ -286,18 +286,30 @@ def normalize_forex_name(value):
 
 def add_asset(found, name, active_id=None):
     pair, is_otc = normalize_forex_name(name)
-    if not pair:
+
+    # NORMAL FOREX ONLY: never add OTC markets to the scanner.
+    if not pair or is_otc:
         return
-    clean_name = pair + ("-OTC" if is_otc else "")
+
+    clean_name = pair
     resolved_id = None
-    for candidate in (active_id, getattr(OP_code, "ACTIVES", {}).get(clean_name)):
+    for candidate in (
+        active_id,
+        getattr(OP_code, "ACTIVES", {}).get(clean_name),
+    ):
         try:
             if candidate is not None:
                 resolved_id = int(candidate)
                 break
         except (TypeError, ValueError, OverflowError):
             pass
-    found[clean_name] = {"name": clean_name, "pair": pair, "otc": is_otc, "id": resolved_id}
+
+    found[clean_name] = {
+        "name": clean_name,
+        "pair": pair,
+        "otc": False,
+        "id": resolved_id,
+    }
     if resolved_id is not None:
         try:
             OP_code.ACTIVES[clean_name] = resolved_id
@@ -324,6 +336,7 @@ def refresh_assets(force=False):
     global ASSETS, ASSET_REFRESH_AT
     if ASSETS and not force and time.time() - ASSET_REFRESH_AT < ASSET_REFRESH_SECONDS:
         return ASSETS
+
     found = {}
     try:
         active_map = IQ.get_all_ACTIVES_OPCODE()
@@ -332,6 +345,7 @@ def refresh_assets(force=False):
                 add_asset(found, str(name), active_id)
     except Exception as exc:
         logging.warning("Active-code asset discovery failed: %s", exc)
+
     for method_name in ("get_all_init_v2", "get_all_init"):
         try:
             method = getattr(IQ, method_name, None)
@@ -339,19 +353,29 @@ def refresh_assets(force=False):
                 walk_asset_tree(method(), found)
         except Exception as exc:
             logging.warning("%s asset discovery failed: %s", method_name, exc)
-    assets = list(found.values())
-    assets.sort(key=lambda item: (item["otc"], item["name"]))
+
+    # Final safety filter: only standard forex pairs may enter ASSETS.
+    assets = [
+        item for item in found.values()
+        if not item.get("otc", True)
+        and "OTC" not in item.get("name", "").upper()
+        and len(item.get("pair", "")) == 6
+    ]
+    assets.sort(key=lambda item: item["name"])
+
     if assets:
         ASSETS = assets
         ASSET_REFRESH_AT = time.time()
-        normal_count = sum(1 for item in assets if not item["otc"])
-        otc_count = len(assets) - normal_count
-        logging.info("Forex assets: %s total; %s normal; %s OTC", len(assets), normal_count, otc_count)
-        send_telegram("<b>Forex assets refreshed</b>\nTotal: {}\nNormal: {}\nOTC: {}".format(
-            len(assets), normal_count, otc_count))
+        logging.info("NORMAL FOREX ONLY: %s pairs loaded; OTC excluded", len(ASSETS))
+        send_telegram(
+            "<b>Normal forex assets refreshed</b>\n"
+            "Pairs: {}\nOTC: disabled".format(len(ASSETS))
+        )
     else:
-        logging.warning("No forex assets discovered from IQ Option data.")
+        ASSETS = []
+        logging.warning("No normal forex assets discovered from IQ Option data.")
     return ASSETS
+
 
 
 def disable_digital_open_worker(self):
