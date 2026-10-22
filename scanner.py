@@ -14,7 +14,7 @@ import requests
 import iqoptionapi.constants as OP_code
 from iqoptionapi.stable_api import IQ_Option
 
-# MOMENTUM 10 + MOMENTUM 20 + ENGULFING CANDLE
+# MOMENTUM 10 + MOMENTUM 20 + 12 CANDLE PATTERNS + CLOSED FOLLOW-UP CONFIRMATION
 # PRACTICE ACCOUNT ONLY.
 IQ_EMAIL = os.getenv("IQ_EMAIL", "").strip()
 IQ_PASSWORD = os.getenv("IQ_PASSWORD", "").strip()
@@ -47,6 +47,10 @@ CANDLE_REQUEST_TIMEOUT = 10
 ORDER_RESULT_RETRY_SECONDS = 5
 REJECTED_ASSET_COOLDOWN_SECONDS = 600
 CANDLE_REQUEST_COUNT = MOMENTUM_LOOKBACK + MOMENTUM_CONFIRM_PERIOD + 12
+DIAGNOSTIC_LOG_SECONDS = 900
+DIAG_COUNTS = {"assets_scanned": 0, "candle_data_ok": 0, "empty_candles": 0, "insufficient_candles": 0, "signals_checked": 0, "setups_found": 0, "confirmation_rejected": 0}
+DIAG_LAST_ASSET_LOG = {}
+DIAG_LOCK = threading.Lock()
 LOG_FILE = "momentum_signal_log.csv"
 STATE_FILE = "momentum_state.json"
 LAGOS = ZoneInfo("Africa/Lagos")
@@ -460,48 +464,249 @@ def percentile_value(values, fraction):
     return ordered[max(0, min(len(ordered) - 1, index))]
 
 
+def diagnostic_increment(key, amount=1):
+    with DIAG_LOCK:
+        DIAG_COUNTS[key] = DIAG_COUNTS.get(key, 0) + amount
+
+
+def diagnostic_asset_notice(asset, message):
+    now = time.time()
+    if now - DIAG_LAST_ASSET_LOG.get(asset, 0.0) >= DIAGNOSTIC_LOG_SECONDS:
+        DIAG_LAST_ASSET_LOG[asset] = now
+        logging.warning("CANDLE DIAGNOSTIC %s: %s", asset, message)
+
+
 def get_closed_candles(asset):
     try:
         raw = IQ.get_candles(asset, CANDLE_SECONDS, CANDLE_REQUEST_COUNT, int(time.time()))
     except Exception as exc:
-        logging.debug("Candle fetch failed for %s: %s", asset, exc)
+        diagnostic_increment("empty_candles")
+        diagnostic_asset_notice(asset, "request failed: {}".format(exc))
         return []
     if not isinstance(raw, list):
+        diagnostic_increment("empty_candles")
+        diagnostic_asset_notice(asset, "API returned {} instead of a candle list".format(type(raw).__name__))
         return []
     try:
         raw.sort(key=lambda row: int(row.get("from", 0)))
-    except Exception:
+        current_time = int(time.time())
+        closed = [c for c in raw if int(c.get("from", 0)) > 0
+                  and int(c.get("from", 0)) + CANDLE_SECONDS <= current_time]
+    except Exception as exc:
+        diagnostic_increment("empty_candles")
+        diagnostic_asset_notice(asset, "invalid candle structure: {}".format(exc))
         return []
-    current_time = int(time.time())
-    return [c for c in raw if int(c.get("from", 0)) > 0
-            and int(c.get("from", 0)) + CANDLE_SECONDS <= current_time]
+    if not closed:
+        diagnostic_increment("empty_candles")
+        diagnostic_asset_notice(asset, "received {} raw candles but zero fully closed candles".format(len(raw)))
+        return []
+    diagnostic_increment("candle_data_ok")
+    if len(closed) < MOMENTUM_LOOKBACK + MOMENTUM_CONFIRM_PERIOD + 2:
+        diagnostic_increment("insufficient_candles")
+        diagnostic_asset_notice(asset, "only {} closed candles; need at least {}".format(
+            len(closed), MOMENTUM_LOOKBACK + MOMENTUM_CONFIRM_PERIOD + 2))
+    return closed
+
+
+def candle_values(candle):
+    try:
+        opened = float(candle["open"])
+        high = float(candle["max"] if "max" in candle else candle["high"])
+        low = float(candle["min"] if "min" in candle else candle["low"])
+        close = float(candle["close"])
+        return opened, high, low, close
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def bullish_engulfing(previous, current):
-    try:
-        po, pc = float(previous["open"]), float(previous["close"])
-        co, cc = float(current["open"]), float(current["close"])
-    except (KeyError, TypeError, ValueError):
+    first = candle_values(previous)
+    second = candle_values(current)
+    if not first or not second:
         return False
+    po, ph, pl, pc = first
+    co, ch, cl, cc = second
     return pc < po and cc > co and co <= pc and cc >= po
 
 
 def bearish_engulfing(previous, current):
-    try:
-        po, pc = float(previous["open"]), float(previous["close"])
-        co, cc = float(current["open"]), float(current["close"])
-    except (KeyError, TypeError, ValueError):
+    first = candle_values(previous)
+    second = candle_values(current)
+    if not first or not second:
         return False
+    po, ph, pl, pc = first
+    co, ch, cl, cc = second
     return pc > po and cc < co and co >= pc and cc <= po
 
 
+def is_hammer(candle):
+    parts = candle_values(candle)
+    if not parts:
+        return False
+    opened, high, low, close = parts
+    body = abs(close - opened)
+    span = high - low
+    lower = min(opened, close) - low
+    upper = high - max(opened, close)
+    if span <= 0:
+        return False
+    body = max(body, span * 0.03)
+    return lower >= body * 2.0 and upper <= body * 0.8 and max(opened, close) >= low + span * 0.55
+
+
+def is_inverted_hammer(candle):
+    parts = candle_values(candle)
+    if not parts:
+        return False
+    opened, high, low, close = parts
+    body = abs(close - opened)
+    span = high - low
+    upper = high - max(opened, close)
+    lower = min(opened, close) - low
+    if span <= 0:
+        return False
+    body = max(body, span * 0.03)
+    return upper >= body * 2.0 and lower <= body * 0.8 and min(opened, close) <= low + span * 0.45
+
+
+def morning_star(first, middle, last):
+    a, b, c = candle_values(first), candle_values(middle), candle_values(last)
+    if not a or not b or not c:
+        return False
+    ao, ah, al, ac = a
+    bo, bh, bl, bc = b
+    co, ch, cl, cc = c
+    first_body = abs(ac - ao)
+    middle_body = abs(bc - bo)
+    last_body = abs(cc - co)
+    midpoint = (ao + ac) / 2.0
+    return ac < ao and middle_body <= first_body * 0.6 and cc > co and cc >= midpoint and last_body >= first_body * 0.35
+
+
+def evening_star(first, middle, last):
+    a, b, c = candle_values(first), candle_values(middle), candle_values(last)
+    if not a or not b or not c:
+        return False
+    ao, ah, al, ac = a
+    bo, bh, bl, bc = b
+    co, ch, cl, cc = c
+    first_body = abs(ac - ao)
+    middle_body = abs(bc - bo)
+    last_body = abs(cc - co)
+    midpoint = (ao + ac) / 2.0
+    return ac > ao and middle_body <= first_body * 0.6 and cc < co and cc <= midpoint and last_body >= first_body * 0.35
+
+
+def piercing_line(previous, current):
+    a, b = candle_values(previous), candle_values(current)
+    if not a or not b:
+        return False
+    ao, ah, al, ac = a
+    bo, bh, bl, bc = b
+    midpoint = (ao + ac) / 2.0
+    return ac < ao and bc > bo and bo <= ac and bc > midpoint and bc < ao
+
+
+def dark_cloud_cover(previous, current):
+    a, b = candle_values(previous), candle_values(current)
+    if not a or not b:
+        return False
+    ao, ah, al, ac = a
+    bo, bh, bl, bc = b
+    midpoint = (ao + ac) / 2.0
+    return ac > ao and bc < bo and bo >= ac and bc < midpoint and bc > ao
+
+
+def three_white_soldiers(candles):
+    if len(candles) < 3:
+        return False
+    parts = [candle_values(c) for c in candles[-3:]]
+    if any(not item for item in parts):
+        return False
+    for opened, high, low, close in parts:
+        if close <= opened:
+            return False
+    return parts[1][3] > parts[0][3] and parts[2][3] > parts[1][3]
+
+
+def three_black_crows(candles):
+    if len(candles) < 3:
+        return False
+    parts = [candle_values(c) for c in candles[-3:]]
+    if any(not item for item in parts):
+        return False
+    for opened, high, low, close in parts:
+        if close >= opened:
+            return False
+    return parts[1][3] < parts[0][3] and parts[2][3] < parts[1][3]
+
+
+def detect_completed_pattern(candles):
+    # The pattern must finish on candles[-2]. candles[-1] is a separate,
+    # fully closed follow-up candle and is never part of pattern recognition.
+    if len(candles) < 5:
+        return None
+    first, middle, pattern = candles[-4], candles[-3], candles[-2]
+    prior = candles[-3]
+    pattern_names = []
+    if bullish_engulfing(prior, pattern):
+        pattern_names.append(("call", "Bullish Engulfing"))
+    if bearish_engulfing(prior, pattern):
+        pattern_names.append(("put", "Bearish Engulfing"))
+    pattern_parts = candle_values(pattern)
+    trend_reference = candle_values(candles[-5]) if len(candles) >= 5 else None
+    trend_up = bool(trend_reference and pattern_parts and pattern_parts[3] > trend_reference[3])
+    trend_down = bool(trend_reference and pattern_parts and pattern_parts[3] < trend_reference[3])
+    if is_hammer(pattern) and trend_down:
+        pattern_names.append(("call", "Hammer"))
+    if is_inverted_hammer(pattern) and trend_down:
+        pattern_names.append(("call", "Inverted Hammer"))
+    if is_inverted_hammer(pattern) and trend_up:
+        pattern_names.append(("put", "Shooting Star"))
+    if is_hammer(pattern) and trend_up:
+        pattern_names.append(("put", "Hanging Man"))
+    if morning_star(first, middle, pattern):
+        pattern_names.append(("call", "Morning Star"))
+    if evening_star(first, middle, pattern):
+        pattern_names.append(("put", "Evening Star"))
+    if piercing_line(prior, pattern):
+        pattern_names.append(("call", "Piercing Line"))
+    if dark_cloud_cover(prior, pattern):
+        pattern_names.append(("put", "Dark Cloud Cover"))
+    if three_white_soldiers(candles[-4:-1]):
+        pattern_names.append(("call", "Three White Soldiers"))
+    if three_black_crows(candles[-4:-1]):
+        pattern_names.append(("put", "Three Black Crows"))
+    if not pattern_names:
+        return None
+    confirm_parts = candle_values(candles[-1])
+    pattern_parts = candle_values(pattern)
+    if not confirm_parts or not pattern_parts:
+        return None
+    confirm_open, confirm_high, confirm_low, confirm_close = confirm_parts
+    pattern_open, pattern_high, pattern_low, pattern_close = pattern_parts
+    for direction, name in pattern_names:
+        if direction == "call" and confirm_close > confirm_open and confirm_close > pattern_close:
+            return {"direction": direction, "pattern": name, "pattern_time": int(pattern.get("from", 0))}
+        if direction == "put" and confirm_close < confirm_open and confirm_close < pattern_close:
+            return {"direction": direction, "pattern": name, "pattern_time": int(pattern.get("from", 0))}
+    diagnostic_increment("confirmation_rejected")
+    return None
+
+
 def evaluate_signal(candles):
-    minimum = MOMENTUM_LOOKBACK + MOMENTUM_CONFIRM_PERIOD + 2
+    minimum = MOMENTUM_LOOKBACK + MOMENTUM_CONFIRM_PERIOD + 3
     if len(candles) < minimum:
         return None
+    pattern_result = detect_completed_pattern(candles)
+    if not pattern_result:
+        return None
+    # Momentum is evaluated as of the pattern candle, not the later confirmation
+    # candle, so the confirmation cannot change the original setup calculation.
+    setup_candles = candles[:-1]
     try:
-        closes = [float(row["close"]) for row in candles]
-        candle_time = int(candles[-1].get("from", 0))
+        closes = [float(row["close"]) for row in setup_candles]
+        candle_time = int(setup_candles[-1].get("from", 0))
     except (KeyError, TypeError, ValueError):
         return None
     values10 = momentum_series(closes, MOMENTUM_PERIOD)
@@ -516,19 +721,18 @@ def evaluate_signal(candles):
         return None
     current20, previous20 = values20[-1], values20[-2]
     rising, falling = current20 > previous20, current20 < previous20
-    previous_candle, current_candle = candles[-2], candles[-1]
     turning_up = current10 > previous10 and previous10 <= before10
     turning_down = current10 < previous10 and previous10 >= before10
-    if current10 <= low_extreme and turning_up and rising and bullish_engulfing(previous_candle, current_candle):
+    direction = pattern_result["direction"]
+    if direction == "call" and current10 <= low_extreme and turning_up and rising:
         return {"direction": "call", "momentum": round(current10, 5),
                 "momentum20": round(current20, 5), "candle_time": candle_time,
-                "confirmation": "M20 rising + bullish engulfing"}
-    if current10 >= high_extreme and turning_down and falling and bearish_engulfing(previous_candle, current_candle):
+                "confirmation": "M20 rising + {} + next closed bullish confirmation candle".format(pattern_result["pattern"])}
+    if direction == "put" and current10 >= high_extreme and turning_down and falling:
         return {"direction": "put", "momentum": round(current10, 5),
                 "momentum20": round(current20, 5), "candle_time": candle_time,
-                "confirmation": "M20 falling + bearish engulfing"}
+                "confirmation": "M20 falling + {} + next closed bearish confirmation candle".format(pattern_result["pattern"])}
     return None
-
 
 def extract_numeric_profit(value):
     # Only parse numeric values from known profit fields. Do not treat order IDs,
@@ -702,10 +906,11 @@ def main():
         if risk_stop_reason():
             request_next_workflow()
         return
-    send_telegram("<b>Momentum scanner started</b>\nPractice only\nEntry: M10 extreme + turn\nConfirmations: M20 trend + closed engulfing candle\nTarget: +${:.2f} | Loss limit: -${:.2f}\nStake: ${:.2f}\n{}".format(
+    send_telegram("<b>Momentum scanner started</b>\nPractice only\nEntry: M10 extreme + turn\nConfirmations: M20 trend + one of 12 patterns + next fully closed candle\nTarget: +${:.2f} | Loss limit: -${:.2f}\nStake: ${:.2f}\n{}".format(
         SESSION_PROFIT_TARGET, SESSION_LOSS_LIMIT, STAKE, format_stats()))
     last_heartbeat = time.time()
     last_reconnect_notice = 0.0
+    last_diagnostic_report = time.time()
 
     while not STOP_EVENT.is_set():
         if stop_if_limit_reached():
@@ -735,19 +940,36 @@ def main():
         if time.time() - ASSET_REFRESH_AT >= ASSET_REFRESH_SECONDS:
             refresh_assets(force=True)
         last_heartbeat = heartbeat(last_heartbeat)
+        if time.time() - last_diagnostic_report >= HEARTBEAT_SECONDS:
+            with DIAG_LOCK:
+                snapshot = dict(DIAG_COUNTS)
+                for key in DIAG_COUNTS:
+                    DIAG_COUNTS[key] = 0
+            logging.info("SCAN DIAGNOSTICS | scanned=%s candle_data_ok=%s empty=%s insufficient=%s evaluated=%s setups=%s confirmation_rejected=%s",
+                         snapshot["assets_scanned"], snapshot["candle_data_ok"],
+                         snapshot["empty_candles"], snapshot["insufficient_candles"],
+                         snapshot["signals_checked"], snapshot["setups_found"],
+                         snapshot["confirmation_rejected"])
+            last_diagnostic_report = time.time()
         for item in list(ASSETS):
             if STOP_EVENT.is_set() or stop_if_limit_reached():
                 break
             try:
                 asset = item["name"]
+                diagnostic_increment("assets_scanned")
                 cooldown_until = REJECTED_ASSETS.get(asset, 0.0)
                 if time.time() < cooldown_until:
                     continue
                 if cooldown_until:
                     REJECTED_ASSETS.pop(asset, None)
-                signal = evaluate_signal(get_closed_candles(asset))
+                candles = get_closed_candles(asset)
+                if len(candles) < MOMENTUM_LOOKBACK + MOMENTUM_CONFIRM_PERIOD + 3:
+                    continue
+                diagnostic_increment("signals_checked")
+                signal = evaluate_signal(candles)
                 if signal is None:
                     continue
+                diagnostic_increment("setups_found")
                 key = str(signal.get("candle_time", ""))
                 last_signals = STATE.setdefault("last_signals", {})
                 if last_signals.get(asset) == key:
