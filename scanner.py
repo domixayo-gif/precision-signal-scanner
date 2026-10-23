@@ -69,6 +69,9 @@ CRYPTO_CODES = {
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 SESSION_ID = '{}-{}'.format(os.getenv('GITHUB_RUN_ID', str(int(time.time()))), os.getenv('GITHUB_RUN_ATTEMPT', '1'))
 IQ = None
+CONNECTION_LOCK = threading.RLock()
+BROKER_API_LOCK = threading.RLock()
+LAST_RECONNECT_ATTEMPT = 0.0
 ASSETS = []
 ASSET_REFRESH_AT = 0
 REJECTED_ASSETS = {}
@@ -438,40 +441,50 @@ def connect_iq():
 
 
 def ensure_connection():
-    global IQ
-    try:
-        if IQ is not None and IQ.check_connect():
+    global IQ, LAST_RECONNECT_ATTEMPT
+    with CONNECTION_LOCK:
+        try:
+            if IQ is not None and IQ.check_connect():
+                return True
+        except Exception:
+            pass
+        now = time.time()
+        if now - LAST_RECONNECT_ATTEMPT < RECONNECT_SECONDS:
+            return False
+        LAST_RECONNECT_ATTEMPT = now
+        logging.warning('IQ connection unavailable; starting one controlled reconnect')
+        try:
+            connect_iq()
+            refresh_assets(True)
             return True
-    except Exception:
-        pass
-    logging.warning('IQ connection unavailable; creating a fresh client')
-    try:
-        connect_iq()
-        refresh_assets(True)
-        return True
-    except Exception as exc:
-        logging.warning('Reconnect failed: %s', exc)
-        time.sleep(RECONNECT_SECONDS)
-        return False
+        except Exception as exc:
+            logging.warning('Reconnect failed: %s', exc)
+            return False
 
 
 def safe_get_candles(self, active, interval, count, endtime):
-    try:
-        active_id = getattr(OP_code, 'ACTIVES', {}).get(active)
-        if active_id is None:
-            return None
-        self.api.candles.candles_data = None
-        self.api.getcandles(active_id, interval, count, endtime)
-        deadline = time.time() + CANDLE_REQUEST_TIMEOUT
-        while time.time() < deadline:
-            data = getattr(self.api.candles, 'candles_data', None)
-            if isinstance(data, list):
-                return data
-            if not self.check_connect():
+    # Serialize candle requests against order-result calls. The IQ API client
+    # uses shared websocket state and is unreliable when queried concurrently.
+    with BROKER_API_LOCK:
+        try:
+            active_id = getattr(OP_code, 'ACTIVES', {}).get(active)
+            if active_id is None:
                 return None
-            time.sleep(0.1)
-    except Exception as exc:
-        logging.warning('Candle request error %s: %s', active, exc)
+            self.api.candles.candles_data = None
+            self.api.getcandles(active_id, interval, count, endtime)
+            deadline = time.time() + CANDLE_REQUEST_TIMEOUT
+            while time.time() < deadline:
+                data = getattr(self.api.candles, 'candles_data', None)
+                if isinstance(data, list):
+                    return data
+                try:
+                    if not self.check_connect():
+                        return None
+                except Exception:
+                    return None
+                time.sleep(0.1)
+        except Exception as exc:
+            logging.warning('Candle request error %s: %s', active, exc)
     return None
 
 
@@ -759,31 +772,36 @@ def betinfo_net_profit(response, order_id):
 
 def _betinfo_worker(order_id, event, box):
     try:
-        info_method = getattr(IQ, 'get_betinfo', None)
-        box['value'] = betinfo_net_profit(info_method(order_id), order_id) if callable(info_method) else None
+        with BROKER_API_LOCK:
+            client = IQ
+            info_method = getattr(client, 'get_betinfo', None) if client is not None else None
+            box['value'] = betinfo_net_profit(info_method(order_id), order_id) if callable(info_method) else None
     except Exception as exc:
         box['error'] = str(exc)
         box['value'] = None
+        logging.warning('get_betinfo failed for order %s: %s', order_id, exc)
     finally:
         event.set()
 
 
 def query_order_profit(order_id):
-    async_method = getattr(IQ, 'get_async_order', None)
-    if callable(async_method):
-        try:
-            async_data = async_method(order_id)
-            if isinstance(async_data, dict):
-                closed = async_data.get('option-closed') or async_data.get('option_closed')
-                if isinstance(closed, dict) and closed:
-                    message = closed.get('msg', closed)
-                    if isinstance(message, dict):
-                        gross = to_float(message.get('profit_amount'))
-                        amount = to_float(message.get('amount'))
-                        if gross is not None and amount is not None:
-                            return round(gross - amount, 8)
-        except Exception as exc:
-            logging.debug('get_async_order failed for %s: %s', order_id, exc)
+    try:
+        with BROKER_API_LOCK:
+            client = IQ
+            async_method = getattr(client, 'get_async_order', None) if client is not None else None
+            if callable(async_method):
+                async_data = async_method(order_id)
+                if isinstance(async_data, dict):
+                    closed = async_data.get('option-closed') or async_data.get('option_closed')
+                    if isinstance(closed, dict) and closed:
+                        message = closed.get('msg', closed)
+                        if isinstance(message, dict):
+                            gross = to_float(message.get('profit_amount'))
+                            amount = to_float(message.get('amount'))
+                            if gross is not None and amount is not None:
+                                return round(gross - amount, 8)
+    except Exception as exc:
+        logging.debug('get_async_order failed for %s: %s', order_id, exc)
     key = str(order_id)
     task = BETINFO_TASKS.get(key)
     if task is not None:
@@ -853,7 +871,7 @@ def wait_result(order_id, asset, direction, m10):
         order_id, asset, EXPIRY_MINUTES
     )
     last_notice = 0
-    while not STOP_EVENT.is_set():
+    while True:
         if not ensure_connection():
             time.sleep(ORDER_RESULT_RETRY_SECONDS)
             continue
@@ -1050,6 +1068,10 @@ def main():
         if time.time() - diagnostic >= DIAGNOSTIC_LOG_SECONDS:
             report_diagnostics()
             diagnostic = time.time()
+        if STATE.get('pending_order_id'):
+            # Do not flood the broker API while the one permitted trade is unresolved.
+            time.sleep(ORDER_RESULT_RETRY_SECONDS)
+            continue
         for item in list(ASSETS):
             if STOP_EVENT.is_set() or stop_if_limit_reached():
                 break
