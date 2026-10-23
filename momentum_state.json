@@ -6,15 +6,16 @@
   "losses": 1,
   "resolved": 3,
   "consecutive_losses": 1,
-  "pending_order_id": null,
-  "pending_asset": null,
-  "pending_direction": null,
-  "pending_started": null,
+  "pending_order_id": 14384157593,
+  "pending_asset": "ATOMUSD-OTC",
+  "pending_direction": "call",
+  "pending_started": "2026-10-24T00:46:45+01:00",
   "last_signals": {
     "SHIBUSD-OTC": "1792798560",
     "MANAUSD-OTC": "1792798740",
     "SANDUSD-OTC": "1792798740",
-    "NZDUSD-OTC": "1792798920"
+    "NZDUSD-OTC": "1792798920",
+    "ATOMUSD-OTC": "1792799040"
   },
   "stop_reason": "",
   "settled_order_ids": [
