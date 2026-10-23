@@ -25,7 +25,7 @@ LAGOS=ZoneInfo('Africa/Lagos')
 CURRENCIES={'USD','EUR','GBP','JPY','CHF','CAD','AUD','NZD','CNY','HKD','SGD','SEK','NOK','DKK','PLN','CZK','HUF','TRY','ZAR','MXN','BRL','INR','THB','AED','SAR','ILS','KRW','TWD','RUB','RON','BGN','ISK','PHP','IDR','MYR'}
 logging.basicConfig(level=logging.INFO,format='%(asctime)s %(levelname)s %(message)s')
 SESSION_ID='{}-{}'.format(os.getenv('GITHUB_RUN_ID',str(int(time.time()))),os.getenv('GITHUB_RUN_ATTEMPT','1'))
-IQ=None; ASSETS=[]; ASSET_REFRESH_AT=0; REJECTED_ASSETS={}; STOP_EVENT=threading.Event(); TRADE_LOCK=threading.Lock(); STATE_LOCK=threading.RLock(); DIAG_LOCK=threading.Lock(); NEXT_WORKFLOW_REQUESTED=False; BETINFO_TASKS={}; BETINFO_LAST_START={}
+IQ=None; ASSETS=[]; ASSET_REFRESH_AT=0; REJECTED_ASSETS={}; STOP_EVENT=threading.Event(); TRADE_LOCK=threading.Lock(); STATE_LOCK=threading.RLock(); DIAG_LOCK=threading.Lock(); RESULT_MONITOR_LOCK=threading.Lock(); RESULT_MONITORS={}; NEXT_WORKFLOW_REQUESTED=False; BETINFO_TASKS={}; BETINFO_LAST_START={}
 DIAG_KEYS=['assets_scanned','candle_data_ok','empty_candles','insufficient_candles','signals_checked','patterns_found','followup_confirmed','followup_rejected','m10_extreme_pass','m10_extreme_rejected','m10_turn_pass','m10_turn_rejected','m20_trend_pass','m20_trend_rejected','setups_found','duplicate_signals','order_rejected']
 DIAG={k:0 for k in DIAG_KEYS}; DIAG_LAST_ASSET_LOG={}
 
@@ -440,9 +440,25 @@ def wait_result(oid,asset,direction,m10):
         if value is not None: settle_result(asset,direction,value,m10,oid); return
         if time.time()-notice>=60: logging.warning('Broker result unreadable for order %s; keeping pending',oid); notice=time.time()
         time.sleep(ORDER_RESULT_RETRY_SECONDS)
+def start_result_monitor(oid, asset, direction, m10=None):
+    key = str(oid)
+    with RESULT_MONITOR_LOCK:
+        current = RESULT_MONITORS.get(key)
+        if current is not None and current.is_alive():
+            logging.info('RESULT MONITOR ALREADY ACTIVE | order_id=%s', oid)
+            return
+        thread = threading.Thread(target=wait_result, args=(oid, asset, direction, m10), name='result-monitor-' + key, daemon=True)
+        RESULT_MONITORS[key] = thread
+        thread.start()
+    logging.info('RESULT MONITOR STARTED IN BACKGROUND | order_id=%s', oid)
+
 def recover_pending_order():
-    oid=STATE.get('pending_order_id')
-    if oid: logging.warning('Recovering pending order %s',oid); wait_result(oid,STATE.get('pending_asset') or 'UNKNOWN',STATE.get('pending_direction') or 'unknown',None)
+    oid = STATE.get('pending_order_id')
+    if oid:
+        asset = STATE.get('pending_asset') or 'UNKNOWN'
+        direction = STATE.get('pending_direction') or 'unknown'
+        logging.warning('Recovering pending order in background | order_id=%s | asset=%s', oid, asset)
+        start_result_monitor(oid, asset, direction, None)
 def place_trade(item, sig):
     asset = item['name']
     direction = sig['direction']
@@ -500,7 +516,7 @@ def place_trade(item, sig):
         log_trade(asset, direction, sig['momentum'], 'OPENED', '', oid)
         logging.info('ORDER OPENED | asset=%s | direction=%s | order_id=%s | stake=$%.2f | expiry=%sm', asset, direction.upper(), oid, STAKE, EXPIRY_MINUTES)
         send_telegram('<b>Practice trade opened</b>\n{} {}\nOrder ID: {}\nStake: ${:.2f}\nM10: {:.5f} M20: {:.5f}\n{}\n{}'.format(asset, direction.upper(), oid, STAKE, sig['momentum'], sig['momentum20'], sig['confirmation'], format_stats()))
-    wait_result(oid, asset, direction, sig['momentum'])
+    start_result_monitor(oid, asset, direction, sig['momentum'])
 
 def report_diagnostics():
     with DIAG_LOCK: s=dict(DIAG); [DIAG.__setitem__(k,0) for k in DIAG]
@@ -509,7 +525,9 @@ def main():
     connect_iq(); refresh_assets(True)
     if not ASSETS: raise RuntimeError('No supported normal or OTC forex assets discovered')
     if stop_if_limit_reached(): return
-    if STATE.get('pending_order_id'): recover_pending_order()
+    if STATE.get('pending_order_id'):
+        recover_pending_order()
+        logging.warning('A previous order is unresolved. Scanner will continue diagnostics, but new trades remain blocked until its broker result is confirmed.')
     if STOP_EVENT.is_set() or stop_if_limit_reached():
         return
     send_telegram('<b>Scanner started</b>\nPRACTICE only\nNormal/OTC forex ONLY; crypto excluded; M10 extreme + turn; M20 trend; 12 patterns + separate closed confirmation candle\n{}'.format(format_stats()))
