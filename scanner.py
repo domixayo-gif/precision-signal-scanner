@@ -5,27 +5,27 @@ import requests
 import iqoptionapi.constants as OP_code
 from iqoptionapi.stable_api import IQ_Option
 
-# NORMAL FOREX + OTC FOREX + NORMAL CRYPTO + OTC CRYPTO.
-# MOMENTUM 10 + MOMENTUM 20 + 12 candle patterns + a separate closed follow-up candle.
+# NORMAL FOREX + OTC FOREX ONLY. CRYPTO MARKETS ARE EXCLUDED.
+# MOMENTUM 10 + MOMENTUM 20 + candle patterns + a separate fully closed follow-up candle.
 # PRACTICE ACCOUNT ONLY.
 IQ_EMAIL=os.getenv('IQ_EMAIL','').strip(); IQ_PASSWORD=os.getenv('IQ_PASSWORD','').strip()
 TELEGRAM_TOKEN=os.getenv('TELEGRAM_TOKEN','').strip(); TELEGRAM_CHAT_ID=os.getenv('TELEGRAM_CHAT_ID','').strip()
 GITHUB_TOKEN=os.getenv('GITHUB_TOKEN','').strip(); GITHUB_REPOSITORY=os.getenv('GITHUB_REPOSITORY','').strip()
 GITHUB_REF_NAME=os.getenv('GITHUB_REF_NAME','main').strip(); GITHUB_WORKFLOW_FILE='scanner.yml'
-BALANCE_MODE='PRACTICE'; AUTO_TRADE=True; STAKE=1.50; EXPIRY_MINUTES=1; CANDLE_SECONDS=60
+BALANCE_MODE='PRACTICE'; AUTO_TRADE=True; STAKE=1.00; EXPIRY_MINUTES=1; CANDLE_SECONDS=60
 MOMENTUM_PERIOD=10; MOMENTUM_CONFIRM_PERIOD=20; MOMENTUM_LOOKBACK=50
 EXTREME_PERCENTILE=0.08; MIN_TURN_DISTANCE=0.06
-SESSION_PROFIT_TARGET=10.0; SESSION_LOSS_LIMIT=4.0
+SESSION_PROFIT_TARGET=5.0; SESSION_LOSS_LIMIT=3.0
 MAX_RESOLVED_TRADES=20; MAX_CONSECUTIVE_LOSSES=5
 SCAN_INTERVAL=5; ASSET_REFRESH_SECONDS=900; HEARTBEAT_SECONDS=300
 RECONNECT_SECONDS=30; CANDLE_REQUEST_TIMEOUT=10; ORDER_RESULT_RETRY_SECONDS=5
 REJECTED_ASSET_COOLDOWN_SECONDS=600; CANDLE_REQUEST_COUNT=MOMENTUM_LOOKBACK+MOMENTUM_CONFIRM_PERIOD+12
-DIAGNOSTIC_LOG_SECONDS=900; LOG_FILE='momentum_signal_log.csv'; STATE_FILE='momentum_state.json'
+DIAGNOSTIC_LOG_SECONDS=300; LOG_FILE='momentum_signal_log.csv'; STATE_FILE='momentum_state.json'
 LAGOS=ZoneInfo('Africa/Lagos')
 CURRENCIES={'USD','EUR','GBP','JPY','CHF','CAD','AUD','NZD','CNY','HKD','SGD','SEK','NOK','DKK','PLN','CZK','HUF','TRY','ZAR','MXN','BRL','INR','THB','AED','SAR','ILS','KRW','TWD','RUB','RON','BGN','ISK','PHP','IDR','MYR'}
 logging.basicConfig(level=logging.INFO,format='%(asctime)s %(levelname)s %(message)s')
 SESSION_ID='{}-{}'.format(os.getenv('GITHUB_RUN_ID',str(int(time.time()))),os.getenv('GITHUB_RUN_ATTEMPT','1'))
-IQ=None; ASSETS=[]; ASSET_REFRESH_AT=0; REJECTED_ASSETS={}; STOP_EVENT=threading.Event(); TRADE_LOCK=threading.Lock(); STATE_LOCK=threading.RLock(); DIAG_LOCK=threading.Lock(); NEXT_WORKFLOW_REQUESTED=False
+IQ=None; ASSETS=[]; ASSET_REFRESH_AT=0; REJECTED_ASSETS={}; STOP_EVENT=threading.Event(); TRADE_LOCK=threading.Lock(); STATE_LOCK=threading.RLock(); DIAG_LOCK=threading.Lock(); NEXT_WORKFLOW_REQUESTED=False; BETINFO_TASKS={}; BETINFO_LAST_START={}
 DIAG_KEYS=['assets_scanned','candle_data_ok','empty_candles','insufficient_candles','signals_checked','patterns_found','followup_confirmed','followup_rejected','m10_extreme_pass','m10_extreme_rejected','m10_turn_pass','m10_turn_rejected','m20_trend_pass','m20_trend_rejected','setups_found','duplicate_signals','order_rejected']
 DIAG={k:0 for k in DIAG_KEYS}; DIAG_LAST_ASSET_LOG={}
 
@@ -118,40 +118,23 @@ def stop_if_limit_reached():
         logging.warning('%s | %s',reason,format_stats()); send_telegram('<b>SCANNER STOPPED</b>\n{}\n{}'.format(reason,format_stats()))
     return bool(reason)
 
-CRYPTO_SYMBOLS={
-    'BTC','ETH','XRP','LTC','BCH','ETC','EOS','ADA','DOT','SOL','DOGE','TRX',
-    'DASH','ZEC','BNB','LINK','XLM','TON','SHIB','AVAX','UNI','ATOM','NEAR',
-    'SAND','MANA','FIL','ICP','APT','ARB','OP','XMR','XTZ','VET','ALGO','AAVE',
-    'FTM','MATIC','POL','HBAR','QNT','APE','EGLD','THETA','FLOW','CHZ','KAVA',
-    'COMP','CRV','MKR','SNX','YFI','GRT','ENJ','RUNE','LDO','IMX','SEI','TIA',
-    'WIF','PEPE','FET','INJ','KAS','SUI','TAO','ONDO','JUP','BONK','BTT','ZIL',
-    'IOTA','NEO','WAVES','QTUM','BAT','ZRX','CAKE','MINA','ROSE','CELO','KSM',
-    'DCR','DGB','ZEN','XEM','ONT','ICX','RVN','SC','ANKR','COTI','STX'
-}
-CRYPTO_QUOTES=set(CURRENCIES)|{'USDT','USDC','BTC','ETH','BNB','SOL','XRP','LTC'}
-
 def classify_asset_name(value):
-    # Return canonical ticker, market type and OTC flag; exclude unrelated assets.
-    if not isinstance(value,str): return None,None,False
-    raw=value.strip().upper().split('.')[-1].strip()
-    if not raw: return None,None,False
-    otc=bool(re.search(r'(^|[-_\s])OTC($|[-_\s])',raw)) or raw.endswith('OTC')
-    letters=re.sub('[^A-Z0-9]','',raw)
-    for suffix in ('OTC','BINARY','TURBO','DIGITAL'):
-        if letters.endswith(suffix): letters=letters[:-len(suffix)]
-    # Forex pairs: EURUSD, GBPJPY, and other supported three-letter currency pairs.
-    forex_pair=letters[-6:] if len(letters)>=6 else ''
-    if len(forex_pair)==6 and forex_pair[:3] in CURRENCIES and forex_pair[3:] in CURRENCIES:
-        kind='otc_forex' if otc else 'normal_forex'
-        return forex_pair+('-OTC' if otc else ''),kind,otc
-    # Crypto pairs use a known crypto base and a supported fiat/crypto quote.
-    for base in sorted(CRYPTO_SYMBOLS,key=len,reverse=True):
-        if not letters.startswith(base): continue
-        quote=letters[len(base):]
-        if quote in CRYPTO_QUOTES and quote:
-            kind='otc_crypto' if otc else 'normal_crypto'
-            return base+quote+('-OTC' if otc else ''),kind,otc
-    return None,None,otc
+    # FOREX ONLY: return None for crypto, indices, commodities and other markets.
+    if not isinstance(value, str):
+        return None, None, False
+    raw = value.strip().upper().split('.')[-1].strip()
+    if not raw:
+        return None, None, False
+    otc = bool(re.search(r'(^|[-_\s])OTC($|[-_\s])', raw)) or raw.endswith('OTC')
+    letters = re.sub('[^A-Z0-9]', '', raw)
+    for suffix in ('OTC', 'BINARY', 'TURBO', 'DIGITAL'):
+        if letters.endswith(suffix):
+            letters = letters[:-len(suffix)]
+    pair = letters[-6:] if len(letters) >= 6 else ''
+    if len(pair) == 6 and pair[:3] in CURRENCIES and pair[3:] in CURRENCIES:
+        market_type = 'otc_forex' if otc else 'normal_forex'
+        return pair + ('-OTC' if otc else ''), market_type, otc
+    return None, None, otc
 
 def normalize_forex_name(value):
     # Compatibility helper retained for older diagnostics.
@@ -206,10 +189,10 @@ def refresh_assets(force=False):
         except Exception as e: logging.warning('%s discovery failed: %s',mn,e)
     ASSETS=sorted(found.values(),key=lambda x:(x.get('market_type',''),x['name']))
     ASSET_REFRESH_AT=time.time()
-    counts={k:sum(1 for x in ASSETS if x.get('market_type')==k) for k in ('normal_forex','otc_forex','normal_crypto','otc_crypto')}
-    logging.info('MARKETS LOADED | normal forex=%s OTC forex=%s normal crypto=%s OTC crypto=%s total=%s',counts['normal_forex'],counts['otc_forex'],counts['normal_crypto'],counts['otc_crypto'],len(ASSETS))
+    counts={k:sum(1 for x in ASSETS if x.get('market_type')==k) for k in ('normal_forex','otc_forex')}
+    logging.info('MARKETS LOADED | normal forex=%s OTC forex=%s CRYPTO EXCLUDED total=%s',counts['normal_forex'],counts['otc_forex'],len(ASSETS))
     if ASSETS:
-        send_telegram('<b>Markets refreshed</b>\nNormal forex: {}\nOTC forex: {}\nNormal crypto: {}\nOTC crypto: {}\nTotal: {}'.format(counts['normal_forex'],counts['otc_forex'],counts['normal_crypto'],counts['otc_crypto'],len(ASSETS)))
+        send_telegram('<b>Markets refreshed</b>\nNormal forex: {}\nOTC forex: {}\nCrypto: excluded\nTotal forex markets: {}'.format(counts['normal_forex'],counts['otc_forex'],len(ASSETS)))
     return ASSETS
 def disable_digital_open_worker(self): logging.info('Disabled unused digital watcher')
 def safe_get_candles(self,active,interval,count,endtime):
@@ -343,32 +326,101 @@ def evaluate_signal(cs):
     if trend: inc('m20_trend_pass')
     else: inc('m20_trend_rejected'); return None
     return {'direction':d,'momentum':round(cur,5),'momentum20':round(m20[-1],5),'candle_time':candle_time,'pattern':pat['pattern'],'confirmation':'M20 trend + {} + next fully closed candle'.format(pat['pattern'])}
-def numeric_profit(v):
-    if v is None or isinstance(v,bool): return None
-    if isinstance(v,(int,float)): return float(v) if math.isfinite(float(v)) else None
-    if isinstance(v,str):
-        if v.strip().lower() in ('','false','none','null','pending','open','win','won','loss','lost','loose','draw','unknown'): return None
-        try: return float(v)
-        except (ValueError,OverflowError): return None
-    if isinstance(v,dict):
-        for k in ('profit','profit_amount','profitAmount','close_profit','closeProfit','net_profit','netProfit','win_amount','winAmount','result','data','betinfo','bet_info','option'):
-            if k in v:
-                x=numeric_profit(v[k])
-                if x is not None: return x
-    if isinstance(v,(list,tuple)):
-        for x in v:
-            if isinstance(x,dict):
-                n=numeric_profit(x)
-                if n is not None: return n
+def to_float(value):
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        number = float(value)
+        return number if math.isfinite(number) else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+def betinfo_net_profit(response, order_id):
+    # IQ Option betinfo stores gross return and stake separately; net = return - stake.
+    payload = response
+    if isinstance(response, tuple):
+        if len(response) < 2 or response[0] is not True:
+            return None
+        payload = response[1]
+    if not isinstance(payload, dict):
+        return None
+    root = payload.get('result', payload)
+    data = root.get('data', {}) if isinstance(root, dict) else {}
+    row = None
+    if isinstance(data, dict):
+        row = data.get(str(order_id)) or data.get(order_id)
+    if row is None and isinstance(root, dict):
+        row = root.get(str(order_id)) or root.get(order_id)
+    if not isinstance(row, dict):
+        return None
+    gross = to_float(row.get('profit'))
+    deposit = to_float(row.get('deposit'))
+    if gross is not None and deposit is not None:
+        # The API's profit field is the returned amount in this response shape.
+        if row.get('win') not in ('', None, 'pending', 'open'):
+            return round(gross - deposit, 8)
+    # Some versions expose a direct net-profit field.
+    for key in ('profit_amount', 'profitAmount', 'close_profit', 'closeProfit', 'net_profit', 'netProfit'):
+        amount = to_float(row.get(key))
+        if amount is not None:
+            return amount
     return None
-def query_order_profit(oid):
-    for name in ('check_win_v4','check_win','get_betinfo','get_betinfo_v2'):
-        fn=getattr(IQ,name,None)
-        if not callable(fn): continue
-        try: val=numeric_profit(fn(oid))
-        except Exception as e: logging.debug('%s failed: %s',name,e); continue
-        if val is not None: return val
+
+def _betinfo_worker(order_id, event, box):
+    try:
+        info_fn = getattr(IQ, 'get_betinfo', None)
+        if callable(info_fn):
+            box['value'] = betinfo_net_profit(info_fn(order_id), order_id)
+        else:
+            box['value'] = None
+    except Exception as e:
+        box['error'] = str(e)
+        box['value'] = None
+    finally:
+        event.set()
+
+def query_order_profit(order_id):
+    # Poll the asynchronous close record without blocking the scanning thread.
+    # Avoid check_win()/check_win_v2()/check_win_v3(): they can wait forever.
+    async_fn = getattr(IQ, 'get_async_order', None)
+    if callable(async_fn):
+        try:
+            async_data = async_fn(order_id)
+            if isinstance(async_data, dict):
+                closed = async_data.get('option-closed') or async_data.get('option_closed')
+                if isinstance(closed, dict) and closed:
+                    msg = closed.get('msg', closed)
+                    if isinstance(msg, dict):
+                        gross = to_float(msg.get('profit_amount'))
+                        amount = to_float(msg.get('amount'))
+                        if gross is not None and amount is not None:
+                            return round(gross - amount, 8)
+        except Exception as e:
+            logging.debug('get_async_order failed for %s: %s', order_id, e)
+    # Fallback betinfo requests run in one daemon worker per order. If the API
+    # hangs, this main loop still logs status and never submits a duplicate order.
+    key = str(order_id)
+    task = BETINFO_TASKS.get(key)
+    if task is not None:
+        event, box = task
+        if event.is_set():
+            BETINFO_TASKS.pop(key, None)
+            value = box.get('value')
+            if value is not None:
+                return value
+        else:
+            return None
+    last_start = BETINFO_LAST_START.get(key, 0)
+    if time.time() - last_start < 15:
+        return None
+    event = threading.Event()
+    box = {}
+    BETINFO_TASKS[key] = (event, box)
+    BETINFO_LAST_START[key] = time.time()
+    threading.Thread(target=_betinfo_worker, args=(order_id, event, box), daemon=True).start()
+    logging.info('RESULT CHECK STARTED | order_id=%s | source=get_betinfo', order_id)
     return None
+
 def settle_result(asset,direction,broker_profit,m10=None,oid=''):
     if broker_profit is None: raise ValueError('Cannot settle without numeric broker result')
     net=-STAKE if float(broker_profit)==0 else float(broker_profit); win=net>0; label='WIN' if win else 'LOSS'
@@ -381,6 +433,7 @@ def settle_result(asset,direction,broker_profit,m10=None,oid=''):
     logging.info('%s %s %s %+.2f | %s',label,asset,direction,net,format_stats())
     send_telegram('<b>Trade result: {}</b>\n{} {}\nBroker: ${:+.2f}\nAccounted: ${:+.2f}\n{}'.format(label,asset,direction.upper(),broker_profit,net,format_stats())); stop_if_limit_reached()
 def wait_result(oid,asset,direction,m10):
+    logging.info('RESULT MONITOR ACTIVE | order_id=%s | asset=%s | expiry=%sm', oid, asset, EXPIRY_MINUTES)
     notice=0
     while not STOP_EVENT.is_set():
         value=query_order_profit(oid)
@@ -390,33 +443,76 @@ def wait_result(oid,asset,direction,m10):
 def recover_pending_order():
     oid=STATE.get('pending_order_id')
     if oid: logging.warning('Recovering pending order %s',oid); wait_result(oid,STATE.get('pending_asset') or 'UNKNOWN',STATE.get('pending_direction') or 'unknown',None)
-def place_trade(item,sig):
-    asset=item['name']; direction=sig['direction']
+def place_trade(item, sig):
+    asset = item['name']
+    direction = sig['direction']
+    oid = None
     with TRADE_LOCK:
-        if STOP_EVENT.is_set() or stop_if_limit_reached() or STATE.get('pending_order_id'): return
-        if item.get('id') is not None:
-            try: OP_code.ACTIVES[asset]=int(item['id'])
-            except Exception: pass
-        try: result=IQ.buy(STAKE,asset,direction,EXPIRY_MINUTES)
-        except Exception as e: log_trade(asset,direction,sig['momentum'],'ORDER_ERROR'); logging.warning('Order error %s: %s',asset,e); return
-        ok,oid=(bool(result[0]),result[1] if len(result)>1 else None) if isinstance(result,tuple) else (bool(result),None)
-        if not ok or oid is None:
-            REJECTED_ASSETS[asset]=time.time()+REJECTED_ASSET_COOLDOWN_SECONDS; inc('order_rejected'); log_trade(asset,direction,sig['momentum'],'ORDER_REJECTED'); logging.warning('Order rejected: %r',result); return
-        STATE['pending_order_id']=oid; STATE['pending_asset']=asset; STATE['pending_direction']=direction; STATE['pending_started']=now_lagos().isoformat(timespec='seconds'); save_state(True)
-        log_trade(asset,direction,sig['momentum'],'OPENED','',oid)
-        send_telegram('<b>Practice trade opened</b>\n{} {}\nStake: ${:.2f}\nM10: {:.5f} M20: {:.5f}\n{}\n{}'.format(asset,direction.upper(),STAKE,sig['momentum'],sig['momentum20'],sig['confirmation'],format_stats()))
-    wait_result(oid,asset,direction,sig['momentum'])
+        if STOP_EVENT.is_set() or stop_if_limit_reached() or STATE.get('pending_order_id'):
+            logging.warning('ORDER SKIPPED | %s %s | stopped or another order is pending', asset, direction)
+            return
+        active_id = item.get('id')
+        if active_id is not None:
+            try:
+                OP_code.ACTIVES[asset] = int(active_id)
+            except Exception:
+                pass
+        if asset not in getattr(OP_code, 'ACTIVES', {}):
+            inc('order_rejected')
+            log_trade(asset, direction, sig['momentum'], 'ORDER_REJECTED_NO_ACTIVE_ID')
+            logging.error('ORDER REJECTED BEFORE SUBMISSION | %s | active ID is missing from OP_code.ACTIVES', asset)
+            REJECTED_ASSETS[asset] = time.time() + REJECTED_ASSET_COOLDOWN_SECONDS
+            return
+        logging.info('ORDER SUBMIT BEGIN | account=PRACTICE | asset=%s | active_id=%s | direction=%s | stake=$%.2f | expiry=%sm', asset, OP_code.ACTIVES.get(asset), direction.upper(), STAKE, EXPIRY_MINUTES)
+        started = time.time()
+        try:
+            result = IQ.buy(STAKE, asset, direction, EXPIRY_MINUTES)
+        except Exception as e:
+            log_trade(asset, direction, sig['momentum'], 'ORDER_ERROR')
+            logging.exception('ORDER SUBMIT EXCEPTION | %s | after %.2fs | %s', asset, time.time() - started, e)
+            send_telegram('<b>Order submission error</b>\n{} {}\n{}\nNo automatic retry was made.'.format(asset, direction.upper(), str(e)[:300]))
+            return
+        elapsed = time.time() - started
+        logging.info('ORDER SUBMIT RESPONSE | asset=%s | elapsed=%.2fs | response=%r', asset, elapsed, result)
+        ok = False
+        oid = None
+        reason = None
+        if isinstance(result, (tuple, list)):
+            ok = bool(result[0]) if len(result) >= 1 else False
+            oid = result[1] if len(result) >= 2 else None
+            if not ok:
+                reason = oid
+        else:
+            ok = bool(result)
+            oid = result if ok else None
+        if not ok or oid is None or oid is False:
+            REJECTED_ASSETS[asset] = time.time() + REJECTED_ASSET_COOLDOWN_SECONDS
+            inc('order_rejected')
+            log_trade(asset, direction, sig['momentum'], 'ORDER_REJECTED')
+            logging.error('ORDER REJECTED | asset=%s | response=%r | reason=%r', asset, result, reason)
+            send_telegram('<b>Order rejected</b>\n{} {}\nResponse: {}'.format(asset, direction.upper(), str(result)[:350]))
+            return
+        STATE['pending_order_id'] = oid
+        STATE['pending_asset'] = asset
+        STATE['pending_direction'] = direction
+        STATE['pending_started'] = now_lagos().isoformat(timespec='seconds')
+        save_state(True)
+        log_trade(asset, direction, sig['momentum'], 'OPENED', '', oid)
+        logging.info('ORDER OPENED | asset=%s | direction=%s | order_id=%s | stake=$%.2f | expiry=%sm', asset, direction.upper(), oid, STAKE, EXPIRY_MINUTES)
+        send_telegram('<b>Practice trade opened</b>\n{} {}\nOrder ID: {}\nStake: ${:.2f}\nM10: {:.5f} M20: {:.5f}\n{}\n{}'.format(asset, direction.upper(), oid, STAKE, sig['momentum'], sig['momentum20'], sig['confirmation'], format_stats()))
+    wait_result(oid, asset, direction, sig['momentum'])
+
 def report_diagnostics():
     with DIAG_LOCK: s=dict(DIAG); [DIAG.__setitem__(k,0) for k in DIAG]
     logging.info('SCAN DIAGNOSTICS | scanned=%s candle_ok=%s empty=%s insufficient=%s evaluated=%s patterns=%s followup_ok=%s followup_rejected=%s m10_extreme_ok=%s m10_extreme_rejected=%s m10_turn_ok=%s m10_turn_rejected=%s m20_trend_ok=%s m20_trend_rejected=%s setups=%s duplicates=%s order_rejected=%s',*[s[k] for k in DIAG_KEYS])
 def main():
     connect_iq(); refresh_assets(True)
-    if not ASSETS: raise RuntimeError('No supported forex or crypto assets discovered')
+    if not ASSETS: raise RuntimeError('No supported normal or OTC forex assets discovered')
     if stop_if_limit_reached(): return
     if STATE.get('pending_order_id'): recover_pending_order()
     if STOP_EVENT.is_set() or stop_if_limit_reached():
         return
-    send_telegram('<b>Scanner started</b>\nPRACTICE only\nNormal/OTC forex + normal/OTC crypto; M10 extreme + turn; M20 trend; 12 patterns + separate closed confirmation candle\n{}'.format(format_stats()))
+    send_telegram('<b>Scanner started</b>\nPRACTICE only\nNormal/OTC forex ONLY; crypto excluded; M10 extreme + turn; M20 trend; 12 patterns + separate closed confirmation candle\n{}'.format(format_stats()))
     heartbeat=time.time(); diagnostic=time.time()
     while not STOP_EVENT.is_set():
         if stop_if_limit_reached(): break
