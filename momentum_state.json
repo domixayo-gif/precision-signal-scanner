@@ -1,0 +1,17 @@
+{
+  "date": "2026-10-23",
+  "session_id": "40010357960-1",
+  "profit": 0.0,
+  "wins": 0,
+  "losses": 0,
+  "resolved": 0,
+  "consecutive_losses": 0,
+  "pending_order_id": 14383554604,
+  "pending_asset": "ATOMUSD-OTC",
+  "pending_direction": "put",
+  "pending_started": "2026-10-23T20:21:23+01:00",
+  "last_signals": {
+    "ATOMUSD-OTC": "1792783140"
+  },
+  "stop_reason": ""
+}
