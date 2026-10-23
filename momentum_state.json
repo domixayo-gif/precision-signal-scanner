@@ -6,14 +6,15 @@
   "losses": 0,
   "resolved": 2,
   "consecutive_losses": 0,
-  "pending_order_id": null,
-  "pending_asset": null,
-  "pending_direction": null,
-  "pending_started": null,
+  "pending_order_id": 14384151657,
+  "pending_asset": "NZDUSD-OTC",
+  "pending_direction": "put",
+  "pending_started": "2026-10-24T00:44:13+01:00",
   "last_signals": {
     "SHIBUSD-OTC": "1792798560",
     "MANAUSD-OTC": "1792798740",
-    "SANDUSD-OTC": "1792798740"
+    "SANDUSD-OTC": "1792798740",
+    "NZDUSD-OTC": "1792798920"
   },
   "stop_reason": "",
   "settled_order_ids": [
