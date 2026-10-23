@@ -1,21 +1,23 @@
 {
   "date": "2026-10-24",
   "session_id": "40040612996-1",
-  "profit": 0.82,
-  "wins": 1,
+  "profit": 1.65,
+  "wins": 2,
   "losses": 0,
-  "resolved": 1,
+  "resolved": 2,
   "consecutive_losses": 0,
-  "pending_order_id": 14384143457,
-  "pending_asset": "MANAUSD-OTC",
-  "pending_direction": "call",
-  "pending_started": "2026-10-24T00:41:11+01:00",
+  "pending_order_id": null,
+  "pending_asset": null,
+  "pending_direction": null,
+  "pending_started": null,
   "last_signals": {
     "SHIBUSD-OTC": "1792798560",
-    "MANAUSD-OTC": "1792798740"
+    "MANAUSD-OTC": "1792798740",
+    "SANDUSD-OTC": "1792798740"
   },
   "stop_reason": "",
   "settled_order_ids": [
-    "14384135781"
+    "14384135781",
+    "14384143457"
   ]
 }
