@@ -5,6 +5,7 @@ import requests
 import iqoptionapi.constants as OP_code
 from iqoptionapi.stable_api import IQ_Option
 
+# NORMAL FOREX + OTC FOREX + NORMAL CRYPTO + OTC CRYPTO.
 # MOMENTUM 10 + MOMENTUM 20 + 12 candle patterns + a separate closed follow-up candle.
 # PRACTICE ACCOUNT ONLY.
 IQ_EMAIL=os.getenv('IQ_EMAIL','').strip(); IQ_PASSWORD=os.getenv('IQ_PASSWORD','').strip()
@@ -117,27 +118,69 @@ def stop_if_limit_reached():
         logging.warning('%s | %s',reason,format_stats()); send_telegram('<b>SCANNER STOPPED</b>\n{}\n{}'.format(reason,format_stats()))
     return bool(reason)
 
-def normalize_forex_name(value):
-    if not isinstance(value,str): return None,False
-    raw=value.strip().upper().split('.')[-1]; otc='OTC' in raw
-    letters=re.sub('[^A-Z]','',raw)
+CRYPTO_SYMBOLS={
+    'BTC','ETH','XRP','LTC','BCH','ETC','EOS','ADA','DOT','SOL','DOGE','TRX',
+    'DASH','ZEC','BNB','LINK','XLM','TON','SHIB','AVAX','UNI','ATOM','NEAR',
+    'SAND','MANA','FIL','ICP','APT','ARB','OP','XMR','XTZ','VET','ALGO','AAVE',
+    'FTM','MATIC','POL','HBAR','QNT','APE','EGLD','THETA','FLOW','CHZ','KAVA',
+    'COMP','CRV','MKR','SNX','YFI','GRT','ENJ','RUNE','LDO','IMX','SEI','TIA',
+    'WIF','PEPE','FET','INJ','KAS','SUI','TAO','ONDO','JUP','BONK','BTT','ZIL',
+    'IOTA','NEO','WAVES','QTUM','BAT','ZRX','CAKE','MINA','ROSE','CELO','KSM',
+    'DCR','DGB','ZEN','XEM','ONT','ICX','RVN','SC','ANKR','COTI','STX'
+}
+CRYPTO_QUOTES=set(CURRENCIES)|{'USDT','USDC','BTC','ETH','BNB','SOL','XRP','LTC'}
+
+def classify_asset_name(value):
+    # Return canonical ticker, market type and OTC flag; exclude unrelated assets.
+    if not isinstance(value,str): return None,None,False
+    raw=value.strip().upper().split('.')[-1].strip()
+    if not raw: return None,None,False
+    otc=bool(re.search(r'(^|[-_\s])OTC($|[-_\s])',raw)) or raw.endswith('OTC')
+    letters=re.sub('[^A-Z0-9]','',raw)
     for suffix in ('OTC','BINARY','TURBO','DIGITAL'):
         if letters.endswith(suffix): letters=letters[:-len(suffix)]
-    if len(letters)<6: return None,otc
-    pair=letters[-6:]
-    if pair[:3] not in CURRENCIES or pair[3:] not in CURRENCIES: return None,otc
-    return pair,otc
+    # Forex pairs: EURUSD, GBPJPY, and other supported three-letter currency pairs.
+    forex_pair=letters[-6:] if len(letters)>=6 else ''
+    if len(forex_pair)==6 and forex_pair[:3] in CURRENCIES and forex_pair[3:] in CURRENCIES:
+        kind='otc_forex' if otc else 'normal_forex'
+        return forex_pair+('-OTC' if otc else ''),kind,otc
+    # Crypto pairs use a known crypto base and a supported fiat/crypto quote.
+    for base in sorted(CRYPTO_SYMBOLS,key=len,reverse=True):
+        if not letters.startswith(base): continue
+        quote=letters[len(base):]
+        if quote in CRYPTO_QUOTES and quote:
+            kind='otc_crypto' if otc else 'normal_crypto'
+            return base+quote+('-OTC' if otc else ''),kind,otc
+    return None,None,otc
+
+def normalize_forex_name(value):
+    # Compatibility helper retained for older diagnostics.
+    symbol,kind,otc=classify_asset_name(value)
+    if symbol is None or kind not in ('normal_forex','otc_forex'): return None,otc
+    return symbol,otc
+
 def add_asset(found,name,active_id=None):
-    pair,otc=normalize_forex_name(name)
-    if not pair or otc: return
+    symbol,kind,otc=classify_asset_name(name)
+    if not symbol: return
+    raw=str(name).strip().upper().split('.')[-1].strip()
+    # Keep IQ Option's original ticker label where possible (especially -OTC).
+    if not re.match(r'^[A-Z0-9]+(?:[-_ ]OTC)?$',raw):
+        raw=symbol
+    else:
+        raw=re.sub(r'[-_ ]OTC$','-OTC',raw)
     resolved=None
-    for c in (active_id,getattr(OP_code,'ACTIVES',{}).get(pair)):
+    active_map=getattr(OP_code,'ACTIVES',{})
+    candidates=(active_map.get(raw),active_map.get(symbol),active_map.get(str(name).strip()),active_id)
+    for c in candidates:
         try:
             if c is not None: resolved=int(c); break
         except (TypeError,ValueError,OverflowError): pass
-    found[pair]={'name':pair,'pair':pair,'otc':False,'id':resolved}
+    item_name=raw or symbol
+    found[item_name]={'name':item_name,'pair':symbol,'otc':otc,'market_type':kind,'id':resolved}
     if resolved is not None:
-        try: OP_code.ACTIVES[pair]=resolved
+        try: OP_code.ACTIVES[item_name]=resolved
+        except Exception: pass
+        try: OP_code.ACTIVES[symbol]=resolved
         except Exception: pass
 def walk_asset_tree(node,found,parent=None):
     if isinstance(node,dict):
@@ -161,9 +204,12 @@ def refresh_assets(force=False):
             fn=getattr(IQ,mn,None)
             if callable(fn): walk_asset_tree(fn(),found)
         except Exception as e: logging.warning('%s discovery failed: %s',mn,e)
-    ASSETS=sorted([x for x in found.values() if not x['otc'] and len(x['pair'])==6],key=lambda x:x['name']); ASSET_REFRESH_AT=time.time()
-    logging.info('NORMAL FOREX ONLY: %s pairs loaded; OTC excluded',len(ASSETS))
-    if ASSETS: send_telegram('<b>Normal forex assets refreshed</b>\nPairs: {}\nOTC disabled'.format(len(ASSETS)))
+    ASSETS=sorted(found.values(),key=lambda x:(x.get('market_type',''),x['name']))
+    ASSET_REFRESH_AT=time.time()
+    counts={k:sum(1 for x in ASSETS if x.get('market_type')==k) for k in ('normal_forex','otc_forex','normal_crypto','otc_crypto')}
+    logging.info('MARKETS LOADED | normal forex=%s OTC forex=%s normal crypto=%s OTC crypto=%s total=%s',counts['normal_forex'],counts['otc_forex'],counts['normal_crypto'],counts['otc_crypto'],len(ASSETS))
+    if ASSETS:
+        send_telegram('<b>Markets refreshed</b>\nNormal forex: {}\nOTC forex: {}\nNormal crypto: {}\nOTC crypto: {}\nTotal: {}'.format(counts['normal_forex'],counts['otc_forex'],counts['normal_crypto'],counts['otc_crypto'],len(ASSETS)))
     return ASSETS
 def disable_digital_open_worker(self): logging.info('Disabled unused digital watcher')
 def safe_get_candles(self,active,interval,count,endtime):
@@ -365,12 +411,12 @@ def report_diagnostics():
     logging.info('SCAN DIAGNOSTICS | scanned=%s candle_ok=%s empty=%s insufficient=%s evaluated=%s patterns=%s followup_ok=%s followup_rejected=%s m10_extreme_ok=%s m10_extreme_rejected=%s m10_turn_ok=%s m10_turn_rejected=%s m20_trend_ok=%s m20_trend_rejected=%s setups=%s duplicates=%s order_rejected=%s',*[s[k] for k in DIAG_KEYS])
 def main():
     connect_iq(); refresh_assets(True)
-    if not ASSETS: raise RuntimeError('No normal forex assets discovered')
+    if not ASSETS: raise RuntimeError('No supported forex or crypto assets discovered')
     if stop_if_limit_reached(): return
     if STATE.get('pending_order_id'): recover_pending_order()
     if STOP_EVENT.is_set() or stop_if_limit_reached():
         return
-    send_telegram('<b>Scanner started</b>\nPRACTICE only\nM10 extreme + turn; M20 trend; 12 patterns + separate closed confirmation candle\n{}'.format(format_stats()))
+    send_telegram('<b>Scanner started</b>\nPRACTICE only\nNormal/OTC forex + normal/OTC crypto; M10 extreme + turn; M20 trend; 12 patterns + separate closed confirmation candle\n{}'.format(format_stats()))
     heartbeat=time.time(); diagnostic=time.time()
     while not STOP_EVENT.is_set():
         if stop_if_limit_reached(): break
@@ -403,7 +449,7 @@ def main():
                 inc('setups_found'); key=str(sig['candle_time']); last=STATE.setdefault('last_signals',{})
                 if last.get(asset)==key: inc('duplicate_signals'); continue
                 last[asset]=key; save_state(); log_trade(asset,sig['direction'],sig['momentum'],'SIGNAL')
-                logging.info('CONFIRMED %s %s M10=%.5f M20=%.5f pattern=%s',asset,sig['direction'],sig['momentum'],sig['momentum20'],sig['pattern'])
+                logging.info('CONFIRMED %s [%s] %s M10=%.5f M20=%.5f pattern=%s',asset,item.get('market_type','unknown'),sig['direction'],sig['momentum'],sig['momentum20'],sig['pattern'])
                 send_telegram('<b>Confirmed setup</b>\n{} {}\nPattern: {}\nM10: {:.5f} M20: {:.5f}\n{}'.format(asset,sig['direction'].upper(),sig['pattern'],sig['momentum'],sig['momentum20'],sig['confirmation']))
                 if AUTO_TRADE: place_trade(item,sig)
             except Exception as e: logging.warning('Scan error for %s: %s',asset,e)
