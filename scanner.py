@@ -14,7 +14,7 @@ import requests
 import iqoptionapi.constants as OP_code
 from iqoptionapi.stable_api import IQ_Option
 
-# PRACTICE-ONLY scanner: forex + crypto pairs, including OTC when IQ Option exposes them.
+# PRACTICE-ONLY scanner: regular forex + OTC forex only. Crypto/indices/commodities excluded.
 # Strategy: Momentum 10 extreme-turn + candlestick pattern + separate closed follow-up candle.
 IQ_EMAIL = os.getenv('IQ_EMAIL', '').strip()
 IQ_PASSWORD = os.getenv('IQ_PASSWORD', '').strip()
@@ -81,8 +81,7 @@ STATE_LOCK = threading.RLock()
 DIAG_LOCK = threading.Lock()
 RESULT_MONITOR_LOCK = threading.Lock()
 RESULT_MONITORS = {}
-BETINFO_TASKS = {}
-BETINFO_LAST_START = {}
+ASYNC_API_MISSING_LOGGED = False
 NEXT_WORKFLOW_REQUESTED = False
 
 DIAG_KEYS = [
@@ -395,16 +394,19 @@ def refresh_assets(force=False):
                 walk_asset_tree(method(), found)
         except Exception as exc:
             logging.warning('%s discovery failed: %s', method_name, exc)
-    ASSETS = sorted(found.values(), key=lambda item: (item.get('market_type', ''), item['name']))
+    forex_assets = [
+        item for item in found.values()
+        if item.get('market_type') in ('normal_forex', 'otc_forex')
+    ]
+    ASSETS = sorted(forex_assets, key=lambda item: (item.get('market_type', ''), item['name']))
     ASSET_REFRESH_AT = time.time()
     counts = {}
     for item in ASSETS:
         kind = item.get('market_type', 'unknown')
         counts[kind] = counts.get(kind, 0) + 1
     logging.info(
-        'MARKETS LOADED | normal forex=%s OTC forex=%s crypto=%s OTC crypto=%s total=%s',
-        counts.get('normal_forex', 0), counts.get('otc_forex', 0),
-        counts.get('crypto', 0), counts.get('otc_crypto', 0), len(ASSETS)
+        'MARKETS LOADED | normal forex=%s OTC forex=%s total forex=%s',
+        counts.get('normal_forex', 0), counts.get('otc_forex', 0), len(ASSETS)
     )
     return ASSETS
 
@@ -429,7 +431,7 @@ def connect_iq():
             logging.info('Connected to IQ Option in PRACTICE mode')
             send_telegram(
                 '<b>Scanner connected</b>\nPRACTICE only\n'
-                'Forex + crypto pairs where available\nStake: ${:.2f}\n{}'.format(STAKE, format_stats())
+                'Forex only (normal + OTC)\nStake: ${:.2f}\n{}'.format(STAKE, format_stats())
             )
             return
         except Exception as exc:
@@ -744,87 +746,51 @@ def to_float(value):
         return None
 
 
-def betinfo_net_profit(response, order_id):
-    payload = response
-    if isinstance(response, tuple):
-        if len(response) < 2 or response[0] is not True:
-            return None
-        payload = response[1]
-    if not isinstance(payload, dict):
+def async_order_net_profit(async_data):
+    """Return net binary-option profit only when IQ reports the order closed."""
+    if not isinstance(async_data, dict):
         return None
-    root = payload.get('result', payload)
-    data = root.get('data', {}) if isinstance(root, dict) else {}
-    row = (data.get(str(order_id)) or data.get(order_id)) if isinstance(data, dict) else None
-    if row is None and isinstance(root, dict):
-        row = root.get(str(order_id)) or root.get(order_id)
-    if not isinstance(row, dict):
+
+    closed = async_data.get('option-closed')
+    if not closed:
+        closed = async_data.get('option_closed')
+    if not isinstance(closed, dict) or not closed:
         return None
-    gross = to_float(row.get('profit'))
-    deposit = to_float(row.get('deposit'))
-    if gross is not None and deposit is not None and row.get('win') not in ('', None, 'pending', 'open'):
-        return round(gross - deposit, 8)
-    for key in ('profit_amount', 'profitAmount', 'close_profit', 'closeProfit', 'net_profit', 'netProfit'):
-        amount = to_float(row.get(key))
-        if amount is not None:
-            return amount
-    return None
 
+    message = closed.get('msg', closed)
+    if not isinstance(message, dict):
+        return None
 
-def _betinfo_worker(order_id, event, box):
-    try:
-        with BROKER_API_LOCK:
-            client = IQ
-            info_method = getattr(client, 'get_betinfo', None) if client is not None else None
-            box['value'] = betinfo_net_profit(info_method(order_id), order_id) if callable(info_method) else None
-    except Exception as exc:
-        box['error'] = str(exc)
-        box['value'] = None
-        logging.warning('get_betinfo failed for order %s: %s', order_id, exc)
-    finally:
-        event.set()
+    gross_return = to_float(message.get('profit_amount'))
+    stake_amount = to_float(message.get('amount'))
+    if gross_return is None or stake_amount is None:
+        return None
+
+    # IQ Option's async order payload reports total returned amount in
+    # profit_amount and the original stake in amount. Their difference is net.
+    return round(gross_return - stake_amount, 8)
 
 
 def query_order_profit(order_id):
+    """Poll the asynchronous closed-order event; never call blocking get_betinfo."""
+    global ASYNC_API_MISSING_LOGGED
     try:
         with BROKER_API_LOCK:
             client = IQ
             async_method = getattr(client, 'get_async_order', None) if client is not None else None
-            if callable(async_method):
-                async_data = async_method(order_id)
-                if isinstance(async_data, dict):
-                    closed = async_data.get('option-closed') or async_data.get('option_closed')
-                    if isinstance(closed, dict) and closed:
-                        message = closed.get('msg', closed)
-                        if isinstance(message, dict):
-                            gross = to_float(message.get('profit_amount'))
-                            amount = to_float(message.get('amount'))
-                            if gross is not None and amount is not None:
-                                return round(gross - amount, 8)
+            if not callable(async_method):
+                if not ASYNC_API_MISSING_LOGGED:
+                    logging.error('get_async_order is unavailable in the installed iqoptionapi package')
+                    ASYNC_API_MISSING_LOGGED = True
+                return None
+            data = async_method(order_id)
+        value = async_order_net_profit(data)
+        if value is not None:
+            logging.info('CLOSED ORDER PROFIT RECEIVED | order_id=%s | net=%+.2f', order_id, value)
+        return value
     except Exception as exc:
-        logging.debug('get_async_order failed for %s: %s', order_id, exc)
-    key = str(order_id)
-    task = BETINFO_TASKS.get(key)
-    if task is not None:
-        event, box = task
-        if event.is_set():
-            BETINFO_TASKS.pop(key, None)
-            value = box.get('value')
-            if value is not None:
-                return value
-        else:
-            return None
-    if time.time() - BETINFO_LAST_START.get(key, 0) < 15:
+        logging.debug('get_async_order poll failed for order %s: %s', order_id, exc)
         return None
-    event = threading.Event()
-    box = {}
-    BETINFO_TASKS[key] = (event, box)
-    BETINFO_LAST_START[key] = time.time()
-    threading.Thread(
-        target=_betinfo_worker, args=(order_id, event, box),
-        daemon=True
-    ).start()
-    logging.info('RESULT CHECK STARTED | order_id=%s | source=get_betinfo', order_id)
-    return None
 
 
 def settle_result(asset, direction, broker_profit, m10=None, order_id=''):
@@ -867,7 +833,7 @@ def settle_result(asset, direction, broker_profit, m10=None, order_id=''):
 
 def wait_result(order_id, asset, direction, m10):
     logging.info(
-        'RESULT MONITOR ACTIVE | order_id=%s | asset=%s | expiry=%sm',
+        'RESULT MONITOR ACTIVE | order_id=%s | asset=%s | expiry=%sm | source=get_async_order only',
         order_id, asset, EXPIRY_MINUTES
     )
     last_notice = 0
@@ -880,7 +846,10 @@ def wait_result(order_id, asset, direction, m10):
             settle_result(asset, direction, value, m10, order_id)
             return
         if time.time() - last_notice >= 60:
-            logging.warning('Broker result unreadable for order %s; keeping pending', order_id)
+            logging.warning(
+                'ASYNC RESULT NOT READY | order_id=%s | keeping pending; new trades blocked; get_betinfo disabled',
+                order_id
+            )
             last_notice = time.time()
         time.sleep(ORDER_RESULT_RETRY_SECONDS)
 
@@ -1033,7 +1002,7 @@ def main():
     reconcile_known_closed_order()
     refresh_assets(True)
     if not ASSETS:
-        raise RuntimeError('No supported forex or crypto assets discovered')
+        raise RuntimeError('No supported regular/OTC forex assets discovered')
     if stop_if_limit_reached():
         return
     if STATE.get('pending_order_id'):
