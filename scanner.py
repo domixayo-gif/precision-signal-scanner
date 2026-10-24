@@ -69,6 +69,7 @@ state = DEFAULT_STATE.copy()
 scan_requested = False
 last_auto_scan = 0.0
 busy = False
+OPEN_TIME_CACHE = None
 
 
 def now_lagos():
@@ -262,8 +263,13 @@ def get_asset_names():
 
 
 def asset_is_open(asset):
+    # Load the market-open table once per scan, not once per asset.
+    # Repeated calls here can make the scanner appear frozen for minutes.
+    global OPEN_TIME_CACHE
     try:
-        opening = IQ.get_all_open_time()
+        if OPEN_TIME_CACHE is None:
+            OPEN_TIME_CACHE = IQ.get_all_open_time()
+        opening = OPEN_TIME_CACHE
         saw_market_table = False
         for market_type in ("turbo", "binary"):
             market = opening.get(market_type, {}) if isinstance(opening, dict) else {}
@@ -274,7 +280,8 @@ def asset_is_open(asset):
                 return True
         # If the API didn't provide a usable market table, let candle query decide.
         return not saw_market_table
-    except Exception:
+    except Exception as exc:
+        logging.warning("Could not check open status for %s: %s", asset, exc)
         return True
 
 
@@ -404,31 +411,46 @@ def analyze_asset(asset):
 
 
 def scan_market():
-    global busy
+    global busy, OPEN_TIME_CACHE
     if busy:
+        telegram_send("⏳ A market scan is already running. Please wait for its result.")
         return []
     busy = True
     signals = []
+    OPEN_TIME_CACHE = None
+    started = time.time()
     try:
+        telegram_send("🔎 Reading IQ Option market and loading currency pairs…")
         assets = get_asset_names()
         if not assets:
-            telegram_send("⚠️ I couldn't get the currency-pair list from IQ Option. Check the connection.")
+            telegram_send("⚠️ IQ Option connected, but no currency-pair names were returned. Check the API asset list in the Actions log.")
+            logging.error("No valid currency assets found in IQ Option asset list.")
             return []
         logging.info("Scanning %d currency pairs.", len(assets))
+        telegram_send(f"🔎 Market scan started: checking {len(assets)} currency pairs. I'll send progress while scanning.")
         for index, asset in enumerate(assets, start=1):
             try:
                 result = analyze_asset(asset)
                 if result:
                     signals.append(result)
             except Exception as exc:
-                logging.debug("Skip %s: %s", asset, exc)
+                logging.warning("Skip %s due to scan error: %s", asset, exc)
+            if index % 10 == 0 or index == len(assets):
+                logging.info("Market scan progress: %d/%d assets checked; %d valid setups.", index, len(assets), len(signals))
+                telegram_send(f"🔎 Market scan progress: {index}/{len(assets)} pairs checked. Valid setups found: {len(signals)}.", keyboard=False)
             time.sleep(REQUEST_PAUSE_SECONDS)
         signals.sort(key=lambda item: (item["score"], abs(item["turn"])), reverse=True)
         state["last_scan"] = now_lagos().strftime("%Y-%m-%d %H:%M:%S WAT")
         save_state()
+        logging.info("Market scan completed in %.1f seconds; %d valid setups.", time.time() - started, len(signals))
         return signals
+    except Exception as exc:
+        logging.exception("Market scan failed")
+        telegram_send(f"🚨 Market scan failed: {type(exc).__name__}: {exc}")
+        return []
     finally:
         busy = False
+        OPEN_TIME_CACHE = None
 
 
 def format_signals(signals, title):
@@ -636,6 +658,7 @@ def main():
     global state
     state = load_state()
     connect_iq()
+    logging.info("Telegram polling enabled; waiting for button commands.")
     telegram_send(
         "✅ PRACTICE MOMENTUM SCANNER ONLINE\n"
         "Buttons: START AUTO, STOP AUTO, SCAN MARKET, STATUS.\n"
