@@ -1,23 +1,23 @@
-# MOMENTUM 10 IQ OPTION SCANNER
-# ALL DISCOVERABLE ASSETS | PRACTICE ONLY
-# Manual scan never places trades. AUTO resets OFF on every restart.
-
 import os
-import re
-import json
 import time
+import json
 import math
-import base64
 import logging
 import threading
-from datetime import datetime
-from zoneinfo import ZoneInfo
-
+import traceback
 import requests
+
+from datetime import datetime, timezone
 from iqoptionapi.stable_api import IQ_Option
 
 
-# ================= SETTINGS =================
+# ============================================================
+# ZETA MOMENTUM 10 SCANNER
+# PRACTICE ONLY — MANUAL SCAN NEVER PLACES TRADES
+# ============================================================
+
+BOT_NAME = "Momentum 10 IQ Option Scanner"
+
 BALANCE_MODE = "PRACTICE"
 AUTO_TRADING_ALLOWED = True
 
@@ -25,6 +25,8 @@ STAKE = 1.0
 EXPIRY_MINUTES = 1
 CANDLE_SECONDS = 60
 LOOKBACK_CANDLES = 50
+
+# MOMENTUM 10 ONLY
 MOMENTUM_PERIOD = 10
 EXTREME_PERCENTILE = 0.08
 MIN_TURN_DISTANCE = 0.06
@@ -39,1864 +41,1167 @@ REQUEST_PAUSE_SECONDS = 0.12
 RECONNECT_SECONDS = 30
 HEARTBEAT_SECONDS = 300
 RESULT_TIMEOUT_SECONDS = EXPIRY_MINUTES * 60 + 45
+
 TOP_SIGNALS = 3
 PROGRESS_EVERY = 20
+
 STATE_FILE = "momentum_state.json"
 
-LAGOS = ZoneInfo("Africa/Lagos")
+IQ_EMAIL = os.getenv("IQ_EMAIL", "")
+IQ_PASSWORD = os.getenv("IQ_PASSWORD", "")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-IQ_EMAIL = os.getenv("IQ_EMAIL", "").strip()
-IQ_PASSWORD = os.getenv("IQ_PASSWORD", "").strip()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
-GITHUB_REPOSITORY = os.getenv("GITHUB_REPOSITORY", "").strip()
-GITHUB_REF_NAME = os.getenv("GITHUB_REF_NAME", "main").strip() or "main"
-
-# Every market category returned by the API is discovered dynamically.
-# AUTO orders remain limited to the binary/turbo markets supported by IQ.buy().
-MARKET_TYPES = (
-    "turbo",
-    "binary",
-    "digital",
-    "forex",
-    "cfd",
-    "crypto",
-    "commodity",
-    "commodities",
-    "index",
-    "indices",
-    "stocks",
-    "etf",
-)
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+GITHUB_REPOSITORY = os.getenv("GITHUB_REPOSITORY", "")
+GITHUB_REF_NAME = os.getenv("GITHUB_REF_NAME", "main")
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
+    format="%(asctime)s %(levelname)s %(message)s"
 )
 
-DEFAULT_STATE = {
-    "date": "",
-    "daily_pnl": 0.0,
-    "resolved_trades": 0,
-    "consecutive_losses": 0,
-    "auto_enabled": False,
-    "last_update_id": 0,
-    "last_scan": "Never",
-    "last_scan_count": 0,
-    "last_scan_setups": 0,
-    "last_scan_rejections": {},
-    "last_auto_candles": {},
-    "pending_trade": None,
-}
 
-session = requests.Session()
-IQ = None
-practice_verified = False
-state = dict(DEFAULT_STATE)
+# ============================================================
+# SKIP THE BROKEN DIGITAL-OPEN DISCOVERY THREAD
+# ============================================================
 
-scan_requested = False
-busy = False
-OPEN_TIME_CACHE = None
-last_auto_scan = 0.0
-last_heartbeat = 0.0
-last_connect_attempt = 0.0
-
-result_reader_thread = None
-result_reader_event = None
-result_reader_result = {}
-
-state_lock = threading.RLock()
-scan_lock = threading.Lock()
-api_lock = threading.RLock()
-save_lock = threading.Lock()
+def skip_digital_open(self):
+    return
 
 
-# ================= IQ OPTION API SAFETY =================
-def disable_unsafe_digital_background_worker():
-    """
-    The installed iqoptionapi version may launch a digital-market worker
-    that crashes when the broker returns None for digital underlying data.
-
-    This scanner does not place digital orders. Disable that private worker
-    when the installed library exposes it. Other market discovery and candle
-    requests are still attempted normally.
-    """
-    method_name = "_IQ_Option__get_digital_open"
-
-    if hasattr(IQ_Option, method_name):
-        try:
-            setattr(IQ_Option, method_name, lambda self: None)
-            logging.info(
-                "Disabled optional digital-market background worker; "
-                "scanner will discover available assets independently."
-            )
-        except Exception as exc:
-            logging.warning(
-                "Could not disable digital background worker: %s", exc
-            )
-    else:
-        logging.info(
-            "Digital worker method not found; using standard API behaviour."
-        )
-
-
-disable_unsafe_digital_background_worker()
-
-
-# ================= TIME AND STATE =================
-def now_lagos():
-    return datetime.now(LAGOS)
-
-
-def day_key():
-    return now_lagos().strftime("%Y-%m-%d")
-
-
-def github_contents_url():
-    if not GITHUB_REPOSITORY:
-        return ""
-    return (
-        f"https://api.github.com/repos/"
-        f"{GITHUB_REPOSITORY}/contents/{STATE_FILE}"
+try:
+    IQ_Option._IQ_Option__get_digital_open = skip_digital_open
+except Exception:
+    logging.warning(
+        "Could not disable digital-open discovery; "
+        "continuing with normal API initialization."
     )
 
 
-def github_headers():
-    return {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
+# ============================================================
+# GLOBAL STATE
+# ============================================================
+
+IQ = None
+RUNNING = True
+AUTO_MODE = False
+
+STATE_LOCK = threading.RLock()
+TELEGRAM_OFFSET = 0
+
+OPEN_TRADES = {}
+LAST_SIGNAL_BY_ASSET = {}
+LAST_HEARTBEAT = 0
+
+MANUAL_SCAN_REQUESTED = False
+SCAN_IN_PROGRESS = False
+
+STATE = {
+    "date": "",
+    "daily_pl": 0.0,
+    "resolved": 0,
+    "wins": 0,
+    "losses": 0,
+    "consecutive_losses": 0,
+    "signals": 0,
+    "executed": 0,
+    "blocked": 0,
+    "history": []
+}
 
 
-def load_state():
-    loaded = {}
-    url = github_contents_url()
+# ============================================================
+# GENERAL HELPERS
+# ============================================================
 
-    if url and GITHUB_TOKEN:
-        try:
-            response = session.get(
-                url,
-                headers=github_headers(),
-                params={"ref": GITHUB_REF_NAME},
-                timeout=15,
-            )
+def utc_now():
+    return datetime.now(timezone.utc)
 
-            if response.ok:
-                encoded = response.json().get("content", "")
-                if encoded:
-                    loaded = json.loads(
-                        base64.b64decode(encoded).decode("utf-8")
-                    )
-            elif response.status_code != 404:
-                logging.warning(
-                    "GitHub state load failed: %s",
-                    response.status_code,
-                )
 
-        except Exception as exc:
-            logging.warning("GitHub state load error: %s", exc)
+def today_string():
+    return utc_now().strftime("%Y-%m-%d")
 
-    if not isinstance(loaded, dict) or not loaded:
-        try:
-            with open(STATE_FILE, "r", encoding="utf-8") as handle:
-                loaded = json.load(handle)
-        except Exception:
-            loaded = {}
 
-    result = dict(DEFAULT_STATE)
+def money(value):
+    return f"${float(value):.2f}"
 
-    if isinstance(loaded, dict):
-        result.update(loaded)
 
-    if result.get("date") != day_key():
-        result["date"] = day_key()
-        result["daily_pnl"] = 0.0
-        result["resolved_trades"] = 0
-        result["consecutive_losses"] = 0
-
-    # AUTO never resumes after a workflow restart.
-    result["auto_enabled"] = False
-
+def safe_float(value, default=0.0):
     try:
-        result["last_update_id"] = max(
-            0, int(result.get("last_update_id", 0) or 0)
-        )
-        result["daily_pnl"] = float(result.get("daily_pnl", 0) or 0)
-        result["resolved_trades"] = max(
-            0, int(result.get("resolved_trades", 0) or 0)
-        )
-        result["consecutive_losses"] = max(
-            0, int(result.get("consecutive_losses", 0) or 0)
-        )
-    except (ValueError, TypeError):
-        logging.warning("Invalid numeric state; using safe defaults.")
-        result["daily_pnl"] = 0.0
-        result["resolved_trades"] = 0
-        result["consecutive_losses"] = 0
-
-    for key in ("last_auto_candles", "last_scan_rejections"):
-        if not isinstance(result.get(key), dict):
-            result[key] = {}
-
-    if not isinstance(result.get("pending_trade"), dict):
-        result["pending_trade"] = None
-
-    return result
+        result = float(value)
+        if math.isfinite(result):
+            return result
+    except Exception:
+        pass
+    return default
 
 
-def save_state(remote=True):
-    with save_lock:
-        with state_lock:
-            state["date"] = day_key()
-            snapshot = json.loads(json.dumps(state))
-
-        try:
-            temporary = STATE_FILE + ".tmp"
-            with open(temporary, "w", encoding="utf-8") as handle:
-                json.dump(snapshot, handle, indent=2)
-            os.replace(temporary, STATE_FILE)
-        except Exception as exc:
-            logging.warning("Local state save failed: %s", exc)
-
-        if not remote:
-            return
-
-        url = github_contents_url()
-
-        if not url or not GITHUB_TOKEN:
-            return
-
-        content = base64.b64encode(
-            json.dumps(snapshot, indent=2).encode("utf-8")
-        ).decode("ascii")
-
-        for attempt in range(3):
-            try:
-                current = session.get(
-                    url,
-                    headers=github_headers(),
-                    params={"ref": GITHUB_REF_NAME},
-                    timeout=15,
-                )
-
-                sha = current.json().get("sha") if current.ok else None
-
-                if not current.ok and current.status_code != 404:
-                    logging.warning(
-                        "GitHub state lookup failed: %s",
-                        current.status_code,
-                    )
-                    time.sleep(attempt + 1)
-                    continue
-
-                body = {
-                    "message": "Update Momentum 10 scanner state",
-                    "content": content,
-                    "branch": GITHUB_REF_NAME,
-                }
-
-                if sha:
-                    body["sha"] = sha
-
-                response = session.put(
-                    url,
-                    headers=github_headers(),
-                    json=body,
-                    timeout=20,
-                )
-
-                if response.ok:
-                    return
-
-                logging.warning(
-                    "GitHub state save failed: %s %s",
-                    response.status_code,
-                    response.text[:160],
-                )
-
-                if response.status_code not in (409, 422):
-                    break
-
-                time.sleep(attempt + 1)
-
-            except Exception as exc:
-                logging.warning("GitHub state save error: %s", exc)
-                time.sleep(attempt + 1)
-
-
-def enforce_new_day():
-    changed = False
-
-    with state_lock:
-        if state.get("date") != day_key():
-            state["date"] = day_key()
-            state["daily_pnl"] = 0.0
-            state["resolved_trades"] = 0
-            state["consecutive_losses"] = 0
-            changed = True
-
-    if changed:
-        save_state()
-
-
-def risk_stop_reason():
-    enforce_new_day()
-
-    with state_lock:
-        pnl = float(state.get("daily_pnl", 0))
-        resolved = int(state.get("resolved_trades", 0))
-        losses = int(state.get("consecutive_losses", 0))
-        pending = state.get("pending_trade")
-
-    if pending:
-        return "an earlier order is unresolved; reconcile it first"
-    if pnl >= DAILY_PROFIT_TARGET:
-        return f"daily profit target reached (+${DAILY_PROFIT_TARGET:.2f})"
-    if pnl <= DAILY_MAX_LOSS:
-        return f"daily loss limit reached (${DAILY_MAX_LOSS:.2f})"
-    if resolved >= MAX_RESOLVED_TRADES:
-        return f"maximum resolved trades reached ({MAX_RESOLVED_TRADES})"
-    if losses >= MAX_CONSECUTIVE_LOSSES:
-        return f"maximum consecutive losses reached ({MAX_CONSECUTIVE_LOSSES})"
-
-    return ""
-
-
-# ================= TELEGRAM =================
-def telegram_api(method):
-    return f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{method}"
-
-
-def control_keyboard():
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "▶️ START AUTO", "callback_data": "START_AUTO"},
-                {"text": "⏹ STOP AUTO", "callback_data": "STOP_AUTO"},
-            ],
-            [
-                {"text": "🔎 SCAN MARKET", "callback_data": "SCAN_MARKET"},
-                {"text": "📊 STATUS", "callback_data": "STATUS"},
-            ],
-        ]
-    }
-
-
-def telegram_send(text, keyboard=True):
+def telegram_send(message, keyboard=True):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        logging.info("Telegram not configured: %s", text)
+        logging.info("Telegram unavailable. Message: %s", message)
         return
+
+    url = (
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    )
 
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": str(text)[:4000],
+        "text": message[:4000],
+        "disable_web_page_preview": True
     }
 
     if keyboard:
-        payload["reply_markup"] = json.dumps(control_keyboard())
+        payload["reply_markup"] = {
+            "keyboard": [
+                [
+                    {"text": "START AUTO"},
+                    {"text": "STOP AUTO"}
+                ],
+                [
+                    {"text": "SCAN MARKET"},
+                    {"text": "STATUS"}
+                ]
+            ],
+            "resize_keyboard": True
+        }
 
     try:
-        response = session.post(
-            telegram_api("sendMessage"),
-            data=payload,
-            timeout=20,
+        response = requests.post(
+            url, json=payload, timeout=15
         )
-
-        if not response.ok:
-            logging.warning(
-                "Telegram send failed: %s %s",
-                response.status_code,
-                response.text[:180],
-            )
-
+        response.raise_for_status()
     except Exception as exc:
-        logging.warning("Telegram send error: %s", exc)
+        logging.warning("Telegram send failed: %s", exc)
 
 
-def telegram_answer_callback(callback_id, text="Done"):
-    if not callback_id:
+def save_state():
+    with STATE_LOCK:
+        try:
+            with open(STATE_FILE, "w", encoding="utf-8") as file:
+                json.dump(STATE, file, indent=2)
+        except Exception as exc:
+            logging.warning("Local state save failed: %s", exc)
+
+    if not GITHUB_TOKEN or not GITHUB_REPOSITORY:
         return
 
     try:
-        session.post(
-            telegram_api("answerCallbackQuery"),
-            data={
-                "callback_query_id": callback_id,
-                "text": str(text)[:190],
-            },
-            timeout=10,
-        )
-    except Exception as exc:
-        logging.warning("Callback answer error: %s", exc)
-
-
-def prepare_telegram():
-    response = session.post(
-        telegram_api("deleteWebhook"),
-        data={"drop_pending_updates": "false"},
-        timeout=15,
-    )
-    data = response.json()
-
-    if not response.ok or not data.get("ok"):
-        raise RuntimeError(
-            f"Telegram deleteWebhook failed: {response.text[:180]}"
+        api_url = (
+            "https://api.github.com/repos/"
+            f"{GITHUB_REPOSITORY}/contents/{STATE_FILE}"
         )
 
-    response = session.get(telegram_api("getMe"), timeout=15)
-    data = response.json()
+        headers = {
+            "Authorization": f"Bearer {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28"
+        }
 
-    if not response.ok or not data.get("ok"):
-        raise RuntimeError(
-            f"Telegram getMe failed: {response.text[:180]}"
+        existing = requests.get(
+            api_url,
+            headers=headers,
+            params={"ref": GITHUB_REF_NAME},
+            timeout=10
         )
 
-    username = (data.get("result") or {}).get("username", "unknown")
-    logging.info("Telegram bot verified: @%s", username)
+        payload = {
+            "message": "Update Momentum 10 scanner state",
+            "branch": GITHUB_REF_NAME,
+            "content": requests.utils.quote("")
+        }
 
+        # GitHub Contents API requires base64 content.
+        import base64
 
-# ================= IQ OPTION CONNECTION =================
-def connection_is_live(client=None):
-    client = client if client is not None else IQ
+        with STATE_LOCK:
+            content = json.dumps(
+                STATE, indent=2
+            ).encode("utf-8")
 
-    if client is None:
-        return False
+        payload["content"] = base64.b64encode(
+            content
+        ).decode("ascii")
 
-    try:
-        return bool(client.check_connect())
-    except Exception:
-        return False
+        if existing.status_code == 200:
+            payload["sha"] = existing.json().get("sha")
+        elif existing.status_code != 404:
+            logging.warning(
+                "GitHub state lookup returned %s",
+                existing.status_code
+            )
+            return
 
+        result = requests.put(
+            api_url,
+            headers=headers,
+            json=payload,
+            timeout=15
+        )
 
-def verify_practice_mode(force_select=True):
-    global practice_verified
-
-    if IQ is None or not connection_is_live():
-        practice_verified = False
-        return False
-
-    try:
-        with api_lock:
-            if force_select:
-                IQ.change_balance("PRACTICE")
-                time.sleep(0.5)
-
-            getter = getattr(IQ, "get_balance_mode", None)
-
-            if not callable(getter):
-                practice_verified = False
-                logging.error(
-                    "get_balance_mode() unavailable; AUTO orders blocked."
-                )
-                return False
-
-            mode = str(getter() or "").strip().upper()
-
-        practice_verified = mode == "PRACTICE"
-
-        if not practice_verified:
-            logging.error(
-                "PRACTICE verification failed. API reported mode: %r",
-                mode,
+        if result.status_code not in (200, 201):
+            logging.warning(
+                "GitHub state update failed: %s %s",
+                result.status_code,
+                result.text[:300]
             )
 
-        return practice_verified
-
     except Exception as exc:
-        practice_verified = False
-        logging.error("PRACTICE verification error: %s", exc)
-        return False
+        logging.warning("GitHub state save failed: %s", exc)
 
+
+def load_state():
+    global STATE
+
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as file:
+            loaded = json.load(file)
+
+        if isinstance(loaded, dict):
+            STATE.update(loaded)
+
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        logging.warning("State load failed: %s", exc)
+
+    if STATE.get("date") != today_string():
+        STATE["date"] = today_string()
+        STATE["daily_pl"] = 0.0
+        STATE["resolved"] = 0
+        STATE["wins"] = 0
+        STATE["losses"] = 0
+        STATE["consecutive_losses"] = 0
+        STATE["history"] = []
+
+    save_state()
+
+
+def daily_limit_reached():
+    with STATE_LOCK:
+        return (
+            STATE["daily_pl"] >= DAILY_PROFIT_TARGET
+            or STATE["daily_pl"] <= DAILY_MAX_LOSS
+            or STATE["resolved"] >= MAX_RESOLVED_TRADES
+            or STATE["consecutive_losses"] >= MAX_CONSECUTIVE_LOSSES
+        )
+
+
+def daily_limit_reason():
+    with STATE_LOCK:
+        if STATE["daily_pl"] >= DAILY_PROFIT_TARGET:
+            return "Daily profit target reached."
+        if STATE["daily_pl"] <= DAILY_MAX_LOSS:
+            return "Daily loss limit reached."
+        if STATE["resolved"] >= MAX_RESOLVED_TRADES:
+            return "Maximum resolved trades reached."
+        if STATE["consecutive_losses"] >= MAX_CONSECUTIVE_LOSSES:
+            return "Maximum consecutive losses reached."
+    return ""
+
+
+# ============================================================
+# IQ OPTION CONNECTION
+# ============================================================
 
 def connect_iq():
-    global IQ, practice_verified, OPEN_TIME_CACHE
+    global IQ
 
     if not IQ_EMAIL or not IQ_PASSWORD:
-        logging.error("Missing IQ_EMAIL or IQ_PASSWORD secrets.")
-        return False
-
-    try:
-        candidate = IQ_Option(IQ_EMAIL, IQ_PASSWORD)
-        response = candidate.connect()
-
-        connected = (
-            response[0]
-            if isinstance(response, tuple)
-            else bool(response)
+        raise RuntimeError(
+            "Missing IQ_EMAIL or IQ_PASSWORD GitHub secret."
         )
 
-        if not connected or not connection_is_live(candidate):
-            logging.error("IQ Option connection failed: %r", response)
-            return False
+    logging.info("Connecting to IQ Option...")
 
-        with api_lock:
-            candidate.change_balance("PRACTICE")
-            time.sleep(0.5)
+    candidate = IQ_Option(IQ_EMAIL, IQ_PASSWORD)
+    result = candidate.connect()
 
-        IQ = candidate
-        OPEN_TIME_CACHE = None
-        practice_verified = verify_practice_mode(force_select=False)
+    if result is False:
+        raise RuntimeError("IQ Option connection failed.")
 
-        if practice_verified:
-            telegram_send(
-                "✅ IQ Option connected; PRACTICE mode verified. AUTO is OFF."
-            )
-        else:
-            telegram_send(
-                "⚠️ Connected, but PRACTICE mode could not be verified. "
-                "AUTO orders are blocked."
-            )
+    for _ in range(15):
+        try:
+            if candidate.check_connect():
+                break
+        except Exception:
+            pass
+        time.sleep(1)
+    else:
+        raise RuntimeError("IQ Option connection timed out.")
 
-        return True
-
-    except Exception as exc:
-        logging.exception("IQ Option connection error: %s", exc)
-        IQ = None
-        practice_verified = False
-        OPEN_TIME_CACHE = None
-        return False
-
-
-# ================= ASSET DISCOVERY =================
-def normalize_asset_name(name):
-    """
-    Comparison-only normalisation.
-    The original API name is retained for candle/order requests.
-    """
-    return str(name or "").strip().upper()
-
-
-def asset_label(asset):
-    name = normalize_asset_name(asset)
-
-    if name.endswith("-OTC") or name.endswith("_OTC"):
-        return "OTC"
-
-    if len(name) == 6 and name.isalpha():
-        return "FOREX"
-
-    if any(token in name for token in (
-        "BTC", "ETH", "XRP", "LTC", "DOGE", "SOL", "ADA",
-        "SHIB", "BNB", "TRX", "DOT", "AVAX", "LINK",
-    )):
-        return "CRYPTO / POSSIBLE CRYPTO"
-
-    if any(token in name for token in (
-        "US30", "US500", "US100", "NAS", "SPX", "DAX",
-        "GER", "UK100", "JP225", "AUS200", "EU50", "HK50",
-    )):
-        return "INDEX / POSSIBLE INDEX"
-
-    if any(token in name for token in (
-        "XAU", "XAG", "GOLD", "SILVER", "OIL", "BRENT",
-        "WTI", "NGAS", "NATGAS",
-    )):
-        return "COMMODITY / POSSIBLE COMMODITY"
-
-    return "OTHER"
-
-
-def refresh_open_time_cache():
-    global OPEN_TIME_CACHE
-
-    if IQ is None or not connection_is_live():
-        OPEN_TIME_CACHE = None
-        return False
+    candidate.change_balance("PRACTICE")
+    time.sleep(2)
 
     try:
-        with api_lock:
-            result = IQ.get_all_open_time()
+        mode = str(candidate.get_balance_mode()).upper()
+    except Exception:
+        mode = ""
 
-        if isinstance(result, dict) and result:
-            OPEN_TIME_CACHE = result
-            logging.info(
-                "Market table refreshed; categories returned: %s",
-                ", ".join(str(key) for key in result.keys()),
-            )
+    if "REAL" in mode:
+        raise RuntimeError(
+            "Safety stop: IQ Option reports REAL account mode."
+        )
+
+    IQ = candidate
+
+    try:
+        balance = safe_float(IQ.get_balance())
+    except Exception:
+        balance = 0.0
+
+    logging.info(
+        "Connected. Practice balance: %s",
+        money(balance)
+    )
+
+    telegram_send(
+        "🟢 MOMENTUM 10 CONNECTED\n"
+        "Account: PRACTICE ONLY\n"
+        f"Balance: {money(balance)}\n"
+        "AUTO MODE: OFF\n"
+        "Expiry: 1 minute\n"
+        "Stake: $1\n"
+        "Manual scans never place trades."
+    )
+
+
+def ensure_connection():
+    global IQ
+
+    try:
+        if IQ is not None and IQ.check_connect():
             return True
+    except Exception:
+        pass
 
-        OPEN_TIME_CACHE = None
-        logging.warning(
-            "IQ Option returned no usable open-market table."
-        )
-        return False
-
+    try:
+        connect_iq()
+        return True
     except Exception as exc:
-        OPEN_TIME_CACHE = None
-        logging.warning("Open-market table error: %s", exc)
+        logging.error("Reconnect failed: %s", exc)
         return False
 
+
+# ============================================================
+# DISCOVER ASSETS
+# ============================================================
 
 def get_asset_names():
     """
-    Discover assets across all market categories.
-    No forex-only or OTC-only name filter is applied.
+    Discover symbols from IQ Option's active-symbol mapping.
+    No currency-only filter: currency, crypto and index symbols
+    can be considered if the account/API exposes them.
     """
-    found = {}
-
-    if IQ is None or not connection_is_live():
-        return []
-
-    # The active-to-code mapping can contain assets from several categories.
     try:
-        with api_lock:
-            mapping = IQ.get_all_ACTIVES_OPCODE()
+        active_map = IQ.get_all_ACTIVES_OPCODE()
 
-        if isinstance(mapping, dict):
-            for name in mapping.keys():
-                original = str(name).strip()
-
-                if original and len(original) <= 50:
-                    found.setdefault(normalize_asset_name(original), original)
-
-    except Exception as exc:
-        logging.warning("Active assets query failed: %s", exc)
-
-    # Include every market category returned by the open-time table.
-    if isinstance(OPEN_TIME_CACHE, dict):
-        for market_type, market in OPEN_TIME_CACHE.items():
-            if not isinstance(market, dict):
-                continue
-
-            for name in market.keys():
-                original = str(name).strip()
-
-                if original and len(original) <= 50:
-                    found.setdefault(normalize_asset_name(original), original)
-
-    assets = sorted(found.values(), key=lambda item: item.upper())
-
-    logging.info(
-        "Asset discovery returned %d distinct instrument names.",
-        len(assets),
-    )
-
-    return assets
-
-
-def asset_market_entries(asset):
-    """
-    Return (market category, market details) entries for a matching asset.
-    """
-    entries = []
-
-    if not isinstance(OPEN_TIME_CACHE, dict):
-        return entries
-
-    wanted = normalize_asset_name(asset)
-
-    for market_type, market in OPEN_TIME_CACHE.items():
-        if not isinstance(market, dict):
-            continue
-
-        for name, details in market.items():
-            if normalize_asset_name(name) == wanted:
-                entries.append((str(market_type).lower(), details))
-
-    return entries
-
-
-def asset_is_open(asset):
-    """
-    A chartable asset may belong to any market category.
-    It must appear open in at least one category before it is analysed.
-    """
-    if not isinstance(OPEN_TIME_CACHE, dict):
-        return False, "market_table_unavailable"
-
-    entries = asset_market_entries(asset)
-
-    if not entries:
-        return False, "not_listed_in_market_table"
-
-    for _, details in entries:
-        if isinstance(details, dict) and details.get("open") is True:
-            return True, ""
-
-    return False, "market_closed"
-
-
-def asset_auto_eligible(asset):
-    """
-    IQ.buy() is used for binary/turbo orders only.
-    Do not send forex, CFD, digital, crypto or index instruments through
-    IQ.buy() unless the API explicitly lists the asset in binary/turbo.
-    """
-    for market_type, details in asset_market_entries(asset):
-        if market_type not in ("binary", "turbo"):
-            continue
-
-        if isinstance(details, dict) and details.get("open") is True:
-            return True
-
-    return False
-
-
-def get_closed_candles(asset):
-    if IQ is None or not connection_is_live():
-        return []
-
-    with api_lock:
-        raw = IQ.get_candles(
-            asset,
-            CANDLE_SECONDS,
-            LOOKBACK_CANDLES + MOMENTUM_PERIOD + 8,
-            time.time(),
-        )
-
-    if not isinstance(raw, list):
-        return []
-
-    current_time = time.time()
-    candles = []
-
-    for row in raw:
-        try:
-            stamp = float(row.get("from", 0) or 0)
-
-            # Only closed candles are allowed.
-            if not stamp or stamp + CANDLE_SECONDS > current_time - 2:
-                continue
-
-            candle = {
-                "open": float(row.get("open", 0)),
-                "close": float(row.get("close", 0)),
-                "high": float(row.get("max", row.get("high", 0))),
-                "low": float(row.get("min", row.get("low", 0))),
-                "from": stamp,
-            }
-
-            if candle["open"] > 0 and candle["close"] > 0:
-                candles.append(candle)
-
-        except (TypeError, ValueError, AttributeError):
-            continue
-
-    candles.sort(key=lambda item: item["from"])
-    return candles[-(LOOKBACK_CANDLES + MOMENTUM_PERIOD + 3):]
-
-
-# ================= MOMENTUM 10 STRATEGY ONLY =================
-def percentile(values, fraction):
-    if not values:
-        return 0.0
-
-    values = sorted(values)
-    index = int(round((len(values) - 1) * fraction))
-    index = max(0, min(len(values) - 1, index))
-    return float(values[index])
-
-
-def momentum_10(closes, end_index):
-    """Ten-candle percentage momentum. No Momentum 20 calculation."""
-    start_index = end_index - MOMENTUM_PERIOD
-
-    if start_index < 0 or closes[start_index] == 0:
-        return None
-
-    return (closes[end_index] / closes[start_index] - 1.0) * 100.0
-
-
-def is_bullish_engulfing(previous, current):
-    return (
-        previous["close"] < previous["open"]
-        and current["close"] > current["open"]
-        and current["open"] <= previous["close"]
-        and current["close"] >= previous["open"]
-    )
-
-
-def is_bearish_engulfing(previous, current):
-    return (
-        previous["close"] > previous["open"]
-        and current["close"] < current["open"]
-        and current["open"] >= previous["close"]
-        and current["close"] <= previous["open"]
-    )
-
-
-def analyze_asset(asset):
-    opened, reason = asset_is_open(asset)
-
-    if not opened:
-        return None, reason
-
-    try:
-        candles = get_closed_candles(asset)
-    except Exception as exc:
-        logging.warning("Candle error for %s: %s", asset, exc)
-        return None, "candle_request_error"
-
-    required = LOOKBACK_CANDLES + MOMENTUM_PERIOD
-
-    if len(candles) < required:
-        return None, "insufficient_closed_candles"
-
-    closes = [candle["close"] for candle in candles]
-    current_index = len(candles) - 1
-    previous_index = current_index - 1
-
-    current_momentum = momentum_10(closes, current_index)
-    previous_momentum = momentum_10(closes, previous_index)
-
-    if current_momentum is None or previous_momentum is None:
-        return None, "insufficient_momentum_history"
-
-    history = []
-    start_index = max(
-        MOMENTUM_PERIOD,
-        len(candles) - LOOKBACK_CANDLES,
-    )
-
-    for index in range(start_index, current_index):
-        value = momentum_10(closes, index)
-
-        if value is not None:
-            history.append(value)
-
-    if len(history) < 15:
-        return None, "insufficient_momentum_history"
-
-    lower_extreme = percentile(history, EXTREME_PERCENTILE)
-    upper_extreme = percentile(history, 1.0 - EXTREME_PERCENTILE)
-    turn = current_momentum - previous_momentum
-
-    previous_candle = candles[-2]
-    current_candle = candles[-1]
-
-    bullish_candle = current_candle["close"] > current_candle["open"]
-    bearish_candle = current_candle["close"] < current_candle["open"]
-
-    bullish_engulfing = is_bullish_engulfing(
-        previous_candle, current_candle
-    )
-    bearish_engulfing = is_bearish_engulfing(
-        previous_candle, current_candle
-    )
-
-    if (
-        previous_momentum <= lower_extreme
-        and turn >= MIN_TURN_DISTANCE
-        and (bullish_candle or bullish_engulfing)
-    ):
-        direction = "call"
-        depth = max(0.0, lower_extreme - previous_momentum)
-        turn_strength = max(0.0, turn)
-        candle_points = 20 if bullish_candle else 0
-        engulf_points = 15 if bullish_engulfing else 0
-
-    elif (
-        previous_momentum >= upper_extreme
-        and turn <= -MIN_TURN_DISTANCE
-        and (bearish_candle or bearish_engulfing)
-    ):
-        direction = "put"
-        depth = max(0.0, previous_momentum - upper_extreme)
-        turn_strength = max(0.0, -turn)
-        candle_points = 20 if bearish_candle else 0
-        engulf_points = 15 if bearish_engulfing else 0
-
-    else:
-        return None, "no_momentum10_reversal_confirmation"
-
-    depth_points = min(35.0, 15.0 + depth * 4.0)
-    turn_points = min(30.0, 10.0 + turn_strength * 8.0)
-
-    score = int(round(min(
-        100.0,
-        depth_points + turn_points + candle_points + engulf_points,
-    )))
-
-    return {
-        "asset": asset,
-        "category": asset_label(asset),
-        "direction": direction,
-        "score": score,
-        "momentum10": current_momentum,
-        "turn": turn,
-        "engulfing": (
-            bullish_engulfing if direction == "call"
-            else bearish_engulfing
-        ),
-        "candle_id": int(current_candle["from"]),
-        "timestamp": now_lagos().strftime("%H:%M:%S WAT"),
-        "auto_eligible": asset_auto_eligible(asset),
-    }, ""
-
-
-# ================= MARKET SCANNING =================
-def scan_market():
-    global busy, OPEN_TIME_CACHE
-
-    if not scan_lock.acquire(blocking=False):
-        telegram_send("⏳ A market scan is already running.")
-        return []
-
-    busy = True
-    signals = []
-    rejections = {}
-    started = time.time()
-
-    try:
-        if IQ is None or not connection_is_live():
-            telegram_send("⚠️ IQ Option is disconnected. Scan unavailable.")
+        if not isinstance(active_map, dict):
+            logging.warning("Active-symbol mapping was not a dictionary.")
             return []
 
-        table_ok = refresh_open_time_cache()
+        names = []
 
-        if not table_ok:
-            telegram_send(
-                "⚠️ IQ Option did not return a usable market table. "
-                "This scan cannot safely verify which assets are open."
-            )
+        for symbol in active_map.keys():
+            if not isinstance(symbol, str):
+                continue
+
+            symbol = symbol.strip()
+
+            if not symbol:
+                continue
+
+            names.append(symbol)
+
+        return sorted(set(names))
+
+    except Exception as exc:
+        logging.warning("Asset discovery failed: %s", exc)
+        return []
+
+
+# ============================================================
+# CANDLE DATA
+# ============================================================
+
+def fetch_candles(asset):
+    try:
+        candles = IQ.get_candles(
+            asset,
+            CANDLE_SECONDS,
+            LOOKBACK_CANDLES,
+            int(time.time())
+        )
+
+        if not isinstance(candles, list):
+            return []
+
+        if len(candles) < MOMENTUM_PERIOD + 3:
+            return []
+
+        candles = sorted(
+            candles,
+            key=lambda candle: candle.get("from", 0)
+        )
+
+        cleaned = []
+
+        for candle in candles:
+            close = safe_float(candle.get("close"), float("nan"))
+            open_price = safe_float(candle.get("open"), float("nan"))
+            high = safe_float(candle.get("max"), float("nan"))
+            low = safe_float(candle.get("min"), float("nan"))
+
+            if not all(
+                math.isfinite(value)
+                for value in (close, open_price, high, low)
+            ):
+                continue
+
+            if close <= 0 or high < low:
+                continue
+
+            cleaned.append({
+                "open": open_price,
+                "close": close,
+                "high": high,
+                "low": low,
+                "from": candle.get("from", 0)
+            })
+
+        # Exclude the newest candle because it may still be forming.
+        if len(cleaned) > 1:
+            cleaned = cleaned[:-1]
+
+        return cleaned
+
+    except Exception as exc:
+        logging.debug(
+            "Candle request failed for %s: %s", asset, exc
+        )
+        return []
+
+
+# ============================================================
+# MOMENTUM 10 STRATEGY
+# ============================================================
+
+def calculate_signal(asset, candles):
+    """
+    Momentum 10:
+    - Uses the last 10 completed candles.
+    - Looks for an extreme directional move.
+    - Requires a reversal candle and a minimum turn distance.
+    - Does not treat the score as a probability of winning.
+    """
+
+    if len(candles) < MOMENTUM_PERIOD + 3:
+        return None, "insufficient candles"
+
+    closes = [c["close"] for c in candles]
+    opens = [c["open"] for c in candles]
+    highs = [c["high"] for c in candles]
+    lows = [c["low"] for c in candles]
+
+    current_close = closes[-1]
+    previous_close = closes[-2]
+    old_close = closes[-1 - MOMENTUM_PERIOD]
+
+    if old_close <= 0:
+        return None, "invalid reference price"
+
+    momentum = (current_close - old_close) / old_close
+
+    recent_ranges = [
+        highs[i] - lows[i]
+        for i in range(max(0, len(candles) - 14), len(candles))
+    ]
+
+    average_range = (
+        sum(recent_ranges) / len(recent_ranges)
+        if recent_ranges else 0.0
+    )
+
+    if average_range <= 0:
+        return None, "no usable candle range"
+
+    last_range = highs[-1] - lows[-1]
+
+    if last_range <= 0:
+        return None, "flat latest candle"
+
+    body = abs(closes[-1] - opens[-1])
+    body_ratio = body / last_range
+
+    # Measure the latest candle's reversal from its extreme.
+    upper_turn = (highs[-1] - current_close) / last_range
+    lower_turn = (current_close - lows[-1]) / last_range
+
+    # Keep the minimum-turn requirement explicit.
+    if momentum < 0:
+        # A strong downward move needs a bullish reversal candle.
+        bullish = current_close > opens[-1]
+        turn_distance = lower_turn
+
+        if not bullish:
+            return None, "no bullish reversal after downward momentum"
+
+        if turn_distance < MIN_TURN_DISTANCE:
+            return None, "reversal distance too small"
+
+        direction = "call"
+
+    elif momentum > 0:
+        # A strong upward move needs a bearish reversal candle.
+        bearish = current_close < opens[-1]
+        turn_distance = upper_turn
+
+        if not bearish:
+            return None, "no bearish reversal after upward momentum"
+
+        if turn_distance < MIN_TURN_DISTANCE:
+            return None, "reversal distance too small"
+
+        direction = "put"
+
+    else:
+        return None, "zero momentum"
+
+    # Momentum must be meaningfully larger than recent candle noise.
+    normalized_momentum = (
+        abs(current_close - old_close) / average_range
+    )
+
+    if normalized_momentum < EXTREME_PERCENTILE:
+        return None, "momentum not extreme enough"
+
+    # Do not accept a reversal if the latest close has not moved
+    # in the expected direction relative to the preceding close.
+    if direction == "call" and current_close <= previous_close:
+        return None, "bullish reversal lacks close confirmation"
+
+    if direction == "put" and current_close >= previous_close:
+        return None, "bearish reversal lacks close confirmation"
+
+    score = 50
+
+    if normalized_momentum >= 0.5:
+        score += 10
+    if normalized_momentum >= 1.0:
+        score += 10
+    if body_ratio >= 0.4:
+        score += 10
+    if body_ratio >= 0.65:
+        score += 10
+    if turn_distance >= 0.3:
+        score += 5
+    if turn_distance >= 0.5:
+        score += 5
+
+    signal = {
+        "asset": asset,
+        "direction": direction,
+        "score": min(score, 100),
+        "momentum": momentum,
+        "normalized_momentum": normalized_momentum,
+        "body_ratio": body_ratio,
+        "turn_distance": turn_distance,
+        "price": current_close,
+        "time": utc_now().strftime("%H:%M:%S UTC")
+    }
+
+    return signal, ""
+
+
+# ============================================================
+# MARKET SCAN
+# ============================================================
+
+def scan_market(manual=False):
+    global SCAN_IN_PROGRESS
+
+    with STATE_LOCK:
+        if SCAN_IN_PROGRESS:
+            return []
+        SCAN_IN_PROGRESS = True
+
+    try:
+        if not ensure_connection():
+            if manual:
+                telegram_send("❌ Scan failed: IQ Option is disconnected.")
             return []
 
         assets = get_asset_names()
 
         if not assets:
-            rejections["no_assets_returned"] = 1
-
-            with state_lock:
-                state["last_scan"] = now_lagos().strftime(
-                    "%Y-%m-%d %H:%M:%S WAT"
-                )
-                state["last_scan_count"] = 0
-                state["last_scan_setups"] = 0
-                state["last_scan_rejections"] = rejections
-
-            save_state(remote=False)
-            telegram_send(
-                "⚠️ No instrument names were returned by IQ Option. "
-                "Check the GitHub Actions log."
+            message = (
+                "⚠️ No assets returned by IQ Option.\n"
+                "The API may not have initialized its active-symbol list."
             )
+            logging.warning(message)
+
+            if manual:
+                telegram_send(message)
+
             return []
 
-        logging.info("Scanning %d discovered instruments.", len(assets))
-
-        telegram_send(
-            f"🔎 Momentum 10 scan started: {len(assets)} discovered assets "
-            "(forex, OTC, crypto, indices and other returned markets).",
-            keyboard=False,
+        logging.info(
+            "Scanning %d symbols with Momentum 10.", len(assets)
         )
 
+        results = []
+        rejected = {}
+        scanned = 0
+
         for index, asset in enumerate(assets, start=1):
-            try:
-                signal, reason = analyze_asset(asset)
+            if not RUNNING:
+                break
 
-                if signal:
-                    signals.append(signal)
-                elif reason:
-                    rejections[reason] = rejections.get(reason, 0) + 1
+            candles = fetch_candles(asset)
+            scanned += 1
 
-            except Exception as exc:
-                logging.warning("Skipping %s: %s", asset, exc)
-                rejections["unexpected_asset_error"] = (
-                    rejections.get("unexpected_asset_error", 0) + 1
+            if not candles:
+                rejected["no candles/unavailable"] = (
+                    rejected.get("no candles/unavailable", 0) + 1
                 )
+                time.sleep(REQUEST_PAUSE_SECONDS)
+                continue
 
-            if index % PROGRESS_EVERY == 0 or index == len(assets):
+            signal, reason = calculate_signal(asset, candles)
+
+            if signal:
+                results.append(signal)
+            else:
+                rejected[reason] = rejected.get(reason, 0) + 1
+
+            if index % PROGRESS_EVERY == 0:
                 logging.info(
-                    "Scan progress %d/%d; %d setup(s).",
-                    index, len(assets), len(signals),
-                )
-
-                telegram_send(
-                    f"🔎 Progress: {index}/{len(assets)} instruments; "
-                    f"{len(signals)} qualifying setup(s).",
-                    keyboard=False,
+                    "Scan progress: %d/%d; candidates=%d",
+                    index, len(assets), len(results)
                 )
 
             time.sleep(REQUEST_PAUSE_SECONDS)
 
-        signals.sort(
-            key=lambda item: (item["score"], abs(item["turn"])),
-            reverse=True,
+        results.sort(
+            key=lambda item: item["score"],
+            reverse=True
         )
-
-        top_rejections = dict(
-            sorted(
-                rejections.items(),
-                key=lambda item: item[1],
-                reverse=True,
-            )[:8]
-        )
-
-        with state_lock:
-            state["last_scan"] = now_lagos().strftime(
-                "%Y-%m-%d %H:%M:%S WAT"
-            )
-            state["last_scan_count"] = len(assets)
-            state["last_scan_setups"] = len(signals)
-            state["last_scan_rejections"] = top_rejections
-
-        save_state(remote=False)
 
         logging.info(
-            "Scan finished in %.1fs: %d instruments, %d setups, rejections=%s",
-            time.time() - started,
-            len(assets),
-            len(signals),
-            top_rejections,
+            "Scan finished: scanned=%d candidates=%d",
+            scanned, len(results)
         )
 
-        return signals
+        if manual:
+            send_manual_scan_results(results, scanned, rejected)
+
+        return results
 
     except Exception as exc:
-        logging.exception("Market scan failed")
-        telegram_send(f"🚨 Scan failed: {type(exc).__name__}: {exc}")
+        logging.error("Market scan failed: %s", exc)
+        logging.debug(traceback.format_exc())
+
+        if manual:
+            telegram_send(
+                f"❌ Market scan error: {str(exc)[:250]}"
+            )
+
         return []
 
     finally:
-        busy = False
-        OPEN_TIME_CACHE = None
-        scan_lock.release()
+        with STATE_LOCK:
+            SCAN_IN_PROGRESS = False
 
 
-def format_rejections():
-    with state_lock:
-        reasons = dict(state.get("last_scan_rejections", {}))
-        pairs = int(state.get("last_scan_count", 0) or 0)
-        setups = int(state.get("last_scan_setups", 0) or 0)
-
-    if pairs == 0 and not reasons:
-        return "No completed market scan yet."
-
-    labels = {
-        "market_closed": "market closed",
-        "market_table_unavailable": "market table unavailable",
-        "not_listed_in_market_table": "not listed in market table",
-        "insufficient_closed_candles": "insufficient closed candles",
-        "insufficient_momentum_history": "insufficient Momentum 10 history",
-        "no_momentum10_reversal_confirmation": "no Momentum 10 reversal confirmation",
-        "candle_request_error": "candle/API errors",
-        "unexpected_asset_error": "unexpected instrument errors",
-        "no_assets_returned": "no assets returned",
-    }
-
-    if not reasons:
-        return f"Instruments checked: {pairs}; qualifying setups: {setups}."
-
-    details = ", ".join(
-        f"{labels.get(key, key)}: {value}"
-        for key, value in reasons.items()
-    )
-
-    return (
-        f"Instruments checked: {pairs}; qualifying setups: {setups}. "
-        f"Rejections: {details}."
-    )
-
-
-def format_signals(signals, title):
-    if not signals:
-        return (
-            f"{title}\n\n"
-            "NO TRADE — no setup passed the Momentum 10 filters.\n"
-            f"{format_rejections()}\n"
-            "Filters have not been loosened to force a signal."
-        )
-
+def send_manual_scan_results(results, scanned, rejected):
     lines = [
-        title,
-        "Momentum 10 only. Score ranks setups; it is not win probability.",
-        "AUTO eligibility means binary/turbo is currently verified open.",
-        "",
+        "🔎 MANUAL MARKET SCAN",
+        "Mode: REPORT ONLY — NO TRADES",
+        f"Symbols checked: {scanned}",
+        f"Candidates: {len(results)}",
+        ""
     ]
 
-    for rank, signal in enumerate(signals[:TOP_SIGNALS], start=1):
-        direction = (
-            "CALL / UP" if signal["direction"] == "call"
-            else "PUT / DOWN"
-        )
+    if results:
+        lines.append("TOP MOMENTUM 10 SETUPS:")
 
-        eligibility = (
-            "AUTO-ELIGIBLE"
-            if signal.get("auto_eligible")
-            else "MANUAL SIGNAL ONLY"
-        )
+        for signal in results[:TOP_SIGNALS]:
+            lines.append(
+                f"{signal['asset']} | "
+                f"{signal['direction'].upper()} | "
+                f"Score {signal['score']}/100 | "
+                f"Momentum {signal['normalized_momentum']:.2f}"
+            )
+    else:
+        lines.append("NO TRADE — no qualifying setups.")
 
-        lines.append(
-            f"#{rank} — {signal['asset']} ({signal['category']}) — {direction}\n"
-            f"   SCORE: {signal['score']}/100 | "
-            f"M10: {signal['momentum10']:+.3f}% | "
-            f"Turn: {signal['turn']:+.3f}% | "
-            f"Engulfing: {'Yes' if signal['engulfing'] else 'No'}\n"
-            f"   {eligibility} | {signal['timestamp']}"
-        )
+    if rejected:
+        lines.append("")
+        lines.append("REJECTION SUMMARY:")
 
-    if len(signals) < TOP_SIGNALS:
-        lines.append(f"\nOnly {len(signals)} qualifying setup(s) found.")
+        for reason, count in sorted(
+            rejected.items(),
+            key=lambda item: item[1],
+            reverse=True
+        )[:5]:
+            lines.append(f"• {reason}: {count}")
 
-    return "\n".join(lines)
+    telegram_send("\n".join(lines))
 
 
-# ================= TRADE RESULT TRACKING =================
-def parse_profit(value):
-    if value is None or isinstance(value, bool):
-        return None
+# ============================================================
+# PRACTICE-ONLY ORDER PROTECTION
+# ============================================================
 
-    if isinstance(value, (tuple, list)):
-        numbers = [
-            item for item in value
-            if isinstance(item, (int, float))
-            and not isinstance(item, bool)
-        ]
-
-        if not numbers:
-            return None
-
-        value = numbers[-1]
-
+def practice_mode_verified():
     try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-
-    return number if math.isfinite(number) else None
-
-
-def turn_auto_off(reason=None):
-    with state_lock:
-        was_on = bool(state.get("auto_enabled"))
-        state["auto_enabled"] = False
-
-    save_state()
-
-    if reason:
-        telegram_send(f"⏹ AUTO STOPPED: {reason}.")
-    elif was_on:
-        telegram_send(
-            "⏹ AUTO is OFF. No new orders will be submitted. "
-            "An already accepted order cannot be cancelled here."
-        )
-
-
-def complete_pending_trade(profit, source="broker result"):
-    profit = parse_profit(profit)
-
-    if profit is None:
+        mode = str(IQ.get_balance_mode()).upper()
+        return "PRACTICE" in mode
+    except Exception:
         return False
 
-    enforce_new_day()
 
-    with state_lock:
-        pending = state.get("pending_trade")
+def execute_signal(signal):
+    global AUTO_MODE
 
-        if not isinstance(pending, dict):
+    if not AUTO_TRADING_ALLOWED:
+        return False
+
+    if not AUTO_MODE:
+        return False
+
+    if daily_limit_reached():
+        AUTO_MODE = False
+        telegram_send(
+            "🛑 AUTO STOPPED\n" + daily_limit_reason()
+        )
+        return False
+
+    if not practice_mode_verified():
+        AUTO_MODE = False
+        telegram_send(
+            "🚨 SAFETY STOP\n"
+            "Could not verify PRACTICE mode. "
+            "No order was sent."
+        )
+        return False
+
+    asset = signal["asset"]
+    direction = signal["direction"]
+
+    # Avoid repeated orders on the same asset within one candle.
+    candle_key = (
+        asset,
+        int(time.time() // CANDLE_SECONDS)
+    )
+
+    if candle_key in LAST_SIGNAL_BY_ASSET:
+        return False
+
+    signal_id = (
+        f"M10-{asset}-{direction.upper()}-"
+        f"{int(time.time())}"
+    )
+
+    try:
+        # Re-check the mode immediately before sending an order.
+        if not practice_mode_verified():
+            AUTO_MODE = False
+            telegram_send("🚨 Practice-mode verification failed.")
             return False
 
-        asset = str(pending.get("asset", "unknown"))
-        direction = str(pending.get("direction", "unknown")).upper()
-
-        state["daily_pnl"] = round(
-            float(state.get("daily_pnl", 0)) + profit, 2
-        )
-        state["resolved_trades"] = int(
-            state.get("resolved_trades", 0)
-        ) + 1
-
-        if profit > 0:
-            state["consecutive_losses"] = 0
-            outcome = "WIN ✅"
-        elif profit < 0:
-            state["consecutive_losses"] = int(
-                state.get("consecutive_losses", 0)
-            ) + 1
-            outcome = "LOSS ❌"
-        else:
-            outcome = "DRAW / ZERO P&L ➖"
-
-        state["pending_trade"] = None
-        pnl = state["daily_pnl"]
-        resolved = state["resolved_trades"]
-        losses = state["consecutive_losses"]
-
-    save_state()
-
-    telegram_send(
-        f"{outcome}\n{asset} — {direction}\n"
-        f"Net result ({source}): ${profit:+.2f}\n"
-        f"Today P/L: ${pnl:+.2f}\n"
-        f"Resolved: {resolved}/{MAX_RESOLVED_TRADES} | "
-        f"Consecutive losses: {losses}/{MAX_CONSECUTIVE_LOSSES}"
-    )
-
-    reason = risk_stop_reason()
-
-    if reason:
-        turn_auto_off(reason)
-
-    return True
-
-
-def result_reader(order_id):
-    try:
-        if IQ is None:
-            result_reader_result["error"] = "IQ connection unavailable"
-        else:
-            result_reader_result["value"] = IQ.check_win_v4(order_id)
-
-    except Exception as exc:
-        result_reader_result["error"] = str(exc)
-
-    finally:
-        event = result_reader_event
-
-        if event is not None:
-            event.set()
-
-
-def poll_late_result():
-    global result_reader_thread, result_reader_event
-
-    event = result_reader_event
-
-    if event is None or not event.is_set():
-        return
-
-    if "value" in result_reader_result:
-        profit = parse_profit(result_reader_result.get("value"))
-
-        if profit is not None:
-            complete_pending_trade(profit, source="broker result")
-        else:
-            with state_lock:
-                pending = state.get("pending_trade")
-
-            if pending:
-                turn_auto_off("unreadable broker result; reconcile the trade")
-                telegram_send(
-                    "⚠️ Broker result unreadable. Check account history, "
-                    "then use /reconcile NET-P/L."
-                )
-
-    elif result_reader_result.get("error"):
-        with state_lock:
-            pending = state.get("pending_trade")
-
-        if pending:
-            turn_auto_off("broker result request failed; reconcile the trade")
-            telegram_send(
-                "⚠️ Broker result request failed. Check account history, "
-                "then use /reconcile NET-P/L."
-            )
-
-    result_reader_result.clear()
-    result_reader_thread = None
-    result_reader_event = None
-
-
-def place_and_monitor(signal):
-    global result_reader_thread, result_reader_event
-
-    with state_lock:
-        if not state.get("auto_enabled"):
-            telegram_send("AUTO is OFF. No order was placed.")
-            return
-
-        if state.get("pending_trade"):
-            telegram_send(
-                "🛑 Order blocked: an earlier trade is unresolved."
-            )
-            return
-
-    if not signal.get("auto_eligible", False):
-        telegram_send(
-            f"🛑 ORDER BLOCKED: {signal['asset']} is not verified open "
-            "in a supported binary/turbo market. Signal remains informational."
-        )
-        return
-
-    reason = risk_stop_reason()
-
-    if reason:
-        turn_auto_off(reason)
-        return
-
-    if result_reader_thread is not None and result_reader_thread.is_alive():
-        turn_auto_off("previous broker result request still running")
-        return
-
-    if not practice_verified or not verify_practice_mode(force_select=True):
-        turn_auto_off("PRACTICE mode verification failed before order")
-        telegram_send("🛑 ORDER BLOCKED: PRACTICE mode not verified.")
-        return
-
-    try:
-        with api_lock:
-            if not verify_practice_mode(force_select=True):
-                turn_auto_off("PRACTICE verification failed before order")
-                return
-
-            with state_lock:
-                if (
-                    not state.get("auto_enabled")
-                    or state.get("pending_trade")
-                ):
-                    telegram_send(
-                        "AUTO is OFF or a trade is pending; no order."
-                    )
-                    return
-
-            accepted, order_id = IQ.buy(
-                STAKE,
-                signal["asset"],
-                signal["direction"],
-                EXPIRY_MINUTES,
-            )
-
-    except Exception as exc:
-        logging.exception("Order request failed")
-        telegram_send(f"⚠️ PRACTICE order request failed: {exc}")
-        return
-
-    if not accepted or order_id is None:
-        with state_lock:
-            state.setdefault("last_auto_candles", {})[
-                signal["asset"]
-            ] = signal["candle_id"]
-
-        save_state()
-        telegram_send(
-            f"⚠️ IQ Option rejected the order for {signal['asset']}. "
-            "No trade was counted."
-        )
-        return
-
-    with state_lock:
-        state.setdefault("last_auto_candles", {})[
-            signal["asset"]
-        ] = signal["candle_id"]
-
-        state["pending_trade"] = {
-            "asset": signal["asset"],
-            "direction": signal["direction"],
-            "order_id": str(order_id),
-            "stake": STAKE,
-            "expiry_minutes": EXPIRY_MINUTES,
-            "candle_id": signal["candle_id"],
-            "accepted_at": now_lagos().strftime("%Y-%m-%d %H:%M:%S WAT"),
-        }
-
-    save_state()
-
-    telegram_send(
-        f"🟡 PRACTICE ORDER ACCEPTED\n"
-        f"{signal['asset']} — {signal['direction'].upper()}\n"
-        f"Stake: ${STAKE:.2f} | Expiry: {EXPIRY_MINUTES} minute(s)\n"
-        f"Momentum 10 score: {signal['score']}/100\n"
-        "Waiting for broker result. STOP AUTO cannot cancel this accepted order."
-    )
-
-    result_reader_result.clear()
-    result_reader_event = threading.Event()
-
-    result_reader_thread = threading.Thread(
-        target=result_reader,
-        args=(order_id,),
-        name="broker-result-reader",
-        daemon=True,
-    )
-    result_reader_thread.start()
-
-    if result_reader_event.wait(RESULT_TIMEOUT_SECONDS):
-        poll_late_result()
-    else:
-        turn_auto_off("broker result timeout; trade must be reconciled")
-        telegram_send(
-            "⚠️ RESULT PENDING. No outcome was guessed and no new order "
-            "will be placed. Check IQ Option history, then send "
-            "/reconcile -1.00 or /reconcile 0.82 using the exact NET P/L."
+        success, order_id = IQ.buy(
+            STAKE,
+            asset,
+            direction,
+            EXPIRY_MINUTES
         )
 
+        if not success:
+            with STATE_LOCK:
+                STATE["blocked"] += 1
+            logging.warning("Order rejected: %s", asset)
+            return False
 
-# ================= STATUS AND TELEGRAM COMMANDS =================
-def status_text():
-    enforce_new_day()
+        LAST_SIGNAL_BY_ASSET[candle_key] = True
 
-    with state_lock:
-        auto_on = bool(state.get("auto_enabled"))
-        pnl = float(state.get("daily_pnl", 0))
-        resolved = int(state.get("resolved_trades", 0))
-        losses = int(state.get("consecutive_losses", 0))
-        last_scan = state.get("last_scan", "Never")
-        pending = state.get("pending_trade")
+        with STATE_LOCK:
+            OPEN_TRADES[str(order_id)] = {
+                "signal_id": signal_id,
+                "asset": asset,
+                "direction": direction,
+                "stake": STAKE,
+                "score": signal["score"],
+                "started": time.time()
+            }
 
-    lines = [
-        "📊 MOMENTUM 10 SCANNER STATUS",
-        "Strategy: Momentum 10 ONLY",
-        "Discovery: all returned asset categories",
-        f"Mode: {'AUTO ON — PRACTICE' if auto_on else 'MANUAL / SCAN ONLY'}",
-        f"PRACTICE check: {'VERIFIED' if practice_verified else 'NOT VERIFIED — ORDERS BLOCKED'}",
-        f"Today P/L: ${pnl:+.2f}",
-        f"Resolved trades: {resolved}/{MAX_RESOLVED_TRADES}",
-        f"Consecutive losses: {losses}/{MAX_CONSECUTIVE_LOSSES}",
-        f"Last scan: {last_scan}",
-        format_rejections(),
-    ]
-
-    if pending:
-        lines.append(
-            f"⚠️ UNRESOLVED: {pending.get('asset', '?')} "
-            f"{str(pending.get('direction', '?')).upper()}, "
-            f"ID {pending.get('order_id', '?')}. AUTO is blocked."
-        )
-
-    reason = risk_stop_reason()
-
-    if reason:
-        lines.append(f"Risk stop: {reason}")
-
-    return "\n".join(lines)
-
-
-def handle_command(command, callback_id=None, message_text=""):
-    global scan_requested, last_auto_scan
-
-    command = str(command or "").upper().strip()
-
-    if command == "START_AUTO":
-        if not AUTO_TRADING_ALLOWED:
-            turn_auto_off("AUTO trading disabled in code")
-            answer = "Auto disabled in code"
-
-        elif not connection_is_live():
-            telegram_send(
-                "⚠️ IQ Option is disconnected; AUTO not started."
-            )
-            answer = "IQ Option disconnected"
-
-        elif not verify_practice_mode(force_select=True):
-            turn_auto_off("PRACTICE mode verification failed")
-            telegram_send(
-                "🛑 START AUTO refused: PRACTICE not verified."
-            )
-            answer = "PRACTICE check failed"
-
-        elif (
-            result_reader_thread is not None
-            and result_reader_thread.is_alive()
-        ):
-            telegram_send(
-                "🛑 Previous broker result request is still running."
-            )
-            answer = "Previous result still running"
-
-        else:
-            reason = risk_stop_reason()
-
-            if reason:
-                turn_auto_off(reason)
-                answer = "Risk stop active"
-            else:
-                with state_lock:
-                    state["auto_enabled"] = True
-
-                save_state()
-                last_auto_scan = 0.0
-
-                telegram_send(
-                    "▶️ AUTO STARTED — PRACTICE ONLY.\n"
-                    "Momentum 10 only | $1 stake | 1-minute expiry | "
-                    "scan interval 60 seconds | daily target +$5 | "
-                    "daily loss limit -$3 | max 20 resolved trades | "
-                    "max 5 consecutive losses.\n"
-                    "AUTO is restricted to assets verified open in binary/turbo."
-                )
-                answer = "AUTO started — PRACTICE only"
-
-    elif command == "STOP_AUTO":
-        turn_auto_off()
-        answer = "AUTO stopped"
-
-    elif command == "SCAN_MARKET":
-        with state_lock:
-            scan_requested = True
-
-        telegram_send(
-            "🔎 Manual scan queued. Momentum 10 only. "
-            "This button never places orders."
-        )
-        answer = "Scan queued"
-
-    elif command == "STATUS":
-        telegram_send(status_text())
-        answer = "Status sent"
-
-    elif command == "RECONCILE":
-        parts = str(message_text or "").strip().split()
-
-        if len(parts) != 2:
-            telegram_send(
-                "Use /reconcile followed by the exact NET P/L from account "
-                "history, e.g. /reconcile -1.00 or /reconcile 0.82."
-            )
-            answer = "Use /reconcile NET-P/L"
-
-        else:
-            profit = parse_profit(parts[1])
-
-            with state_lock:
-                pending = state.get("pending_trade")
-
-            if profit is None or not isinstance(pending, dict):
-                telegram_send(
-                    "No unresolved trade to reconcile, or invalid P/L. Check STATUS."
-                )
-                answer = "Nothing to reconcile"
-
-            elif complete_pending_trade(
-                profit,
-                source="manual reconciliation",
-            ):
-                telegram_send(
-                    "✅ Trade reconciled using the net P/L you supplied. "
-                    "AUTO remains OFF."
-                )
-                answer = "Trade reconciled"
-
-            else:
-                telegram_send(
-                    "Reconciliation unchanged; check STATUS."
-                )
-                answer = "Reconciliation unchanged"
-
-    else:
-        answer = "Unknown command"
-
-    if callback_id:
-        telegram_answer_callback(callback_id, answer)
-
-
-def process_telegram_updates():
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        raise RuntimeError("Telegram secrets are missing.")
-
-    with state_lock:
-        offset = int(state.get("last_update_id", 0)) + 1
-
-    try:
-        response = session.get(
-            telegram_api("getUpdates"),
-            params={
-                "timeout": 10,
-                "offset": offset,
-                "allowed_updates": json.dumps(
-                    ["message", "callback_query"]
-                ),
-            },
-            timeout=15,
-        )
-
-        if not response.ok:
-            logging.warning(
-                "Telegram polling HTTP error: %s",
-                response.status_code,
-            )
-            time.sleep(2)
-            return
-
-        data = response.json()
-
-        if not data.get("ok"):
-            logging.warning(
-                "Telegram polling API error: %s",
-                str(data)[:180],
-            )
-            time.sleep(2)
-            return
-
-        updates = data.get("result", [])
-
-    except Exception as exc:
-        logging.warning("Telegram polling error: %s", exc)
-        time.sleep(2)
-        return
-
-    highest_processed = None
-
-    for update in updates:
-        callback = update.get("callback_query")
-
-        if callback:
-            message = callback.get("message") or {}
-            chat_id = str((message.get("chat") or {}).get("id", ""))
-            callback_id = callback.get("id", "")
-            command = str(callback.get("data", "")).upper()
-
-            logging.info("Telegram button received: %s", command)
-
-            if chat_id == str(TELEGRAM_CHAT_ID):
-                handle_command(command, callback_id=callback_id)
-            else:
-                telegram_answer_callback(callback_id, "Not authorized")
-
-        else:
-            message = update.get("message") or {}
-            chat_id = str((message.get("chat") or {}).get("id", ""))
-            text = str(message.get("text", "")).strip()
-
-            if chat_id == str(TELEGRAM_CHAT_ID) and text:
-                lowered = text.lower()
-
-                if lowered in ("/start", "/menu", "/help"):
-                    telegram_send(
-                        "MOMENTUM 10 SCANNER\n"
-                        "Discovers assets returned by IQ Option across "
-                        "available market categories.\n"
-                        "Buttons: SCAN MARKET, START AUTO, STOP AUTO, STATUS.\n"
-                        "Commands: /scan, /auto, /stop, /status, /stats.\n"
-                        "Unresolved orders: /reconcile NET-P/L."
-                    )
-                elif lowered in ("/scan", "scan"):
-                    handle_command("SCAN_MARKET")
-                elif lowered in ("/status", "status", "/stats", "stats"):
-                    handle_command("STATUS")
-                elif lowered in ("/stop", "stop"):
-                    handle_command("STOP_AUTO")
-                elif lowered in ("/auto", "auto"):
-                    handle_command("START_AUTO")
-                elif lowered.startswith("/reconcile"):
-                    handle_command("RECONCILE", message_text=text)
-
-        highest_processed = max(
-            int(update.get("update_id", 0)),
-            highest_processed or 0,
-        )
-
-    if highest_processed is not None:
-        with state_lock:
-            state["last_update_id"] = max(
-                int(state.get("last_update_id", 0)),
-                highest_processed,
-            )
+            STATE["executed"] += 1
+            STATE["signals"] += 1
 
         save_state()
 
+        telegram_send(
+            "🟡 PRACTICE TRADE OPENED\n"
+            f"Signal ID: {signal_id}\n"
+            f"Asset: {asset}\n"
+            f"Direction: {direction.upper()}\n"
+            f"Stake: {money(STAKE)}\n"
+            f"Expiry: {EXPIRY_MINUTES} minute\n"
+            f"Score: {signal['score']}/100\n"
+            "Reminder: score is not win probability."
+        )
 
-def telegram_listener_loop():
-    logging.info("Telegram listener started.")
+        logging.info(
+            "Practice order accepted: %s id=%s",
+            asset, order_id
+        )
 
-    while True:
+        return True
+
+    except Exception as exc:
+        logging.error(
+            "Order error for %s: %s", asset, exc
+        )
+        return False
+
+
+# ============================================================
+# TRADE RESULT TRACKING
+# ============================================================
+
+def reconcile_trades():
+    if not OPEN_TRADES or not ensure_connection():
+        return
+
+    for order_id in list(OPEN_TRADES.keys()):
+        trade = OPEN_TRADES.get(order_id)
+
+        if not trade:
+            continue
+
+        if time.time() - trade["started"] < EXPIRY_MINUTES * 60:
+            continue
+
         try:
-            process_telegram_updates()
-        except Exception:
-            logging.exception("Telegram listener error; retrying.")
-            time.sleep(3)
+            result = IQ.check_win_v4(int(order_id))
+        except Exception as exc:
+            logging.warning(
+                "Result check failed for %s: %s",
+                order_id, exc
+            )
+            continue
+
+        if result is None:
+            if time.time() - trade["started"] > RESULT_TIMEOUT_SECONDS:
+                logging.warning(
+                    "Result still pending for order %s",
+                    order_id
+                )
+            continue
+
+        result = safe_float(result, float("nan"))
+
+        if not math.isfinite(result):
+            continue
+
+        with STATE_LOCK:
+            OPEN_TRADES.pop(order_id, None)
+
+            STATE["resolved"] += 1
+            STATE["daily_pl"] += result
+
+            if result > 0:
+                STATE["wins"] += 1
+                STATE["consecutive_losses"] = 0
+                outcome = "WIN"
+            elif result < 0:
+                STATE["losses"] += 1
+                STATE["consecutive_losses"] += 1
+                outcome = "LOSS"
+            else:
+                outcome = "BREAKEVEN"
+
+            STATE["history"].append({
+                "signal_id": trade["signal_id"],
+                "asset": trade["asset"],
+                "direction": trade["direction"],
+                "outcome": outcome,
+                "net": result,
+                "time": utc_now().isoformat()
+            })
+
+            STATE["history"] = STATE["history"][-200:]
+
+        save_state()
+
+        telegram_send(
+            f"📊 TRADE RESULT: {outcome}\n"
+            f"Signal ID: {trade['signal_id']}\n"
+            f"Asset: {trade['asset']}\n"
+            f"Direction: {trade['direction'].upper()}\n"
+            f"Net result: {money(result)}\n"
+            f"Daily P/L: {money(STATE['daily_pl'])}\n"
+            f"Resolved: {STATE['resolved']}/{MAX_RESOLVED_TRADES}"
+        )
+
+        if daily_limit_reached():
+            global AUTO_MODE
+            AUTO_MODE = False
+            telegram_send(
+                "🛑 AUTO MODE OFF\n" + daily_limit_reason()
+            )
 
 
-# ================= MAIN LOOP =================
+# ============================================================
+# STATUS AND TELEGRAM COMMANDS
+# ============================================================
+
+def status_message():
+    try:
+        balance = safe_float(IQ.get_balance()) if IQ else 0.0
+    except Exception:
+        balance = 0.0
+
+    with STATE_LOCK:
+        return (
+            "📊 MOMENTUM 10 STATUS\n"
+            "Account: PRACTICE ONLY\n"
+            f"Balance: {money(balance)}\n"
+            f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\n"
+            f"Daily P/L: {money(STATE['daily_pl'])}\n"
+            f"Wins: {STATE['wins']}\n"
+            f"Losses: {STATE['losses']}\n"
+            f"Resolved: {STATE['resolved']}/{MAX_RESOLVED_TRADES}\n"
+            f"Open trades: {len(OPEN_TRADES)}\n"
+            f"Signals: {STATE['signals']}\n"
+            f"Executed: {STATE['executed']}\n"
+            f"Blocked: {STATE['blocked']}\n"
+            f"Consecutive losses: {STATE['consecutive_losses']}\n"
+            f"Daily stop: {daily_limit_reason() or 'Not reached'}"
+        )
+
+
+def process_telegram_update(update):
+    global AUTO_MODE, MANUAL_SCAN_REQUESTED
+
+    message = update.get("message") or update.get("callback_query", {}).get("message")
+
+    if not message:
+        return
+
+    chat = message.get("chat", {})
+    chat_id = str(chat.get("id", ""))
+
+    if TELEGRAM_CHAT_ID and chat_id != str(TELEGRAM_CHAT_ID):
+        return
+
+    text = (
+        message.get("text")
+        or update.get("callback_query", {}).get("data")
+        or ""
+    ).strip()
+
+    if not text:
+        return
+
+    upper = text.upper()
+
+    logging.info("Telegram command received: %s", upper)
+
+    if upper in ("/START", "START AUTO"):
+        if daily_limit_reached():
+            telegram_send(
+                "Cannot start AUTO.\n" + daily_limit_reason()
+            )
+            return
+
+        if not practice_mode_verified():
+            telegram_send(
+                "AUTO refused: PRACTICE mode could not be verified."
+            )
+            return
+
+        AUTO_MODE = True
+        telegram_send(
+            "🟢 AUTO MODE ON\n"
+            "Practice account only.\n"
+            "Stake: $1 | Expiry: 1 minute\n"
+            "Momentum 10 only."
+        )
+
+    elif upper in ("/STOP", "STOP AUTO"):
+        AUTO_MODE = False
+        telegram_send("🔴 AUTO MODE OFF. Scanning can continue.")
+
+    elif upper in ("SCAN MARKET", "/SCAN"):
+        MANUAL_SCAN_REQUESTED = True
+        telegram_send(
+            "🔎 Manual scan queued. It will report setups only; "
+            "no trades will be placed."
+        )
+
+    elif upper in ("STATUS", "/STATUS"):
+        telegram_send(status_message())
+
+    elif upper.startswith("/STATS"):
+        with STATE_LOCK:
+            total = STATE["wins"] + STATE["losses"]
+            win_rate = (
+                STATE["wins"] / total * 100
+                if total else 0.0
+            )
+
+            telegram_send(
+                "📈 MOMENTUM 10 STATS\n"
+                f"Wins: {STATE['wins']}\n"
+                f"Losses: {STATE['losses']}\n"
+                f"Win rate: {win_rate:.2f}%\n"
+                f"Daily P/L: {money(STATE['daily_pl'])}\n"
+                f"Resolved: {STATE['resolved']}"
+            )
+
+    elif upper.startswith("/RECONCILE"):
+        telegram_send(
+            "Automatic reconciliation is active for trades "
+            "opened during this workflow run. Use /stats for results."
+        )
+
+
+def telegram_listener():
+    global TELEGRAM_OFFSET
+
+    if not TELEGRAM_TOKEN:
+        logging.warning("TELEGRAM_TOKEN missing; listener disabled.")
+        return
+
+    base_url = (
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+    )
+
+    while RUNNING:
+        try:
+            response = requests.get(
+                f"{base_url}/getUpdates",
+                params={
+                    "offset": TELEGRAM_OFFSET,
+                    "timeout": 20
+                },
+                timeout=25
+            )
+
+            response.raise_for_status()
+            data = response.json()
+
+            if not data.get("ok"):
+                time.sleep(3)
+                continue
+
+            for update in data.get("result", []):
+                TELEGRAM_OFFSET = update["update_id"] + 1
+                process_telegram_update(update)
+
+        except Exception as exc:
+            logging.warning("Telegram listener error: %s", exc)
+            time.sleep(5)
+
+
+# ============================================================
+# HEARTBEAT
+# ============================================================
+
+def heartbeat():
+    global LAST_HEARTBEAT
+
+    if time.time() - LAST_HEARTBEAT < HEARTBEAT_SECONDS:
+        return
+
+    LAST_HEARTBEAT = time.time()
+
+    with STATE_LOCK:
+        message = (
+            "💓 MOMENTUM 10 HEARTBEAT\n"
+            "Account: PRACTICE ONLY\n"
+            f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\n"
+            f"Daily P/L: {money(STATE['daily_pl'])}\n"
+            f"Resolved: {STATE['resolved']}/{MAX_RESOLVED_TRADES}\n"
+            f"W/L: {STATE['wins']}/{STATE['losses']}\n"
+            f"Open trades: {len(OPEN_TRADES)}\n"
+            f"Signals: {STATE['signals']}\n"
+            f"Executed: {STATE['executed']}\n"
+            f"Blocked: {STATE['blocked']}\n"
+            "No qualifying setup means NO TRADE."
+        )
+
+    telegram_send(message)
+
+
+# ============================================================
+# MAIN LOOP
+# ============================================================
+
 def main():
-    global state, scan_requested
-    global last_auto_scan, last_heartbeat, last_connect_attempt
+    global AUTO_MODE, MANUAL_SCAN_REQUESTED
 
-    if BALANCE_MODE != "PRACTICE":
-        raise RuntimeError(
-            "Safety stop: this scanner only permits PRACTICE."
-        )
+    # Required: every workflow restart begins with AUTO OFF.
+    AUTO_MODE = False
 
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        raise RuntimeError(
-            "Set TELEGRAM_TOKEN and TELEGRAM_CHAT_ID in GitHub Secrets."
-        )
-
-    state = load_state()
-
-    with state_lock:
-        state["auto_enabled"] = False
-
-    save_state()
-    prepare_telegram()
-
-    threading.Thread(
-        target=telegram_listener_loop,
-        name="telegram-listener",
-        daemon=True,
-    ).start()
+    load_state()
 
     telegram_send(
-        "✅ MOMENTUM 10 SCANNER ONLINE\n"
-        "Asset discovery includes all categories returned by IQ Option.\n"
-        "AUTO is OFF after startup. Manual SCAN MARKET never places orders.\n"
-        "AUTO orders are limited to verified binary/turbo instruments."
+        "🚀 MOMENTUM 10 STARTING\n"
+        "Automatic trading starts OFF.\n"
+        "Practice account only.\n"
+        "Manual SCAN MARKET never places trades."
     )
 
-    last_connect_attempt = 0.0
-    last_heartbeat = time.monotonic()
+    listener = threading.Thread(
+        target=telegram_listener,
+        daemon=True
+    )
+    listener.start()
 
-    while True:
+    while RUNNING:
         try:
-            enforce_new_day()
-            poll_late_result()
+            if not ensure_connection():
+                time.sleep(RECONNECT_SECONDS)
+                continue
 
-            if (
-                not connection_is_live()
-                and time.monotonic() - last_connect_attempt
-                >= RECONNECT_SECONDS
-            ):
-                last_connect_attempt = time.monotonic()
+            reconcile_trades()
 
-                if not connect_iq():
-                    logging.warning(
-                        "IQ Option unavailable; retrying later."
-                    )
+            manual_scan = MANUAL_SCAN_REQUESTED
 
-            if connection_is_live():
-                with state_lock:
-                    do_manual_scan = bool(scan_requested) and not busy
+            if manual_scan:
+                MANUAL_SCAN_REQUESTED = False
 
-                    if do_manual_scan:
-                        scan_requested = False
+            # One scan services either the manual request or
+            # the normal automatic scan cycle.
+            results = scan_market(manual=manual_scan)
 
-                if do_manual_scan:
-                    logging.info("Manual market scan started.")
-                    results = scan_market()
+            if AUTO_MODE and not manual_scan and not daily_limit_reached():
+                if results:
+                    # Only the highest-ranked qualifying setup is
+                    # considered in each automatic scan cycle.
+                    execute_signal(results[0])
+                else:
+                    logging.info("NO TRADE: no qualifying setup.")
 
-                    telegram_send(
-                        format_signals(
-                            results,
-                            "🔎 MOMENTUM 10 — MANUAL SCAN",
-                        )
-                    )
+            heartbeat()
+            save_state()
 
-                    logging.info(
-                        "Manual scan completed: %d setups.",
-                        len(results),
-                    )
+            time.sleep(SCAN_INTERVAL_SECONDS)
 
-                    # Manual scans never submit orders.
-                    last_auto_scan = time.monotonic()
+        except KeyboardInterrupt:
+            break
 
-                with state_lock:
-                    auto_on = bool(state.get("auto_enabled"))
+        except Exception as exc:
+            logging.error("Main loop error: %s", exc)
+            logging.debug(traceback.format_exc())
+            time.sleep(RECONNECT_SECONDS)
 
-                if (
-                    auto_on
-                    and not busy
-                    and time.monotonic() - last_auto_scan
-                    >= SCAN_INTERVAL_SECONDS
-                ):
-                    reason = risk_stop_reason()
-
-                    if reason:
-                        turn_auto_off(reason)
-
-                    elif not practice_verified or not verify_practice_mode(
-                        force_select=True
-                    ):
-                        turn_auto_off(
-                            "PRACTICE mode could not be verified before AUTO scan"
-                        )
-
-                    else:
-                        last_auto_scan = time.monotonic()
-
-                        telegram_send(
-                            "⏳ AUTO Momentum 10 scan started.",
-                            keyboard=False,
-                        )
-
-                        results = scan_market()
-
-                        with state_lock:
-                            still_enabled = bool(state.get("auto_enabled"))
-                            used_candles = dict(
-                                state.get("last_auto_candles", {})
-                            )
-
-                        if not still_enabled:
-                            telegram_send(
-                                "⏹ AUTO was stopped during the scan. "
-                                "No order placed."
-                            )
-
-                        else:
-                            fresh_results = [
-                                item for item in results
-                                if item.get("auto_eligible", False)
-                                and int(
-                                    used_candles.get(item["asset"], -1)
-                                ) != int(item["candle_id"])
-                            ]
-
-                            if fresh_results:
-                                telegram_send(
-                                    format_signals(
-                                        fresh_results,
-                                        "🤖 AUTO — MOMENTUM 10 SETUPS",
-                                    )
-                                )
-
-                                place_and_monitor(fresh_results[0])
-
-                            elif results:
-                                telegram_send(
-                                    "NO ORDER — setups were found, but none "
-                                    "was both fresh and verified open in "
-                                    "binary/turbo markets."
-                                )
-
-                            else:
-                                telegram_send(
-                                    "NO TRADE — no setup passed Momentum 10 filters.\n"
-                                    + format_rejections()
-                                )
-
-                        last_auto_scan = time.monotonic()
-
-            if time.monotonic() - last_heartbeat >= HEARTBEAT_SECONDS:
-                last_heartbeat = time.monotonic()
-
-                with state_lock:
-                    auto_on = bool(state.get("auto_enabled"))
-                    pending = state.get("pending_trade")
-                    no_setups = (
-                        int(state.get("last_scan_setups", 0) or 0) == 0
-                    )
-
-                telegram_send(
-                    "💓 SCANNER HEARTBEAT\n"
-                    f"{'NO TRADE — ' if no_setups else ''}"
-                    f"Connection: {'connected' if connection_is_live() else 'disconnected'} | "
-                    f"PRACTICE verified: {'yes' if practice_verified else 'no'} | "
-                    f"AUTO: {'ON' if auto_on else 'OFF'}\n"
-                    + (
-                        "⚠️ Unresolved order: AUTO remains blocked.\n"
-                        if pending else ""
-                    )
-                    + format_rejections()
-                )
-
-        except Exception:
-            logging.exception("Main loop error")
-            turn_auto_off("internal main-loop error")
-            telegram_send(
-                "⚠️ Internal scanner error. AUTO disabled; check Actions logs."
-            )
-            time.sleep(3)
-
-        time.sleep(0.5)
+    AUTO_MODE = False
+    telegram_send("Scanner stopped. AUTO MODE OFF.")
 
 
 if __name__ == "__main__":
-    try:
-        main()
-
-    except KeyboardInterrupt:
-        turn_auto_off("scanner interrupted")
-        telegram_send("Scanner stopped. AUTO is OFF.")
-
-    except Exception as exc:
-        logging.exception("Fatal scanner error")
-
-        try:
-            turn_auto_off("fatal scanner error")
-            telegram_send(
-                f"🚨 FATAL SCANNER ERROR: {exc}\nAUTO has been disabled."
-            )
-        except Exception:
-            pass
-
-        raise
+    main()
