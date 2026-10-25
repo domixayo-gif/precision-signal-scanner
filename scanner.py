@@ -1,3 +1,4 @@
+
 import os
 import time
 import json
@@ -6,6 +7,7 @@ import logging
 import threading
 import traceback
 import requests
+import queue
 
 from datetime import datetime, timezone
 from iqoptionapi.stable_api import IQ_Option
@@ -18,15 +20,13 @@ from iqoptionapi.stable_api import IQ_Option
 
 BOT_NAME = "Momentum 10 IQ Option Scanner"
 
-BALANCE_MODE = "PRACTICE"
 AUTO_TRADING_ALLOWED = True
-
 STAKE = 1.0
 EXPIRY_MINUTES = 1
 CANDLE_SECONDS = 60
 LOOKBACK_CANDLES = 50
 
-# MOMENTUM 10 ONLY
+# Momentum 10 filters — intentionally unchanged
 MOMENTUM_PERIOD = 10
 EXTREME_PERCENTILE = 0.08
 MIN_TURN_DISTANCE = 0.06
@@ -42,8 +42,11 @@ RECONNECT_SECONDS = 30
 HEARTBEAT_SECONDS = 300
 RESULT_TIMEOUT_SECONDS = EXPIRY_MINUTES * 60 + 45
 
+# Bounded batches: all discovered symbols rotate through scans.
+MAX_SYMBOLS_PER_SCAN = 40
+CANDLE_REQUEST_TIMEOUT = 8
 TOP_SIGNALS = 3
-PROGRESS_EVERY = 20
+PROGRESS_EVERY = 10
 
 STATE_FILE = "momentum_state.json"
 
@@ -63,7 +66,7 @@ logging.basicConfig(
 
 
 # ============================================================
-# SKIP THE BROKEN DIGITAL-OPEN DISCOVERY THREAD
+# SKIP DIGITAL-OPEN DISCOVERY THAT CAN HANG INITIALIZATION
 # ============================================================
 
 def skip_digital_open(self):
@@ -73,10 +76,7 @@ def skip_digital_open(self):
 try:
     IQ_Option._IQ_Option__get_digital_open = skip_digital_open
 except Exception:
-    logging.warning(
-        "Could not disable digital-open discovery; "
-        "continuing with normal API initialization."
-    )
+    logging.warning("Could not disable digital-open discovery.")
 
 
 # ============================================================
@@ -92,10 +92,16 @@ TELEGRAM_OFFSET = 0
 
 OPEN_TRADES = {}
 LAST_SIGNAL_BY_ASSET = {}
-LAST_HEARTBEAT = 0
 
 MANUAL_SCAN_REQUESTED = False
 SCAN_IN_PROGRESS = False
+SCAN_THREAD = None
+SCAN_RESULTS_QUEUE = queue.Queue()
+
+LAST_HEARTBEAT = 0
+LAST_SCAN_STARTED = 0
+ASSET_CURSOR = 0
+LAST_ASSET_COUNT = 0
 
 STATE = {
     "date": "",
@@ -142,13 +148,9 @@ def telegram_send(message, keyboard=True):
         logging.info("Telegram unavailable. Message: %s", message)
         return
 
-    url = (
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    )
-
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": message[:4000],
+        "text": str(message)[:4000],
         "disable_web_page_preview": True
     }
 
@@ -169,7 +171,9 @@ def telegram_send(message, keyboard=True):
 
     try:
         response = requests.post(
-            url, json=payload, timeout=15
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json=payload,
+            timeout=15
         )
         response.raise_for_status()
     except Exception as exc:
@@ -181,18 +185,21 @@ def save_state():
         try:
             with open(STATE_FILE, "w", encoding="utf-8") as file:
                 json.dump(STATE, file, indent=2)
+            content = json.dumps(STATE, indent=2).encode("utf-8")
         except Exception as exc:
             logging.warning("Local state save failed: %s", exc)
+            return
 
     if not GITHUB_TOKEN or not GITHUB_REPOSITORY:
         return
 
     try:
+        import base64
+
         api_url = (
             "https://api.github.com/repos/"
             f"{GITHUB_REPOSITORY}/contents/{STATE_FILE}"
         )
-
         headers = {
             "Authorization": f"Bearer {GITHUB_TOKEN}",
             "Accept": "application/vnd.github+json",
@@ -209,20 +216,8 @@ def save_state():
         payload = {
             "message": "Update Momentum 10 scanner state",
             "branch": GITHUB_REF_NAME,
-            "content": requests.utils.quote("")
+            "content": base64.b64encode(content).decode("ascii")
         }
-
-        # GitHub Contents API requires base64 content.
-        import base64
-
-        with STATE_LOCK:
-            content = json.dumps(
-                STATE, indent=2
-            ).encode("utf-8")
-
-        payload["content"] = base64.b64encode(
-            content
-        ).decode("ascii")
 
         if existing.status_code == 200:
             payload["sha"] = existing.json().get("sha")
@@ -244,7 +239,7 @@ def save_state():
             logging.warning(
                 "GitHub state update failed: %s %s",
                 result.status_code,
-                result.text[:300]
+                result.text[:250]
             )
 
     except Exception as exc:
@@ -273,6 +268,9 @@ def load_state():
         STATE["wins"] = 0
         STATE["losses"] = 0
         STATE["consecutive_losses"] = 0
+        STATE["signals"] = 0
+        STATE["executed"] = 0
+        STATE["blocked"] = 0
         STATE["history"] = []
 
     save_state()
@@ -309,9 +307,7 @@ def connect_iq():
     global IQ
 
     if not IQ_EMAIL or not IQ_PASSWORD:
-        raise RuntimeError(
-            "Missing IQ_EMAIL or IQ_PASSWORD GitHub secret."
-        )
+        raise RuntimeError("Missing IQ_EMAIL or IQ_PASSWORD secret.")
 
     logging.info("Connecting to IQ Option...")
 
@@ -339,22 +335,19 @@ def connect_iq():
     except Exception:
         mode = ""
 
-    if "REAL" in mode:
+    if "PRACTICE" not in mode:
         raise RuntimeError(
-            "Safety stop: IQ Option reports REAL account mode."
+            "Safety stop: PRACTICE account mode could not be verified."
         )
 
     IQ = candidate
 
     try:
-        balance = safe_float(IQ.get_balance())
+        balance = safe_float(candidate.get_balance())
     except Exception:
         balance = 0.0
 
-    logging.info(
-        "Connected. Practice balance: %s",
-        money(balance)
-    )
+    logging.info("Connected. Practice balance: %s", money(balance))
 
     telegram_send(
         "🟢 MOMENTUM 10 CONNECTED\n"
@@ -372,9 +365,13 @@ def ensure_connection():
 
     try:
         if IQ is not None and IQ.check_connect():
-            return True
+            mode = str(IQ.get_balance_mode()).upper()
+            if "PRACTICE" in mode:
+                return True
     except Exception:
         pass
+
+    IQ = None
 
     try:
         connect_iq()
@@ -384,37 +381,36 @@ def ensure_connection():
         return False
 
 
+def practice_mode_verified():
+    try:
+        return (
+            IQ is not None
+            and IQ.check_connect()
+            and "PRACTICE" in str(IQ.get_balance_mode()).upper()
+        )
+    except Exception:
+        return False
+
+
 # ============================================================
-# DISCOVER ASSETS
+# ASSET DISCOVERY
 # ============================================================
 
 def get_asset_names():
-    """
-    Discover symbols from IQ Option's active-symbol mapping.
-    No currency-only filter: currency, crypto and index symbols
-    can be considered if the account/API exposes them.
-    """
     try:
         active_map = IQ.get_all_ACTIVES_OPCODE()
 
         if not isinstance(active_map, dict):
-            logging.warning("Active-symbol mapping was not a dictionary.")
+            logging.warning("Active-symbol mapping is not a dictionary.")
             return []
 
-        names = []
+        names = {
+            symbol.strip()
+            for symbol in active_map
+            if isinstance(symbol, str) and symbol.strip()
+        }
 
-        for symbol in active_map.keys():
-            if not isinstance(symbol, str):
-                continue
-
-            symbol = symbol.strip()
-
-            if not symbol:
-                continue
-
-            names.append(symbol)
-
-        return sorted(set(names))
+        return sorted(names)
 
     except Exception as exc:
         logging.warning("Asset discovery failed: %s", exc)
@@ -422,80 +418,114 @@ def get_asset_names():
 
 
 # ============================================================
-# CANDLE DATA
+# CANDLE REQUEST WITH TIMEOUT
 # ============================================================
 
-def fetch_candles(asset):
+def _candle_request_worker(client, asset, output_queue):
     try:
-        candles = IQ.get_candles(
+        data = client.get_candles(
             asset,
             CANDLE_SECONDS,
             LOOKBACK_CANDLES,
             int(time.time())
         )
-
-        if not isinstance(candles, list):
-            return []
-
-        if len(candles) < MOMENTUM_PERIOD + 3:
-            return []
-
-        candles = sorted(
-            candles,
-            key=lambda candle: candle.get("from", 0)
-        )
-
-        cleaned = []
-
-        for candle in candles:
-            close = safe_float(candle.get("close"), float("nan"))
-            open_price = safe_float(candle.get("open"), float("nan"))
-            high = safe_float(candle.get("max"), float("nan"))
-            low = safe_float(candle.get("min"), float("nan"))
-
-            if not all(
-                math.isfinite(value)
-                for value in (close, open_price, high, low)
-            ):
-                continue
-
-            if close <= 0 or high < low:
-                continue
-
-            cleaned.append({
-                "open": open_price,
-                "close": close,
-                "high": high,
-                "low": low,
-                "from": candle.get("from", 0)
-            })
-
-        # Exclude the newest candle because it may still be forming.
-        if len(cleaned) > 1:
-            cleaned = cleaned[:-1]
-
-        return cleaned
-
+        output_queue.put(("ok", data))
     except Exception as exc:
-        logging.debug(
-            "Candle request failed for %s: %s", asset, exc
+        output_queue.put(("error", str(exc)))
+
+
+def fetch_candles(asset):
+    """
+    Returns:
+      list  = candle request completed
+      []    = request completed but data was unusable
+      None  = request timed out; current connection is discarded
+
+    A timed-out worker is never reused for later requests.
+    """
+    global IQ
+
+    client = IQ
+    if client is None:
+        return None
+
+    result_queue = queue.Queue(maxsize=1)
+
+    worker = threading.Thread(
+        target=_candle_request_worker,
+        args=(client, asset, result_queue),
+        daemon=True
+    )
+    worker.start()
+    worker.join(CANDLE_REQUEST_TIMEOUT)
+
+    if worker.is_alive():
+        logging.error(
+            "CANDLE TIMEOUT: %s exceeded %ss; reconnect required.",
+            asset, CANDLE_REQUEST_TIMEOUT
         )
+
+        # Stop using this client. The timed-out worker holds only
+        # the old client reference; the scanner reconnects separately.
+        if IQ is client:
+            IQ = None
+
+        return None
+
+    try:
+        status, candles = result_queue.get_nowait()
+    except queue.Empty:
         return []
+
+    if status != "ok" or not isinstance(candles, list):
+        logging.debug("No candle data for %s: %s", asset, candles)
+        return []
+
+    if len(candles) < MOMENTUM_PERIOD + 3:
+        return []
+
+    candles = sorted(
+        candles,
+        key=lambda candle: candle.get("from", 0)
+    )
+
+    cleaned = []
+
+    for candle in candles:
+        close = safe_float(candle.get("close"), float("nan"))
+        open_price = safe_float(candle.get("open"), float("nan"))
+        high = safe_float(candle.get("max"), float("nan"))
+        low = safe_float(candle.get("min"), float("nan"))
+
+        if not all(
+            math.isfinite(value)
+            for value in (close, open_price, high, low)
+        ):
+            continue
+
+        if close <= 0 or high < low:
+            continue
+
+        cleaned.append({
+            "open": open_price,
+            "close": close,
+            "high": high,
+            "low": low,
+            "from": candle.get("from", 0)
+        })
+
+    # Exclude the newest candle because it may still be forming.
+    if len(cleaned) > 1:
+        cleaned = cleaned[:-1]
+
+    return cleaned
 
 
 # ============================================================
-# MOMENTUM 10 STRATEGY
+# MOMENTUM 10 STRATEGY — FILTERS PRESERVED
 # ============================================================
 
 def calculate_signal(asset, candles):
-    """
-    Momentum 10:
-    - Uses the last 10 completed candles.
-    - Looks for an extreme directional move.
-    - Requires a reversal candle and a minimum turn distance.
-    - Does not treat the score as a probability of winning.
-    """
-
     if len(candles) < MOMENTUM_PERIOD + 3:
         return None, "insufficient candles"
 
@@ -531,21 +561,15 @@ def calculate_signal(asset, candles):
     if last_range <= 0:
         return None, "flat latest candle"
 
-    body = abs(closes[-1] - opens[-1])
-    body_ratio = body / last_range
-
-    # Measure the latest candle's reversal from its extreme.
+    body_ratio = abs(current_close - opens[-1]) / last_range
     upper_turn = (highs[-1] - current_close) / last_range
     lower_turn = (current_close - lows[-1]) / last_range
 
-    # Keep the minimum-turn requirement explicit.
     if momentum < 0:
-        # A strong downward move needs a bullish reversal candle.
-        bullish = current_close > opens[-1]
-        turn_distance = lower_turn
-
-        if not bullish:
+        if current_close <= opens[-1]:
             return None, "no bullish reversal after downward momentum"
+
+        turn_distance = lower_turn
 
         if turn_distance < MIN_TURN_DISTANCE:
             return None, "reversal distance too small"
@@ -553,12 +577,10 @@ def calculate_signal(asset, candles):
         direction = "call"
 
     elif momentum > 0:
-        # A strong upward move needs a bearish reversal candle.
-        bearish = current_close < opens[-1]
-        turn_distance = upper_turn
-
-        if not bearish:
+        if current_close >= opens[-1]:
             return None, "no bearish reversal after upward momentum"
+
+        turn_distance = upper_turn
 
         if turn_distance < MIN_TURN_DISTANCE:
             return None, "reversal distance too small"
@@ -568,16 +590,11 @@ def calculate_signal(asset, candles):
     else:
         return None, "zero momentum"
 
-    # Momentum must be meaningfully larger than recent candle noise.
-    normalized_momentum = (
-        abs(current_close - old_close) / average_range
-    )
+    normalized_momentum = abs(current_close - old_close) / average_range
 
     if normalized_momentum < EXTREME_PERCENTILE:
         return None, "momentum not extreme enough"
 
-    # Do not accept a reversal if the latest close has not moved
-    # in the expected direction relative to the preceding close.
     if direction == "call" and current_close <= previous_close:
         return None, "bullish reversal lacks close confirmation"
 
@@ -599,7 +616,7 @@ def calculate_signal(asset, candles):
     if turn_distance >= 0.5:
         score += 5
 
-    signal = {
+    return {
         "asset": asset,
         "direction": direction,
         "score": min(score, 100),
@@ -609,119 +626,31 @@ def calculate_signal(asset, candles):
         "turn_distance": turn_distance,
         "price": current_close,
         "time": utc_now().strftime("%H:%M:%S UTC")
-    }
-
-    return signal, ""
+    }, ""
 
 
 # ============================================================
-# MARKET SCAN
+# MARKET SCAN — ROTATING, BOUNDED BATCHES
 # ============================================================
 
-def scan_market(manual=False):
-    global SCAN_IN_PROGRESS
-
-    with STATE_LOCK:
-        if SCAN_IN_PROGRESS:
-            return []
-        SCAN_IN_PROGRESS = True
-
-    try:
-        if not ensure_connection():
-            if manual:
-                telegram_send("❌ Scan failed: IQ Option is disconnected.")
-            return []
-
-        assets = get_asset_names()
-
-        if not assets:
-            message = (
-                "⚠️ No assets returned by IQ Option.\n"
-                "The API may not have initialized its active-symbol list."
-            )
-            logging.warning(message)
-
-            if manual:
-                telegram_send(message)
-
-            return []
-
-        logging.info(
-            "Scanning %d symbols with Momentum 10.", len(assets)
-        )
-
-        results = []
-        rejected = {}
-        scanned = 0
-
-        for index, asset in enumerate(assets, start=1):
-            if not RUNNING:
-                break
-
-            candles = fetch_candles(asset)
-            scanned += 1
-
-            if not candles:
-                rejected["no candles/unavailable"] = (
-                    rejected.get("no candles/unavailable", 0) + 1
-                )
-                time.sleep(REQUEST_PAUSE_SECONDS)
-                continue
-
-            signal, reason = calculate_signal(asset, candles)
-
-            if signal:
-                results.append(signal)
-            else:
-                rejected[reason] = rejected.get(reason, 0) + 1
-
-            if index % PROGRESS_EVERY == 0:
-                logging.info(
-                    "Scan progress: %d/%d; candidates=%d",
-                    index, len(assets), len(results)
-                )
-
-            time.sleep(REQUEST_PAUSE_SECONDS)
-
-        results.sort(
-            key=lambda item: item["score"],
-            reverse=True
-        )
-
-        logging.info(
-            "Scan finished: scanned=%d candidates=%d",
-            scanned, len(results)
-        )
-
-        if manual:
-            send_manual_scan_results(results, scanned, rejected)
-
-        return results
-
-    except Exception as exc:
-        logging.error("Market scan failed: %s", exc)
-        logging.debug(traceback.format_exc())
-
-        if manual:
-            telegram_send(
-                f"❌ Market scan error: {str(exc)[:250]}"
-            )
-
-        return []
-
-    finally:
-        with STATE_LOCK:
-            SCAN_IN_PROGRESS = False
-
-
-def send_manual_scan_results(results, scanned, rejected):
+def send_manual_scan_results(results, scanned, total, rejected, timed_out=False):
     lines = [
         "🔎 MANUAL MARKET SCAN",
         "Mode: REPORT ONLY — NO TRADES",
-        f"Symbols checked: {scanned}",
+        f"Symbols checked this batch: {scanned}/{total}",
+        f"Batch size limit: {MAX_SYMBOLS_PER_SCAN}",
         f"Candidates: {len(results)}",
         ""
     ]
+
+    if timed_out:
+        lines.append("⚠️ Candle request timed out. Reconnect required.")
+
+    if total > scanned:
+        lines.append(
+            "The scanner rotates through the discovered symbol list "
+            "across successive scans."
+        )
 
     if results:
         lines.append("TOP MOMENTUM 10 SETUPS:")
@@ -734,11 +663,10 @@ def send_manual_scan_results(results, scanned, rejected):
                 f"Momentum {signal['normalized_momentum']:.2f}"
             )
     else:
-        lines.append("NO TRADE — no qualifying setups.")
+        lines.append("NO TRADE — no qualifying setups in this batch.")
 
     if rejected:
-        lines.append("")
-        lines.append("REJECTION SUMMARY:")
+        lines.extend(["", "REJECTION SUMMARY:"])
 
         for reason, count in sorted(
             rejected.items(),
@@ -750,78 +678,213 @@ def send_manual_scan_results(results, scanned, rejected):
     telegram_send("\n".join(lines))
 
 
+def scan_market(manual=False):
+    global SCAN_IN_PROGRESS, ASSET_CURSOR, LAST_ASSET_COUNT
+
+    with STATE_LOCK:
+        if SCAN_IN_PROGRESS:
+            return
+        SCAN_IN_PROGRESS = True
+
+    results = []
+    rejected = {}
+    scanned = 0
+    timed_out = False
+    total = 0
+
+    try:
+        if not ensure_connection():
+            if manual:
+                telegram_send("❌ Scan failed: IQ Option is disconnected.")
+            return
+
+        assets = get_asset_names()
+        total = len(assets)
+        LAST_ASSET_COUNT = total
+
+        if not assets:
+            logging.warning("No symbols returned by IQ Option.")
+            if manual:
+                telegram_send(
+                    "⚠️ No symbols returned by IQ Option. "
+                    "The active-symbol list may not be initialized."
+                )
+            return
+
+        start = ASSET_CURSOR % total
+        batch_count = min(MAX_SYMBOLS_PER_SCAN, total)
+
+        batch = [
+            assets[(start + i) % total]
+            for i in range(batch_count)
+        ]
+
+        logging.info(
+            "Scanning batch: %d symbols; total discovered=%d; start=%d.",
+            len(batch), total, start
+        )
+
+        for index, asset in enumerate(batch, start=1):
+            if not RUNNING:
+                break
+
+            if IQ is None:
+                timed_out = True
+                rejected["connection reset after timeout"] = 1
+                break
+
+            candles = fetch_candles(asset)
+
+            if candles is None:
+                timed_out = True
+                rejected["candle request timeout"] = (
+                    rejected.get("candle request timeout", 0) + 1
+                )
+                # Don't keep requesting candles through a failed client.
+                break
+
+            scanned += 1
+
+            if not candles:
+                rejected["no candles/unavailable"] = (
+                    rejected.get("no candles/unavailable", 0) + 1
+                )
+            else:
+                signal, reason = calculate_signal(asset, candles)
+
+                if signal:
+                    results.append(signal)
+                else:
+                    rejected[reason] = rejected.get(reason, 0) + 1
+
+            if index % PROGRESS_EVERY == 0:
+                logging.info(
+                    "Batch progress: %d/%d; candidates=%d",
+                    index, len(batch), len(results)
+                )
+
+            time.sleep(REQUEST_PAUSE_SECONDS)
+
+        # Move past attempted symbols, even if one request timed out.
+        ASSET_CURSOR = (start + max(scanned, 1)) % total
+
+        results.sort(key=lambda item: item["score"], reverse=True)
+
+        logging.info(
+            "Batch finished: scanned=%d/%d; candidates=%d; timeout=%s",
+            scanned, total, len(results), timed_out
+        )
+
+        if manual:
+            send_manual_scan_results(
+                results, scanned, total, rejected, timed_out
+            )
+
+        SCAN_RESULTS_QUEUE.put({
+            "manual": manual,
+            "results": results,
+            "scanned": scanned,
+            "total": total,
+            "timed_out": timed_out
+        })
+
+    except Exception as exc:
+        logging.error("Market scan failed: %s", exc)
+        logging.debug(traceback.format_exc())
+
+        if manual:
+            telegram_send(f"❌ Market scan error: {str(exc)[:250]}")
+
+        SCAN_RESULTS_QUEUE.put({
+            "manual": manual,
+            "results": [],
+            "scanned": scanned,
+            "total": total,
+            "timed_out": timed_out,
+            "error": str(exc)
+        })
+
+    finally:
+        with STATE_LOCK:
+            SCAN_IN_PROGRESS = False
+
+
+def start_scan(manual=False):
+    global SCAN_THREAD, LAST_SCAN_STARTED
+
+    with STATE_LOCK:
+        if SCAN_IN_PROGRESS:
+            return False
+
+        SCAN_THREAD = threading.Thread(
+            target=scan_market,
+            args=(manual,),
+            daemon=True
+        )
+        LAST_SCAN_STARTED = time.time()
+        SCAN_THREAD.start()
+
+    return True
+
+
 # ============================================================
 # PRACTICE-ONLY ORDER PROTECTION
 # ============================================================
 
-def practice_mode_verified():
-    try:
-        mode = str(IQ.get_balance_mode()).upper()
-        return "PRACTICE" in mode
-    except Exception:
-        return False
-
-
 def execute_signal(signal):
     global AUTO_MODE
 
-    if not AUTO_TRADING_ALLOWED:
-        return False
-
-    if not AUTO_MODE:
+    if not AUTO_TRADING_ALLOWED or not AUTO_MODE:
         return False
 
     if daily_limit_reached():
         AUTO_MODE = False
-        telegram_send(
-            "🛑 AUTO STOPPED\n" + daily_limit_reason()
-        )
+        telegram_send("🛑 AUTO STOPPED\n" + daily_limit_reason())
         return False
 
     if not practice_mode_verified():
         AUTO_MODE = False
         telegram_send(
             "🚨 SAFETY STOP\n"
-            "Could not verify PRACTICE mode. "
-            "No order was sent."
+            "Could not verify PRACTICE mode. No order was sent."
         )
         return False
 
     asset = signal["asset"]
     direction = signal["direction"]
-
-    # Avoid repeated orders on the same asset within one candle.
-    candle_key = (
-        asset,
-        int(time.time() // CANDLE_SECONDS)
-    )
+    candle_key = (asset, int(time.time() // CANDLE_SECONDS))
 
     if candle_key in LAST_SIGNAL_BY_ASSET:
         return False
 
     signal_id = (
-        f"M10-{asset}-{direction.upper()}-"
-        f"{int(time.time())}"
+        f"M10-{asset}-{direction.upper()}-{int(time.time())}"
     )
 
     try:
-        # Re-check the mode immediately before sending an order.
         if not practice_mode_verified():
             AUTO_MODE = False
             telegram_send("🚨 Practice-mode verification failed.")
             return False
 
-        success, order_id = IQ.buy(
-            STAKE,
-            asset,
-            direction,
-            EXPIRY_MINUTES
-        )
+        response = IQ.buy(STAKE, asset, direction, EXPIRY_MINUTES)
 
-        if not success:
+        # Handle the common (success, order_id) tuple and guard
+        # against an unexpected response format.
+        if isinstance(response, tuple) and len(response) >= 2:
+            success = bool(response[0])
+            order_id = response[1]
+        else:
+            logging.error("Unexpected IQ.buy response: %r", response)
             with STATE_LOCK:
                 STATE["blocked"] += 1
-            logging.warning("Order rejected: %s", asset)
+            save_state()
+            return False
+
+        if not success or order_id is None:
+            with STATE_LOCK:
+                STATE["blocked"] += 1
+            logging.warning("Order rejected: %s; response=%r", asset, response)
             return False
 
         LAST_SIGNAL_BY_ASSET[candle_key] = True
@@ -835,7 +898,6 @@ def execute_signal(signal):
                 "score": signal["score"],
                 "started": time.time()
             }
-
             STATE["executed"] += 1
             STATE["signals"] += 1
 
@@ -852,17 +914,14 @@ def execute_signal(signal):
             "Reminder: score is not win probability."
         )
 
-        logging.info(
-            "Practice order accepted: %s id=%s",
-            asset, order_id
-        )
-
+        logging.info("Practice order accepted: %s id=%s", asset, order_id)
         return True
 
     except Exception as exc:
-        logging.error(
-            "Order error for %s: %s", asset, exc
-        )
+        logging.error("Order error for %s: %s", asset, exc)
+        with STATE_LOCK:
+            STATE["blocked"] += 1
+        save_state()
         return False
 
 
@@ -871,12 +930,13 @@ def execute_signal(signal):
 # ============================================================
 
 def reconcile_trades():
+    global AUTO_MODE
+
     if not OPEN_TRADES or not ensure_connection():
         return
 
     for order_id in list(OPEN_TRADES.keys()):
         trade = OPEN_TRADES.get(order_id)
-
         if not trade:
             continue
 
@@ -886,28 +946,20 @@ def reconcile_trades():
         try:
             result = IQ.check_win_v4(int(order_id))
         except Exception as exc:
-            logging.warning(
-                "Result check failed for %s: %s",
-                order_id, exc
-            )
+            logging.warning("Result check failed for %s: %s", order_id, exc)
             continue
 
         if result is None:
             if time.time() - trade["started"] > RESULT_TIMEOUT_SECONDS:
-                logging.warning(
-                    "Result still pending for order %s",
-                    order_id
-                )
+                logging.warning("Result still pending for order %s", order_id)
             continue
 
         result = safe_float(result, float("nan"))
-
         if not math.isfinite(result):
             continue
 
         with STATE_LOCK:
             OPEN_TRADES.pop(order_id, None)
-
             STATE["resolved"] += 1
             STATE["daily_pl"] += result
 
@@ -930,8 +982,9 @@ def reconcile_trades():
                 "net": result,
                 "time": utc_now().isoformat()
             })
-
             STATE["history"] = STATE["history"][-200:]
+            daily_pl = STATE["daily_pl"]
+            resolved = STATE["resolved"]
 
         save_state()
 
@@ -941,16 +994,13 @@ def reconcile_trades():
             f"Asset: {trade['asset']}\n"
             f"Direction: {trade['direction'].upper()}\n"
             f"Net result: {money(result)}\n"
-            f"Daily P/L: {money(STATE['daily_pl'])}\n"
-            f"Resolved: {STATE['resolved']}/{MAX_RESOLVED_TRADES}"
+            f"Daily P/L: {money(daily_pl)}\n"
+            f"Resolved: {resolved}/{MAX_RESOLVED_TRADES}"
         )
 
         if daily_limit_reached():
-            global AUTO_MODE
             AUTO_MODE = False
-            telegram_send(
-                "🛑 AUTO MODE OFF\n" + daily_limit_reason()
-            )
+            telegram_send("🛑 AUTO MODE OFF\n" + daily_limit_reason())
 
 
 # ============================================================
@@ -978,6 +1028,9 @@ def status_message():
             f"Executed: {STATE['executed']}\n"
             f"Blocked: {STATE['blocked']}\n"
             f"Consecutive losses: {STATE['consecutive_losses']}\n"
+            f"Discovered symbols: {LAST_ASSET_COUNT}\n"
+            f"Batch size: {MAX_SYMBOLS_PER_SCAN}\n"
+            f"Scan in progress: {SCAN_IN_PROGRESS}\n"
             f"Daily stop: {daily_limit_reason() or 'Not reached'}"
         )
 
@@ -985,13 +1038,15 @@ def status_message():
 def process_telegram_update(update):
     global AUTO_MODE, MANUAL_SCAN_REQUESTED
 
-    message = update.get("message") or update.get("callback_query", {}).get("message")
+    message = update.get("message")
+    if not message:
+        callback = update.get("callback_query", {})
+        message = callback.get("message")
 
     if not message:
         return
 
-    chat = message.get("chat", {})
-    chat_id = str(chat.get("id", ""))
+    chat_id = str(message.get("chat", {}).get("id", ""))
 
     if TELEGRAM_CHAT_ID and chat_id != str(TELEGRAM_CHAT_ID):
         return
@@ -1006,14 +1061,11 @@ def process_telegram_update(update):
         return
 
     upper = text.upper()
-
     logging.info("Telegram command received: %s", upper)
 
     if upper in ("/START", "START AUTO"):
         if daily_limit_reached():
-            telegram_send(
-                "Cannot start AUTO.\n" + daily_limit_reason()
-            )
+            telegram_send("Cannot start AUTO.\n" + daily_limit_reason())
             return
 
         if not practice_mode_verified():
@@ -1037,7 +1089,7 @@ def process_telegram_update(update):
     elif upper in ("SCAN MARKET", "/SCAN"):
         MANUAL_SCAN_REQUESTED = True
         telegram_send(
-            "🔎 Manual scan queued. It will report setups only; "
+            "🔎 Manual scan queued. It reports setups only; "
             "no trades will be placed."
         )
 
@@ -1047,11 +1099,7 @@ def process_telegram_update(update):
     elif upper.startswith("/STATS"):
         with STATE_LOCK:
             total = STATE["wins"] + STATE["losses"]
-            win_rate = (
-                STATE["wins"] / total * 100
-                if total else 0.0
-            )
-
+            win_rate = STATE["wins"] / total * 100 if total else 0.0
             telegram_send(
                 "📈 MOMENTUM 10 STATS\n"
                 f"Wins: {STATE['wins']}\n"
@@ -1063,8 +1111,8 @@ def process_telegram_update(update):
 
     elif upper.startswith("/RECONCILE"):
         telegram_send(
-            "Automatic reconciliation is active for trades "
-            "opened during this workflow run. Use /stats for results."
+            "Automatic reconciliation is active for trades opened "
+            "during this workflow run. Use /stats for results."
         )
 
 
@@ -1075,21 +1123,15 @@ def telegram_listener():
         logging.warning("TELEGRAM_TOKEN missing; listener disabled.")
         return
 
-    base_url = (
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-    )
+    base_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
     while RUNNING:
         try:
             response = requests.get(
                 f"{base_url}/getUpdates",
-                params={
-                    "offset": TELEGRAM_OFFSET,
-                    "timeout": 20
-                },
+                params={"offset": TELEGRAM_OFFSET, "timeout": 20},
                 timeout=25
             )
-
             response.raise_for_status()
             data = response.json()
 
@@ -1130,6 +1172,7 @@ def heartbeat():
             f"Signals: {STATE['signals']}\n"
             f"Executed: {STATE['executed']}\n"
             f"Blocked: {STATE['blocked']}\n"
+            f"Scan in progress: {SCAN_IN_PROGRESS}\n"
             "No qualifying setup means NO TRADE."
         )
 
@@ -1137,13 +1180,13 @@ def heartbeat():
 
 
 # ============================================================
-# MAIN LOOP
+# MAIN LOOP — TELEGRAM AND HEARTBEAT STAY RESPONSIVE
 # ============================================================
 
 def main():
-    global AUTO_MODE, MANUAL_SCAN_REQUESTED
+    global AUTO_MODE, MANUAL_SCAN_REQUESTED, LAST_SCAN_STARTED
 
-    # Required: every workflow restart begins with AUTO OFF.
+    # Every workflow restart begins with AUTO OFF.
     AUTO_MODE = False
 
     load_state()
@@ -1155,41 +1198,53 @@ def main():
         "Manual SCAN MARKET never places trades."
     )
 
-    listener = threading.Thread(
+    threading.Thread(
         target=telegram_listener,
         daemon=True
-    )
-    listener.start()
+    ).start()
 
     while RUNNING:
         try:
-            if not ensure_connection():
-                time.sleep(RECONNECT_SECONDS)
-                continue
+            if IQ is None:
+                if not ensure_connection():
+                    heartbeat()
+                    time.sleep(RECONNECT_SECONDS)
+                    continue
 
             reconcile_trades()
 
-            manual_scan = MANUAL_SCAN_REQUESTED
+            # Handle completed automatic scan results.
+            while True:
+                try:
+                    completed = SCAN_RESULTS_QUEUE.get_nowait()
+                except queue.Empty:
+                    break
 
-            if manual_scan:
+                if (
+                    not completed.get("manual")
+                    and AUTO_MODE
+                    and not completed.get("timed_out")
+                    and not daily_limit_reached()
+                ):
+                    results = completed.get("results", [])
+                    if results:
+                        execute_signal(results[0])
+                    else:
+                        logging.info("NO TRADE: no qualifying setup.")
+
+            # Manual requests have priority and never place orders.
+            if MANUAL_SCAN_REQUESTED and not SCAN_IN_PROGRESS:
                 MANUAL_SCAN_REQUESTED = False
+                start_scan(manual=True)
 
-            # One scan services either the manual request or
-            # the normal automatic scan cycle.
-            results = scan_market(manual=manual_scan)
-
-            if AUTO_MODE and not manual_scan and not daily_limit_reached():
-                if results:
-                    # Only the highest-ranked qualifying setup is
-                    # considered in each automatic scan cycle.
-                    execute_signal(results[0])
-                else:
-                    logging.info("NO TRADE: no qualifying setup.")
+            elif (
+                not SCAN_IN_PROGRESS
+                and time.time() - LAST_SCAN_STARTED >= SCAN_INTERVAL_SECONDS
+            ):
+                start_scan(manual=False)
 
             heartbeat()
-            save_state()
-
-            time.sleep(SCAN_INTERVAL_SECONDS)
+            time.sleep(1)
 
         except KeyboardInterrupt:
             break
