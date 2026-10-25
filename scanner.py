@@ -1,9 +1,8 @@
-# PRACTICE ONLY — never switch this bot to REAL.
-# Telegram buttons: START AUTO, STOP AUTO, SCAN MARKET, STATUS
-# Manual scans only report ranked setups. They never place orders.
+# PRACTICE ONLY — this scanner refuses to run in REAL mode.
+# Telegram inline buttons: START AUTO, STOP AUTO, SCAN MARKET, STATUS.
+# Manual scans only report ranked setups and never place orders.
 
 import os
-import re
 import json
 import time
 import base64
@@ -16,8 +15,8 @@ import requests
 from iqoptionapi.stable_api import IQ_Option
 
 # -------------------- SETTINGS --------------------
-BALANCE_MODE = "PRACTICE"
-AUTO_TRADE = True
+BALANCE_MODE = "PRACTICE"       # Safety lock: do not change to REAL.
+AUTO_TRADE = True               # START AUTO enables practice trading.
 STAKE = 1.0
 EXPIRY_MINUTES = 1
 CANDLE_SECONDS = 60
@@ -25,7 +24,7 @@ LOOKBACK_CANDLES = 50
 MOMENTUM_PERIOD = 10
 MOMENTUM_CONFIRM_PERIOD = 20
 EXTREME_PERCENTILE = 0.08
-MIN_TURN_DISTANCE = 0.06  # percentage-point momentum turn, not a win probability
+MIN_TURN_DISTANCE = 0.06        # Momentum percentage-point turn, not win probability.
 DAILY_PROFIT_TARGET = 5.0
 DAILY_MAX_LOSS = -3.0
 MAX_RESOLVED_TRADES = 20
@@ -44,14 +43,11 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
 GITHUB_REPOSITORY = os.getenv("GITHUB_REPOSITORY", "").strip()
 GITHUB_REF_NAME = os.getenv("GITHUB_REF_NAME", "main").strip() or "main"
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 CURRENCY_CODES = {
-    "USD", "EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD",
-    "SGD", "HKD", "NOK", "SEK", "DKK", "MXN", "ZAR", "TRY", "PLN",
+    "USD", "EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD", "SGD",
+    "HKD", "NOK", "SEK", "DKK", "MXN", "ZAR", "TRY", "PLN",
 }
 
 DEFAULT_STATE = {
@@ -72,6 +68,8 @@ last_auto_scan = 0.0
 busy = False
 OPEN_TIME_CACHE = None
 telegram_listener_thread = None
+state_lock = threading.RLock()
+scan_lock = threading.Lock()
 
 
 def now_lagos():
@@ -86,41 +84,49 @@ def telegram_api(method):
     return f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{method}"
 
 
+def control_keyboard():
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "▶️ START AUTO", "callback_data": "START_AUTO"},
+                {"text": "⏹ STOP AUTO", "callback_data": "STOP_AUTO"},
+            ],
+            [
+                {"text": "🔎 SCAN MARKET", "callback_data": "SCAN_MARKET"},
+                {"text": "📊 STATUS", "callback_data": "STATUS"},
+            ],
+        ]
+    }
+
+
 def telegram_send(text, keyboard=True):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         logging.info("Telegram not configured; message: %s", text)
         return
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": str(text)}
     if keyboard:
-        payload["reply_markup"] = json.dumps({
-            "inline_keyboard": [
-                [
-                    {"text": "▶️ START AUTO", "callback_data": "START_AUTO"},
-                    {"text": "⏹ STOP AUTO", "callback_data": "STOP_AUTO"},
-                ],
-                [
-                    {"text": "🔎 SCAN MARKET", "callback_data": "SCAN_MARKET"},
-                    {"text": "📊 STATUS", "callback_data": "STATUS"},
-                ],
-            ]
-        })
+        payload["reply_markup"] = json.dumps(control_keyboard(), ensure_ascii=False)
     try:
         response = session.post(telegram_api("sendMessage"), data=payload, timeout=20)
         if not response.ok:
-            logging.warning("Telegram send failed: %s", response.text[:300])
+            logging.warning("Telegram send failed (%s): %s", response.status_code, response.text[:300])
     except Exception as exc:
         logging.warning("Telegram send error: %s", exc)
 
 
 def telegram_answer_callback(callback_id, text="Done"):
+    if not callback_id:
+        return
     try:
-        session.post(
+        response = session.post(
             telegram_api("answerCallbackQuery"),
-            data={"callback_query_id": callback_id, "text": text},
+            data={"callback_query_id": callback_id, "text": str(text)[:190]},
             timeout=10,
         )
-    except Exception:
-        pass
+        if not response.ok:
+            logging.warning("Callback answer failed: %s", response.text[:200])
+    except Exception as exc:
+        logging.warning("Callback answer error: %s", exc)
 
 
 def github_contents_url():
@@ -131,7 +137,6 @@ def github_contents_url():
 
 def load_state():
     loaded = {}
-    # Prefer the saved GitHub file, so daily limits survive workflow restarts.
     url = github_contents_url()
     if url and GITHUB_TOKEN:
         try:
@@ -143,8 +148,8 @@ def load_state():
             )
             if response.ok:
                 content = response.json().get("content", "")
-                decoded = base64.b64decode(content).decode("utf-8")
-                loaded = json.loads(decoded)
+                if content:
+                    loaded = json.loads(base64.b64decode(content).decode("utf-8"))
         except Exception as exc:
             logging.warning("Could not load GitHub state: %s", exc)
     if not loaded:
@@ -153,8 +158,10 @@ def load_state():
                 loaded = json.load(handle)
         except Exception:
             loaded = {}
+
     result = DEFAULT_STATE.copy()
-    result.update(loaded if isinstance(loaded, dict) else {})
+    if isinstance(loaded, dict):
+        result.update(loaded)
     if result.get("date") != day_key():
         result["date"] = day_key()
         result["daily_pnl"] = 0.0
@@ -166,10 +173,12 @@ def load_state():
 
 
 def save_state():
-    state["date"] = day_key()
+    with state_lock:
+        state["date"] = day_key()
+        snapshot = dict(state)
     try:
         with open(STATE_FILE, "w", encoding="utf-8") as handle:
-            json.dump(state, handle, indent=2)
+            json.dump(snapshot, handle, indent=2)
     except Exception as exc:
         logging.warning("Local state save failed: %s", exc)
 
@@ -184,7 +193,7 @@ def save_state():
     try:
         current = session.get(url, headers=headers, params={"ref": GITHUB_REF_NAME}, timeout=15)
         sha = current.json().get("sha") if current.ok else None
-        content = base64.b64encode(json.dumps(state, indent=2).encode("utf-8")).decode("ascii")
+        content = base64.b64encode(json.dumps(snapshot, indent=2).encode("utf-8")).decode("ascii")
         body = {
             "message": "Update practice momentum scanner state",
             "content": content,
@@ -200,23 +209,31 @@ def save_state():
 
 
 def enforce_new_day():
-    if state.get("date") != day_key():
-        state["date"] = day_key()
-        state["daily_pnl"] = 0.0
-        state["resolved_trades"] = 0
-        state["consecutive_losses"] = 0
+    changed = False
+    with state_lock:
+        if state.get("date") != day_key():
+            state["date"] = day_key()
+            state["daily_pnl"] = 0.0
+            state["resolved_trades"] = 0
+            state["consecutive_losses"] = 0
+            changed = True
+    if changed:
         save_state()
 
 
 def risk_stop_reason():
     enforce_new_day()
-    if state["daily_pnl"] >= DAILY_PROFIT_TARGET:
+    with state_lock:
+        daily_pnl = float(state.get("daily_pnl", 0.0))
+        resolved = int(state.get("resolved_trades", 0))
+        losses = int(state.get("consecutive_losses", 0))
+    if daily_pnl >= DAILY_PROFIT_TARGET:
         return f"daily profit target reached (+${DAILY_PROFIT_TARGET:.2f})"
-    if state["daily_pnl"] <= DAILY_MAX_LOSS:
+    if daily_pnl <= DAILY_MAX_LOSS:
         return f"daily loss limit reached (${DAILY_MAX_LOSS:.2f})"
-    if state["resolved_trades"] >= MAX_RESOLVED_TRADES:
+    if resolved >= MAX_RESOLVED_TRADES:
         return f"maximum resolved trades reached ({MAX_RESOLVED_TRADES})"
-    if state["consecutive_losses"] >= MAX_CONSECUTIVE_LOSSES:
+    if losses >= MAX_CONSECUTIVE_LOSSES:
         return f"maximum consecutive losses reached ({MAX_CONSECUTIVE_LOSSES})"
     return ""
 
@@ -225,9 +242,7 @@ def valid_currency_asset(name):
     clean = str(name).upper().replace("_", "")
     if clean.endswith("-OTC"):
         clean = clean[:-4]
-    if len(clean) != 6 or not clean.isalpha():
-        return False
-    return clean[:3] in CURRENCY_CODES and clean[3:] in CURRENCY_CODES
+    return len(clean) == 6 and clean.isalpha() and clean[:3] in CURRENCY_CODES and clean[3:] in CURRENCY_CODES
 
 
 def connect_iq():
@@ -238,7 +253,7 @@ def connect_iq():
     connected, reason = IQ.connect()
     if not connected:
         raise RuntimeError(f"IQ Option connection failed: {reason}")
-    # PRACTICE is hard-coded intentionally. No REAL option is present.
+    # Deliberately hard-coded. This file contains no route to REAL balance.
     IQ.change_balance("PRACTICE")
     time.sleep(2)
     if hasattr(IQ, "check_connect") and not IQ.check_connect():
@@ -265,8 +280,6 @@ def get_asset_names():
 
 
 def asset_is_open(asset):
-    # Load the market-open table once per scan, not once per asset.
-    # Repeated calls here can make the scanner appear frozen for minutes.
     global OPEN_TIME_CACHE
     try:
         if OPEN_TIME_CACHE is None:
@@ -280,7 +293,6 @@ def asset_is_open(asset):
             row = market.get(asset)
             if isinstance(row, dict) and row.get("open"):
                 return True
-        # If the API didn't provide a usable market table, let candle query decide.
         return not saw_market_table
     except Exception as exc:
         logging.warning("Could not check open status for %s: %s", asset, exc)
@@ -314,7 +326,11 @@ def candle_is_bearish_engulfing(previous, current):
 
 
 def get_closed_candles(asset):
-    raw = IQ.get_candles(asset, CANDLE_SECONDS, LOOKBACK_CANDLES + MOMENTUM_CONFIRM_PERIOD + 5, time.time())
+    raw = IQ.get_candles(
+        asset, CANDLE_SECONDS,
+        LOOKBACK_CANDLES + MOMENTUM_CONFIRM_PERIOD + 5,
+        time.time(),
+    )
     if not raw or len(raw) < MOMENTUM_CONFIRM_PERIOD + 15:
         return []
     raw = sorted(raw, key=lambda item: item.get("from", 0))
@@ -322,7 +338,6 @@ def get_closed_candles(asset):
     closed = []
     for item in raw:
         stamp = float(item.get("from", 0) or 0)
-        # Don't use a candle that is still forming.
         if stamp and stamp + CANDLE_SECONDS <= now_ts - 2:
             try:
                 closed.append({
@@ -352,8 +367,7 @@ def analyze_asset(asset):
         return None
     closes = [c["close"] for c in candles]
     n = len(candles)
-    current_index = n - 1
-    previous_index = n - 2
+    current_index, previous_index = n - 1, n - 2
     current_m10 = momentum_percent(closes, MOMENTUM_PERIOD, current_index)
     previous_m10 = momentum_percent(closes, MOMENTUM_PERIOD, previous_index)
     current_m20 = momentum_percent(closes, MOMENTUM_CONFIRM_PERIOD, current_index)
@@ -373,8 +387,7 @@ def analyze_asset(asset):
     low_edge = percentile(history, EXTREME_PERCENTILE)
     high_edge = percentile(history, 1.0 - EXTREME_PERCENTILE)
     turn = current_m10 - previous_m10
-    previous_candle = candles[-2]
-    current_candle = candles[-1]
+    previous_candle, current_candle = candles[-2], candles[-1]
     bullish_engulf = candle_is_bullish_engulfing(previous_candle, current_candle)
     bearish_engulf = candle_is_bearish_engulfing(previous_candle, current_candle)
     m20_up = current_m20 > previous_m20
@@ -396,7 +409,7 @@ def analyze_asset(asset):
     else:
         return None
 
-    # This is a relative setup-strength score, NOT a probability of winning.
+    # Relative setup-strength score, NOT win probability.
     depth_points = min(35.0, 15.0 + extreme_depth * 4.0)
     turn_points = min(25.0, 10.0 + turn_strength * 8.0)
     score = int(round(min(100.0, depth_points + turn_points + confirmation_points + engulf_points)))
@@ -414,22 +427,22 @@ def analyze_asset(asset):
 
 def scan_market():
     global busy, OPEN_TIME_CACHE
-    if busy:
-        telegram_send("⏳ A market scan is already running. Please wait for its result.")
+    if not scan_lock.acquire(blocking=False):
+        telegram_send("⏳ A market scan is already running. Wait for that result.")
         return []
     busy = True
     signals = []
     OPEN_TIME_CACHE = None
     started = time.time()
     try:
-        telegram_send("🔎 Reading IQ Option market and loading currency pairs…")
+        telegram_send("🔎 Reading IQ Option market and loading currency pairs…", keyboard=False)
         assets = get_asset_names()
         if not assets:
-            telegram_send("⚠️ IQ Option connected, but no currency-pair names were returned. Check the API asset list in the Actions log.")
             logging.error("No valid currency assets found in IQ Option asset list.")
+            telegram_send("⚠️ Connected to IQ Option, but no valid currency-pair names were returned. Check the Actions log and API asset list.")
             return []
         logging.info("Scanning %d currency pairs.", len(assets))
-        telegram_send(f"🔎 Market scan started: checking {len(assets)} currency pairs. I'll send progress while scanning.")
+        telegram_send(f"🔎 Market scan started: checking {len(assets)} currency pairs.", keyboard=False)
         for index, asset in enumerate(assets, start=1):
             try:
                 result = analyze_asset(asset)
@@ -439,10 +452,11 @@ def scan_market():
                 logging.warning("Skip %s due to scan error: %s", asset, exc)
             if index % 10 == 0 or index == len(assets):
                 logging.info("Market scan progress: %d/%d assets checked; %d valid setups.", index, len(assets), len(signals))
-                telegram_send(f"🔎 Market scan progress: {index}/{len(assets)} pairs checked. Valid setups found: {len(signals)}.", keyboard=False)
+                telegram_send(f"🔎 Scan progress: {index}/{len(assets)} pairs checked; {len(signals)} valid setups.", keyboard=False)
             time.sleep(REQUEST_PAUSE_SECONDS)
         signals.sort(key=lambda item: (item["score"], abs(item["turn"])), reverse=True)
-        state["last_scan"] = now_lagos().strftime("%Y-%m-%d %H:%M:%S WAT")
+        with state_lock:
+            state["last_scan"] = now_lagos().strftime("%Y-%m-%d %H:%M:%S WAT")
         save_state()
         logging.info("Market scan completed in %.1f seconds; %d valid setups.", time.time() - started, len(signals))
         return signals
@@ -453,40 +467,48 @@ def scan_market():
     finally:
         busy = False
         OPEN_TIME_CACHE = None
+        scan_lock.release()
 
 
 def format_signals(signals, title):
     if not signals:
-        return f"{title}\n\nNo valid setups passed the strategy filters. I won't fill the list with weak signals."
+        return f"{title}\n\nNO TRADE — no valid setups passed the strategy filters. Weak signals will not be added just to fill the list."
     lines = [
         title,
-        "Setup score = strategy strength, NOT win probability or a guaranteed result.",
+        "Ranked by setup score. Score is not win probability or a guarantee.",
         "",
     ]
     for position, signal in enumerate(signals[:TOP_SIGNALS], start=1):
         side = "CALL / UP" if signal["direction"] == "call" else "PUT / DOWN"
         candle_text = "Yes" if signal["engulfing"] else "No"
         lines.append(
-            f"{position}. {signal['asset']} — {side}\n"
-            f"   Setup score: {signal['score']}/100 | M10: {signal['m10']:.3f}% | "
+            f"#{position} — {signal['asset']} — {side}\n"
+            f"   SCORE: {signal['score']}/100 | M10: {signal['m10']:.3f}% | "
             f"M20: {signal['m20']:.3f}% | Engulfing: {candle_text}"
         )
+    if len(signals) < TOP_SIGNALS:
+        lines.append(f"\nOnly {len(signals)} qualifying setup(s) found; no fake scores were added.")
     return "\n".join(lines)
 
 
 def status_text():
     enforce_new_day()
-    mode = "AUTO TRADING ON" if state.get("auto_enabled") else "MANUAL / SCAN ONLY"
     reason = risk_stop_reason()
+    with state_lock:
+        mode = "AUTO TRADING ON — PRACTICE" if state.get("auto_enabled") else "MANUAL / SCAN ONLY"
+        daily_pnl = float(state.get("daily_pnl", 0.0))
+        resolved = int(state.get("resolved_trades", 0))
+        losses = int(state.get("consecutive_losses", 0))
+        last_scan = state.get("last_scan", "Never")
     lines = [
         "📊 PRACTICE SCANNER STATUS",
         f"Mode: {mode}",
-        f"Balance mode: {BALANCE_MODE}",
-        f"Today P/L: ${float(state['daily_pnl']):+.2f}",
-        f"Resolved trades: {state['resolved_trades']}/{MAX_RESOLVED_TRADES}",
-        f"Consecutive losses: {state['consecutive_losses']}/{MAX_CONSECUTIVE_LOSSES}",
+        "Balance mode: PRACTICE (locked)",
+        f"Today P/L: ${daily_pnl:+.2f}",
+        f"Resolved trades: {resolved}/{MAX_RESOLVED_TRADES}",
+        f"Consecutive losses: {losses}/{MAX_CONSECUTIVE_LOSSES}",
         f"Daily target/limit: +${DAILY_PROFIT_TARGET:.2f} / ${DAILY_MAX_LOSS:.2f}",
-        f"Last scan: {state.get('last_scan', 'Never')}",
+        f"Last scan: {last_scan}",
     ]
     if reason:
         lines.append(f"Risk stop: {reason}")
@@ -494,33 +516,42 @@ def status_text():
 
 
 def place_and_monitor(signal):
-    # Risk is checked immediately before every order. Only one new order is sent per scan.
+    # A STOP AUTO press during scanning must prevent the not-yet-submitted order.
+    with state_lock:
+        if not state.get("auto_enabled"):
+            logging.info("Auto mode was stopped before order submission; skipping trade.")
+            telegram_send("⏹ AUTO is OFF. Scan result received, but no order was placed.")
+            return
+
     reason = risk_stop_reason()
     if reason:
-        state["auto_enabled"] = False
+        with state_lock:
+            state["auto_enabled"] = False
         save_state()
         telegram_send(f"🛑 AUTO STOPPED: {reason}.\n\n{status_text()}")
         return
-    try:
-        # PRACTICE mode was selected during connect_iq(); there is no REAL switch.
-        accepted, order_id = IQ.buy(STAKE, signal["asset"], signal["direction"], EXPIRY_MINUTES)
-    except Exception as exc:
-        telegram_send(f"⚠️ Order rejected for {signal['asset']}: {exc}")
-        return
+
+    # Recheck immediately before submitting; STOP cannot cancel an order already accepted by IQ Option.
+    with state_lock:
+        if not state.get("auto_enabled"):
+            telegram_send("⏹ AUTO is OFF. No new order was submitted.")
+            return
+        try:
+            accepted, order_id = IQ.buy(STAKE, signal["asset"], signal["direction"], EXPIRY_MINUTES)
+        except Exception as exc:
+            telegram_send(f"⚠️ Practice order rejected for {signal['asset']}: {exc}")
+            return
+
     if not accepted:
-        telegram_send(
-            f"⚠️ IQ Option rejected the practice order for {signal['asset']}.\n"
-            "The asset may not be tradable right now. No trade was counted."
-        )
+        telegram_send(f"⚠️ IQ Option rejected the PRACTICE order for {signal['asset']}. No trade was counted.")
         return
 
     telegram_send(
         f"🟡 PRACTICE ORDER ACCEPTED\n{signal['asset']} — {signal['direction'].upper()}\n"
         f"Stake: ${STAKE:.2f} | Expiry: {EXPIRY_MINUTES} minute(s)\n"
-        "Waiting for the result."
+        "Waiting for the result. STOP AUTO prevents new orders but cannot cancel this accepted trade."
     )
     profit = None
-    # Keep trying the common iqoptionapi result methods; the bot remains in practice mode.
     deadline = time.time() + (EXPIRY_MINUTES * 60) + 35
     while time.time() < deadline:
         if hasattr(IQ, "check_win_v4"):
@@ -532,9 +563,8 @@ def place_and_monitor(signal):
                 pass
         time.sleep(2)
     if profit is None:
-        telegram_send("⚠️ Order was accepted, but its result was not returned. P/L was not guessed; check IQ Option history.")
+        telegram_send("⚠️ Order was accepted, but IQ Option did not return its result. P/L was not guessed; check account history.")
         return
-
     try:
         profit = float(profit)
     except (TypeError, ValueError):
@@ -542,30 +572,32 @@ def place_and_monitor(signal):
         return
 
     enforce_new_day()
-    state["daily_pnl"] = round(float(state["daily_pnl"]) + profit, 2)
-    state["resolved_trades"] = int(state["resolved_trades"]) + 1
-    # As requested, a $0 result counts as a loss.
-    if profit > 0:
-        state["consecutive_losses"] = 0
-        outcome = "WIN ✅"
-    else:
-        state["consecutive_losses"] = int(state["consecutive_losses"]) + 1
-        outcome = "LOSS ❌" if profit < 0 else "ZERO RESULT — COUNTED AS LOSS ❌"
+    with state_lock:
+        state["daily_pnl"] = round(float(state.get("daily_pnl", 0.0)) + profit, 2)
+        state["resolved_trades"] = int(state.get("resolved_trades", 0)) + 1
+        if profit > 0:
+            state["consecutive_losses"] = 0
+            outcome = "WIN ✅"
+        else:
+            state["consecutive_losses"] = int(state.get("consecutive_losses", 0)) + 1
+            outcome = "LOSS ❌" if profit < 0 else "ZERO RESULT — COUNTED AS LOSS ❌"
+        pnl = state["daily_pnl"]
+        resolved = state["resolved_trades"]
     save_state()
     telegram_send(
         f"{outcome}\n{signal['asset']} — {signal['direction'].upper()}\n"
-        f"Trade result: ${profit:+.2f}\nToday P/L: ${state['daily_pnl']:+.2f}\n"
-        f"Resolved: {state['resolved_trades']}/{MAX_RESOLVED_TRADES}"
+        f"Trade result: ${profit:+.2f}\nToday P/L: ${pnl:+.2f}\nResolved: {resolved}/{MAX_RESOLVED_TRADES}"
     )
     reason = risk_stop_reason()
     if reason:
-        state["auto_enabled"] = False
+        with state_lock:
+            state["auto_enabled"] = False
         save_state()
         telegram_send(f"🛑 AUTO STOPPED: {reason}.\nManual scanning remains available.")
 
 
 def prepare_telegram():
-    """Verify the token and remove any webhook so getUpdates polling can work."""
+    """Verify the bot token and clear webhook so long polling can receive button clicks."""
     try:
         response = session.post(
             telegram_api("deleteWebhook"),
@@ -585,15 +617,60 @@ def prepare_telegram():
         raise RuntimeError(f"Telegram setup failed: {exc}") from exc
 
 
-def telegram_listener_loop():
-    """Poll Telegram continuously even while market scanning or order monitoring runs."""
-    logging.info("Telegram listener thread started.")
-    while True:
-        try:
-            process_telegram_updates()
-        except Exception:
-            logging.exception("Telegram listener iteration failed; retrying.")
-            time.sleep(3)
+def turn_auto_off(reason=None):
+    with state_lock:
+        was_on = bool(state.get("auto_enabled"))
+        state["auto_enabled"] = False
+    save_state()
+    if reason:
+        telegram_send(f"⏹ AUTO MODE STOPPED: {reason}. Manual scans remain available.")
+    elif was_on:
+        telegram_send("⏹ AUTO MODE STOPPED. No new practice orders will be submitted. Any already accepted trade will still be monitored.")
+    else:
+        telegram_send("⏹ AUTO MODE IS ALREADY OFF. Manual scans remain available.")
+
+
+def handle_command(command, callback_id=None):
+    global scan_requested
+    command = str(command or "").upper()
+    if command == "START_AUTO":
+        reason = risk_stop_reason()
+        if not AUTO_TRADE:
+            with state_lock:
+                state["auto_enabled"] = False
+            save_state()
+            telegram_send("AUTO_TRADE is disabled in the code. Manual scans are available.")
+            answer = "Auto trading disabled"
+        elif reason:
+            with state_lock:
+                state["auto_enabled"] = False
+            save_state()
+            telegram_send(f"🛑 Cannot start AUTO: {reason}.\nUse STATUS to check limits.")
+            answer = "Risk limit reached"
+        else:
+            with state_lock:
+                state["auto_enabled"] = True
+            save_state()
+            telegram_send("▶️ AUTO MODE STARTED — PRACTICE ONLY. I will scan every 60 seconds and submit at most one top-ranked setup per scan, within the risk limits.")
+            answer = "Auto started — practice only"
+        if callback_id:
+            telegram_answer_callback(callback_id, answer)
+    elif command == "STOP_AUTO":
+        turn_auto_off()
+        if callback_id:
+            telegram_answer_callback(callback_id, "Auto stopped")
+    elif command == "SCAN_MARKET":
+        scan_requested = True
+        telegram_send("🔎 MANUAL SCAN QUEUED. It will report up to three ranked setups and will not place any trades.")
+        if callback_id:
+            telegram_answer_callback(callback_id, "Scan queued")
+    elif command == "STATUS":
+        telegram_send(status_text())
+        if callback_id:
+            telegram_answer_callback(callback_id, "Status sent")
+    else:
+        if callback_id:
+            telegram_answer_callback(callback_id, "Unknown button")
 
 
 def process_telegram_updates():
@@ -603,21 +680,29 @@ def process_telegram_updates():
     try:
         response = session.get(
             telegram_api("getUpdates"),
-            params={"timeout": 10, "offset": int(state["last_update_id"]) + 1},
+            params={"timeout": 10, "offset": int(state.get("last_update_id", 0)) + 1},
             timeout=15,
         )
         if not response.ok:
-            logging.warning("Telegram polling failed: %s", response.text[:250])
+            logging.warning("Telegram polling failed (%s): %s", response.status_code, response.text[:250])
             time.sleep(3)
             return
-        updates = response.json().get("result", [])
+        data = response.json()
+        if not data.get("ok"):
+            logging.warning("Telegram API returned an error: %s", str(data)[:250])
+            time.sleep(3)
+            return
+        updates = data.get("result", [])
     except Exception as exc:
         logging.warning("Telegram polling error: %s", exc)
         time.sleep(3)
         return
 
+    changed = False
     for update in updates:
-        state["last_update_id"] = max(int(state["last_update_id"]), int(update.get("update_id", 0)))
+        with state_lock:
+            state["last_update_id"] = max(int(state.get("last_update_id", 0)), int(update.get("update_id", 0)))
+        changed = True
         callback = update.get("callback_query")
         if callback:
             message = callback.get("message", {})
@@ -627,59 +712,36 @@ def process_telegram_updates():
             if chat_id != str(TELEGRAM_CHAT_ID):
                 telegram_answer_callback(callback_id, "Not authorized")
                 continue
-            if command == "START_AUTO":
-                reason = risk_stop_reason()
-                if not AUTO_TRADE:
-                    state["auto_enabled"] = False
-                    telegram_send("AUTO_TRADE is disabled in code. Manual scans are available.")
-                elif reason:
-                    state["auto_enabled"] = False
-                    telegram_send(f"🛑 Cannot start auto: {reason}.\nUse STATUS to check limits.")
-                else:
-                    state["auto_enabled"] = True
-                    telegram_send("▶️ AUTO MODE STARTED — PRACTICE ONLY. I will trade at most one top-ranked setup per scan.")
-                save_state()
-            elif command == "STOP_AUTO":
-                state["auto_enabled"] = False
-                save_state()
-                telegram_send("⏹ AUTO MODE STOPPED. Manual SCAN MARKET still works; it will not place trades.")
-            elif command == "SCAN_MARKET":
-                scan_requested = True
-                telegram_answer_callback(callback_id, "Market scan queued")
-                telegram_send("🔎 Manual market scan queued. No trades will be placed by this scan.")
-            elif command == "STATUS":
-                telegram_send(status_text())
-                telegram_answer_callback(callback_id, "Status sent")
-            else:
-                telegram_answer_callback(callback_id, "Unknown button")
-        else:
-            # Also let an authorized user type /start, /scan, /status, or /stop.
-            message = update.get("message", {})
-            chat_id = str((message.get("chat") or {}).get("id", ""))
-            text = str(message.get("text", "")).strip().lower()
-            if chat_id != str(TELEGRAM_CHAT_ID):
-                continue
-            if text in ("/start", "/menu"):
-                telegram_send("PRACTICE MOMENTUM SCANNER\nUse the buttons below to control it.")
-            elif text in ("/scan", "scan"):
-                scan_requested = True
-                telegram_send("🔎 Manual market scan queued. No trades will be placed by this scan.")
-            elif text in ("/status", "status"):
-                telegram_send(status_text())
-            elif text in ("/stop", "stop"):
-                state["auto_enabled"] = False
-                save_state()
-                telegram_send("⏹ AUTO MODE STOPPED.")
-            elif text in ("/auto", "auto"):
-                reason = risk_stop_reason()
-                if AUTO_TRADE and not reason:
-                    state["auto_enabled"] = True
-                    save_state()
-                    telegram_send("▶️ AUTO MODE STARTED — PRACTICE ONLY.")
-                else:
-                    telegram_send(f"Cannot start auto. {reason or 'AUTO_TRADE disabled in code.'}")
-    if updates:
+            handle_command(command, callback_id)
+            continue
+
+        message = update.get("message", {})
+        chat_id = str((message.get("chat") or {}).get("id", ""))
+        text = str(message.get("text", "")).strip().lower()
+        if chat_id != str(TELEGRAM_CHAT_ID):
+            continue
+        if text in ("/start", "/menu"):
+            telegram_send("PRACTICE MOMENTUM SCANNER\nUse the four buttons below to control it.")
+        elif text in ("/scan", "scan"):
+            handle_command("SCAN_MARKET")
+        elif text in ("/status", "status"):
+            handle_command("STATUS")
+        elif text in ("/stop", "stop"):
+            handle_command("STOP_AUTO")
+        elif text in ("/auto", "auto"):
+            handle_command("START_AUTO")
+    if changed:
         save_state()
+
+
+def telegram_listener_loop():
+    logging.info("Telegram listener thread started.")
+    while True:
+        try:
+            process_telegram_updates()
+        except Exception:
+            logging.exception("Telegram listener iteration failed; retrying.")
+            time.sleep(3)
 
 
 def main():
@@ -694,9 +756,10 @@ def main():
     connect_iq()
     telegram_send(
         "✅ PRACTICE MOMENTUM SCANNER ONLINE\n"
-        "Buttons: START AUTO, STOP AUTO, SCAN MARKET, STATUS.\n"
-        "Manual scans never place trades. Auto mode sends at most one ranked trade per scan.\n"
-        "Setup scores are not win probabilities."
+        "Use the four clickable buttons below.\n"
+        "Manual SCAN MARKET reports ranked setups only; it never places orders.\n"
+        "START AUTO enables practice trading; STOP AUTO prevents new orders.\n"
+        "Setup scores are not win probabilities. REAL trading is not enabled."
     )
     telegram_listener_thread = threading.Thread(
         target=telegram_listener_loop,
@@ -711,31 +774,35 @@ def main():
 
         if scan_requested and not busy:
             scan_requested = False
-            telegram_send("⏳ Market scan started. Checking available currency pairs now.")
             logging.info("Manual market scan started.")
             results = scan_market()
             telegram_send(format_signals(results, "🔎 TOP MARKET SETUPS — MANUAL MODE"))
             logging.info("Manual market scan finished; %d qualified setups.", len(results))
+            # Manual scan never executes orders. Avoid an immediate second auto scan.
             if state.get("auto_enabled"):
                 last_auto_scan = time.time()
 
-        if state.get("auto_enabled") and not busy:
+        with state_lock:
+            auto_is_enabled = bool(state.get("auto_enabled"))
+        if auto_is_enabled and not busy:
             reason = risk_stop_reason()
             if reason:
-                state["auto_enabled"] = False
-                save_state()
-                telegram_send(f"🛑 AUTO STOPPED: {reason}.")
+                turn_auto_off(reason)
             elif time.time() - last_auto_scan >= SCAN_INTERVAL_SECONDS:
                 last_auto_scan = time.time()
-                telegram_send("⏳ Auto scan started. Checking available currency pairs.")
+                telegram_send("⏳ AUTO scan started. Checking available currency pairs.", keyboard=False)
                 logging.info("Automatic market scan started.")
                 results = scan_market()
-                if results:
+                # Critical STOP fix: do not place an order if STOP was pressed during scanning.
+                with state_lock:
+                    still_enabled = bool(state.get("auto_enabled"))
+                if not still_enabled:
+                    telegram_send("⏹ AUTO was stopped during the scan. No new order was placed.")
+                elif results:
                     telegram_send(format_signals(results, "🤖 AUTO SCAN — TOP SETUPS"))
-                    # One practice trade only per scan.
                     place_and_monitor(results[0])
                 else:
-                    telegram_send("No qualified setup found in this auto scan. No trade placed.")
+                    telegram_send("NO TRADE — no setup passed the filters in this auto scan. No order placed.")
                     logging.info("No valid auto setup this cycle.")
         time.sleep(0.5)
 
@@ -744,13 +811,20 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        state["auto_enabled"] = False
-        save_state()
-        telegram_send("Scanner stopped safely. Auto mode is off.")
+        try:
+            with state_lock:
+                state["auto_enabled"] = False
+            save_state()
+            telegram_send("Scanner stopped safely. Auto mode is off.")
+        except Exception:
+            pass
     except Exception as exc:
         logging.exception("Fatal scanner error")
         try:
-            telegram_send(f"🚨 SCANNER ERROR: {exc}")
+            with state_lock:
+                state["auto_enabled"] = False
+            save_state()
+            telegram_send(f"🚨 SCANNER ERROR: {exc}\nAuto mode has been disabled.")
         except Exception:
             pass
         raise
