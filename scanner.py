@@ -1,4 +1,3 @@
-
 # MOMENTUM 10 IQ OPTION SCANNER
 # PRACTICE ONLY | Manual scan never places trades
 # Momentum 20 has been completely removed.
@@ -16,6 +15,27 @@ from zoneinfo import ZoneInfo
 
 import requests
 from iqoptionapi.stable_api import IQ_Option
+
+_orig_digital_list = IQ_Option.get_digital_underlying_list_data
+
+
+def _safe_digital_list(self):
+    for attempt in range(3):
+        try:
+            data = _orig_digital_list(self)
+            if isinstance(data, dict) and "underlying" in data:
+                return data
+        except Exception as exc:
+            logging.warning("Digital list error: %s", exc)
+
+        logging.warning("Digital list empty (attempt %d/3)", attempt + 1)
+        time.sleep(3)
+
+    # Never return None: the library subscripts the result, and that caused the crash.
+    return {"underlying": []}
+
+
+IQ_Option.get_digital_underlying_list_data = _safe_digital_list
 
 # ================ SETTINGS ================
 BALANCE_MODE = "PRACTICE"
