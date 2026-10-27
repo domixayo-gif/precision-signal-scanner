@@ -7,7 +7,7 @@
   "consecutive_losses": 0,
   "signals": 0,
   "executed": 0,
-  "blocked": 1,
+  "blocked": 2,
   "history": [],
   "open_trades": {
     "14384186300": {
