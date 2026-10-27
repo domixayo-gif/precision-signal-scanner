@@ -2,6 +2,11 @@ name: Validate Momentum 10 Scanner
 
 on:
   push:
+    paths:
+      - "scanner.py"
+      - "requirements.txt"
+      - ".github/workflows/scanner.yml"
+      - ".github/workflows/validate.yml"
   pull_request:
   workflow_dispatch:
 
