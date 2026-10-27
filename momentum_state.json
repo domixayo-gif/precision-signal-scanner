@@ -11,7 +11,7 @@
   "history": [],
   "open_trades": {},
   "last_signal_candles": {},
-  "last_update_id": 840821793,
+  "last_update_id": 840821794,
   "auto_enabled": false,
   "stop_reason": "Verified historical DASHUSD-OTC order 14384186300 as LOSS; AUTO remains OFF pending connection verification",
   "tracked_signals": {
@@ -26,18 +26,18 @@
     }
   },
   "last_scan_rejections": {
-    "no bearish reversal after upward momentum": 3,
-    "potential setup too close to candle close": 3,
-    "no usable candle range": 1,
-    "bearish reversal lacks close confirmation": 1,
-    "flat latest candle": 1,
-    "candle request timeout/reconnect": 1
+    "no bearish reversal after upward momentum": 15,
+    "no bullish reversal after downward momentum": 8,
+    "no usable candle range": 3,
+    "bullish reversal lacks close confirmation": 1,
+    "zero momentum": 1,
+    "flat latest candle": 1
   },
-  "last_scan": "2026-10-27T13:12:35.450551+00:00",
+  "last_scan": "2026-10-27T13:19:35.133819+00:00",
   "daily_pnl": 0,
   "resolved_trades": 0,
-  "last_scan_count": 10,
-  "last_scan_setups": 1,
+  "last_scan_count": 40,
+  "last_scan_setups": 11,
   "last_auto_candles": {},
   "pending_trade": null,
   "session_id": "40042578009-1",
