@@ -38,6 +38,7 @@ RESULT_LOOKUPS_IN_FLIGHT = {}
 RESULT_LOOKUP_RETRY_AFTER = {}
 TELEGRAM_OFFSET, OPEN_TRADES, LAST_SIGNAL_BY_ASSET = 0, {}, {}
 MANUAL_SCAN_REQUESTED, SCAN_IN_PROGRESS = False, False
+AUTO_START_PENDING = False
 SCAN_RESULTS_QUEUE = queue.Queue()
 LAST_HEARTBEAT = LAST_SCAN_STARTED = LAST_SCAN_FINISHED = 0
 LAST_SCAN_CANDIDATES = LAST_SCAN_SCANNED = LAST_SCAN_TOTAL = LAST_ASSET_COUNT = ASSET_CURSOR = 0
@@ -657,7 +658,7 @@ def status_message():
 
 
 def process_telegram_update(update):
-    global MANUAL_SCAN_REQUESTED
+    global MANUAL_SCAN_REQUESTED, AUTO_START_PENDING
     msg=update.get("message") or update.get("callback_query",{}).get("message")
     if not msg: return
     chat=str(msg.get("chat",{}).get("id",""))
@@ -671,7 +672,8 @@ def process_telegram_update(update):
             telegram_send(f"AUTO refused: {len(OPEN_TRADES)} unresolved broker trade(s) or an unknown order request remains. Reconcile and verify IQ Option history first.")
         elif daily_limit_reason(): telegram_send("Cannot start AUTO.\n"+daily_limit_reason())
         elif SCAN_IN_PROGRESS:
-            telegram_send("AUTO refused: a market scan is still running. Wait until STATUS shows Scan in progress: NO, then try START AUTO again.")
+            AUTO_START_PENDING=True
+            telegram_send("⏳ START AUTO QUEUED. A market scan is still running. AUTO remains OFF until the scan finishes; then connection, PRACTICE mode, unresolved trades, and daily limits will be checked again. If any check fails, AUTO stays OFF.")
         elif not ensure_connection() or not practice_mode_verified():
             telegram_send("AUTO refused: connection or PRACTICE verification failed. AUTO remains OFF; send STATUS and retry after connection verification recovers.")
         else:
@@ -730,7 +732,7 @@ def heartbeat():
 
 
 def main():
-    global AUTO_MODE,MANUAL_SCAN_REQUESTED
+    global AUTO_MODE,MANUAL_SCAN_REQUESTED,AUTO_START_PENDING
     load_state(); restore_auto=bool(STATE.get("auto_enabled",False)); AUTO_MODE=False
     telegram_send("🚀 MOMENTUM 10 STARTING\nChecking saved AUTO preference and PRACTICE mode.\nManual SCAN MARKET gives advance warnings only and never places trades.")
     threading.Thread(target=telegram_listener,daemon=True,name="telegram-listener").start()
@@ -745,6 +747,22 @@ def main():
                 if reason: set_auto(False,reason); telegram_send("🛑 Saved AUTO not restored.\n"+reason)
                 elif practice_mode_verified(): set_auto(True,""); telegram_send("🟢 Saved AUTO preference restored after PRACTICE verification.")
                 else: set_auto(False,"PRACTICE verification failed at startup")
+            # Honor a queued AUTO request only after the active scan has ended,
+            # and re-run every safety check before enabling it.
+            if AUTO_START_PENDING and not SCAN_IN_PROGRESS:
+                AUTO_START_PENDING=False
+                if OPEN_TRADES or STATE.get("unknown_order_request"):
+                    set_auto(False,"Queued AUTO denied: unresolved broker order(s)")
+                    telegram_send("🛑 QUEUED AUTO NOT ENABLED. Unresolved broker order(s) remain; reconcile and verify first.")
+                elif daily_limit_reason():
+                    reason=daily_limit_reason(); set_auto(False,reason)
+                    telegram_send("🛑 QUEUED AUTO NOT ENABLED.\\n"+reason)
+                elif not ensure_connection() or not practice_mode_verified():
+                    set_auto(False,"Queued AUTO denied: PRACTICE verification failed")
+                    telegram_send("🛑 QUEUED AUTO NOT ENABLED. Connection or PRACTICE verification failed. AUTO remains OFF.")
+                else:
+                    set_auto(True,"")
+                    telegram_send("🟢 QUEUED AUTO ENABLED. Scan finished and PRACTICE verified. $1 stake / 1-minute expiry. SCAN MARKET remains report-only.")
             # Never run potentially slow broker result checks on this control loop.
             if OPEN_TRADES and not RECONCILE_IN_PROGRESS and time.time()>=next_reconcile:
                 threading.Thread(target=reconcile_trades,daemon=True,name="reconcile").start(); next_reconcile=time.time()+10
