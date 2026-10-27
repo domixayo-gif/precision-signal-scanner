@@ -32,7 +32,7 @@ CLIENT_LOCKS_GUARD = threading.Lock()
 CLIENT_LOCKS = {}
 RECONNECT_LOCK = threading.RLock()
 RESULT_LOOKUP_LOCK = threading.Lock()
-RESULT_LOOKUPS_IN_FLIGHT = set()
+RESULT_LOOKUPS_IN_FLIGHT = {}
 # A broker result lookup can hang inside iqoptionapi forever. Cool down retries
 # per order, but never let one abandoned worker permanently lock reconciliation.
 RESULT_LOOKUP_RETRY_AFTER = {}
@@ -491,15 +491,18 @@ def reconcile_trades():
                 if str(oid) in RESULT_LOOKUPS_IN_FLIGHT:
                     logging.info("Result lookup still running for %s; skipping duplicate request.",oid); continue
                 RESULT_LOOKUP_RETRY_AFTER.pop(str(oid),None)
-                RESULT_LOOKUPS_IN_FLIGHT.add(str(oid))
+                lookup_token=object()
+                RESULT_LOOKUPS_IN_FLIGHT[str(oid)]=lookup_token
             q=queue.Queue(maxsize=1); client=IQ
-            def worker(client=client,order=oid,result_queue=q):
+            def worker(client=client,order=oid,result_queue=q,token=lookup_token):
                 try:
                     with client_api_lock(client): result=client.check_win_v4(int(order))
                     result_queue.put(("ok",result))
                 except Exception as e: result_queue.put(("error",str(e)))
                 finally:
-                    with RESULT_LOOKUP_LOCK: RESULT_LOOKUPS_IN_FLIGHT.discard(str(order))
+                    with RESULT_LOOKUP_LOCK:
+                        if RESULT_LOOKUPS_IN_FLIGHT.get(str(order)) is token:
+                            RESULT_LOOKUPS_IN_FLIGHT.pop(str(order),None)
             threading.Thread(target=worker,daemon=True,name="trade-result").start()
             try: status,result=q.get(timeout=RESULT_CHECK_TIMEOUT)
             except queue.Empty:
@@ -508,7 +511,8 @@ def reconcile_trades():
                 # and permit a retry against a fresh client after a cooldown.
                 # This is a result lookup only; it never places/retries an order.
                 with RESULT_LOOKUP_LOCK:
-                    RESULT_LOOKUPS_IN_FLIGHT.discard(str(oid))
+                    if RESULT_LOOKUPS_IN_FLIGHT.get(str(oid)) is lookup_token:
+                        RESULT_LOOKUPS_IN_FLIGHT.pop(str(oid),None)
                     RESULT_LOOKUP_RETRY_AFTER[str(oid)]=time.time()+30
                 logging.warning("Result lookup timed out for %s; retry scheduled after cooldown on a fresh client. Trade remains unresolved.",oid)
                 if IQ is client:
