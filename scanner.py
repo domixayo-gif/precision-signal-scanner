@@ -116,6 +116,14 @@ def load_state():
     if not isinstance(STATE.get("tracked_signals"),dict): STATE["tracked_signals"]={}
     if not isinstance(STATE.get("last_scan_rejections"),dict): STATE["last_scan_rejections"]={}
     pending=STATE.get("pending_order_id"); settled={str(x) for x in STATE.get("settled_order_ids",[])}
+    # A broker order already recorded as settled must never be reconstructed as open.
+    if pending and str(pending) in settled:
+        STATE.pop("pending_order_id",None)
+        STATE.pop("pending_asset",None)
+        STATE.pop("pending_direction",None)
+        STATE.pop("pending_started",None)
+        STATE["open_trades"].pop(str(pending),None)
+        pending=None
     if pending and str(pending) not in settled and str(pending) not in STATE["open_trades"]:
         started=time.time()
         try: started=datetime.fromisoformat(str(STATE.get("pending_started")).replace("Z","+00:00")).timestamp()
