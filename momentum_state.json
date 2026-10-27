@@ -53,7 +53,7 @@
     "GDX": "1793115480",
     "IWM": "1793115480"
   },
-  "last_update_id": 840821805,
+  "last_update_id": 840821806,
   "auto_enabled": false,
   "stop_reason": "Unresolved broker order(s); reconcile and verify before AUTO",
   "tracked_signals": {
