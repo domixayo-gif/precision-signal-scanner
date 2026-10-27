@@ -30,6 +30,7 @@ IQ, RUNNING, AUTO_MODE = None, True, False
 STATE_LOCK, SAVE_LOCK = threading.RLock(), threading.Lock()
 CLIENT_LOCKS_GUARD = threading.Lock()
 CLIENT_LOCKS = {}
+RECONNECT_LOCK = threading.RLock()
 RESULT_LOOKUP_LOCK = threading.Lock()
 RESULT_LOOKUPS_IN_FLIGHT = set()
 TELEGRAM_OFFSET, OPEN_TRADES, LAST_SIGNAL_BY_ASSET = 0, {}, {}
@@ -185,12 +186,19 @@ def connect_iq():
 
 def ensure_connection():
     global IQ
-    try:
-        if IQ is not None and IQ.check_connect() and "PRACTICE" in str(IQ.get_balance_mode()).upper(): return True
-    except Exception: pass
-    IQ=None
-    try: connect_iq(); return True
-    except Exception as e: logging.error("Reconnect failed: %s",e); return False
+    # Serialize reconnects so a scan timeout and the control loop cannot create
+    # competing IQ clients at the same time.
+    with RECONNECT_LOCK:
+        try:
+            if IQ is not None and IQ.check_connect() and "PRACTICE" in str(IQ.get_balance_mode()).upper(): return True
+        except Exception: pass
+        IQ=None
+        try:
+            connect_iq()
+            return bool(IQ is not None and practice_mode_verified())
+        except Exception as e:
+            logging.error("Reconnect failed: %s",e)
+            return False
 
 
 def practice_mode_verified():
@@ -330,7 +338,7 @@ def scan_market(manual=False,auto_eligible=False):
     global SCAN_IN_PROGRESS,ASSET_CURSOR,LAST_ASSET_COUNT,LAST_SCAN_FINISHED,LAST_SCAN_CANDIDATES
     global LAST_SCAN_SCANNED,LAST_SCAN_TOTAL,LAST_SCAN_TIMED_OUT,LAST_SCAN_ERROR
     results=[]; rejected={}; scanned=attempted=total=0; timed_out=False; error_text=""; start=ASSET_CURSOR
-    consecutive_candle_timeouts=0
+    consecutive_candle_timeouts=0; execution_safe=False
     try:
         if not ensure_connection():
             error_text="IQ Option disconnected; reconnect failed."
@@ -394,8 +402,18 @@ def scan_market(manual=False,auto_eligible=False):
             top=sorted(rejected.items(),key=lambda item:item[1],reverse=True)[:3]
             logging.info("NO TRADE — top rejection reasons: %s", "; ".join(f"{name}={count}" for name,count in top) or "none")
         if manual: send_manual_scan_results(results,scanned,total,rejected,timed_out)
+        # A candle timeout alone does not authorize an order. If recovery succeeded,
+        # re-verify the live PRACTICE connection before considering fresh candidates.
+        # execute_signal still enforces signal age, daily limits, and per-order safety.
+        execution_safe=bool(not error_text and results and not timed_out)
+        if auto_eligible and results and timed_out and not error_text:
+            execution_safe=bool(ensure_connection() and practice_mode_verified())
+            if execution_safe:
+                logging.info("Timed-out scan recovered; PRACTICE reverified. Fresh candidates may pass normal execution guards.")
+            else:
+                logging.warning("Timed-out scan remains execution-blocked: PRACTICE connection could not be reverified.")
         SCAN_RESULTS_QUEUE.put({"manual":manual,"auto_eligible":auto_eligible,"finished_at":time.time(),"results":results,
-          "scanned":scanned,"total":total,"timed_out":timed_out,"error":error_text})
+          "scanned":scanned,"total":total,"timed_out":timed_out,"execution_safe":execution_safe,"error":error_text})
         with STATE_LOCK: SCAN_IN_PROGRESS=False
 
 
@@ -608,7 +626,7 @@ def main():
             while True:
                 try: done=SCAN_RESULTS_QUEUE.get_nowait()
                 except queue.Empty: break
-                if not done.get("manual") and done.get("auto_eligible") and AUTO_MODE and not done.get("timed_out") and not done.get("error") and not daily_limit_reason():
+                if not done.get("manual") and done.get("auto_eligible") and AUTO_MODE and done.get("execution_safe") and not done.get("error") and not daily_limit_reason():
                     for signal in done.get("results",[]):
                         if not AUTO_MODE or daily_limit_reason(): break
                         if execute_signal(signal): break
