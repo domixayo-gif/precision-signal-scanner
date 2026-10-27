@@ -34,7 +34,8 @@ LAST_SCAN_CANDIDATES = LAST_SCAN_SCANNED = LAST_SCAN_TOTAL = LAST_ASSET_COUNT = 
 LAST_SCAN_TIMED_OUT, LAST_SCAN_ERROR, RECONCILE_IN_PROGRESS = False, "", False
 DEFAULT_STATE = {"date":"", "daily_pl":0.0, "resolved":0, "wins":0, "losses":0,
  "consecutive_losses":0, "signals":0, "executed":0, "blocked":0, "history":[],
- "open_trades":{}, "last_signal_candles":{}, "last_update_id":0, "auto_enabled":False, "stop_reason":""}
+ "open_trades":{}, "last_signal_candles":{}, "last_update_id":0, "auto_enabled":False, "stop_reason":"",
+ "tracked_signals":{}, "last_scan_rejections":{}, "last_scan":"Never"}
 STATE = dict(DEFAULT_STATE)
 
 
@@ -96,6 +97,8 @@ def load_state():
     if not isinstance(STATE.get("history"),list): STATE["history"]=[]
     if not isinstance(STATE.get("open_trades"),dict): STATE["open_trades"]={}
     if not isinstance(STATE.get("last_signal_candles"),dict): STATE["last_signal_candles"]={}
+    if not isinstance(STATE.get("tracked_signals"),dict): STATE["tracked_signals"]={}
+    if not isinstance(STATE.get("last_scan_rejections"),dict): STATE["last_scan_rejections"]={}
     pending=STATE.get("pending_order_id"); settled={str(x) for x in STATE.get("settled_order_ids",[])}
     if pending and str(pending) not in settled and str(pending) not in STATE["open_trades"]:
         started=time.time()
@@ -253,15 +256,26 @@ def display_asset(asset):
 
 
 def send_manual_scan_results(results,scanned,total,rejected,timed_out=False):
-    # Keep SCAN MARKET replies deliberately short: one best advance setup or NO TRADE.
+    # Manual scans remain report-only; this does not alter the strategy or filters.
     now=time.time()
     live=[x for x in results if x.get("entry_time",0)>now]
     if not live:
-        telegram_send("NO TRADE")
+        top=sorted(rejected.items(),key=lambda item:item[1],reverse=True)[:3]
+        reasons="; ".join(f"{name}: {count}" for name,count in top) or "No valid candles or scan result."
+        status="\nScan timed out; reconnect is required." if timed_out else ""
+        telegram_send(f"NO TRADE\nScanned: {scanned}/{total}\nTop rejections: {reasons}{status}")
         return
     signal=live[0]
     direction="BUY" if str(signal.get("direction","")).lower()=="call" else "SELL"
-    telegram_send(f"{display_asset(signal.get('asset'))} — {direction}\nEntry: {lagos_time(signal['entry_time'])}")
+    sid=f"M10-SCAN-{signal.get('asset','UNKNOWN')}-{str(signal.get('direction','')).upper()}-{int(signal.get('candle_time',now))}"
+    with STATE_LOCK:
+        tracked=STATE.setdefault("tracked_signals",{})
+        tracked[sid]={"signal_id":sid,"asset":signal.get("asset","Unknown"),"direction":signal.get("direction","unknown"),"score":signal.get("score",0),"status":"PENDING","created_at":utc_now().isoformat(),"entry_time":int(signal.get("entry_time",now))}
+        if len(tracked)>200:
+            ordered=sorted(tracked.items(),key=lambda item:item[1].get("created_at",""))
+            for old_id,_ in ordered[:len(tracked)-200]: tracked.pop(old_id,None)
+    save_state()
+    telegram_send(f"{display_asset(signal.get('asset'))} — {direction}\nSignal ID: {sid}\nEntry: {lagos_time(signal['entry_time'])}\nScore: {signal.get('score',0)}/100\nManual scan only — no trade placed.")
 
 
 def scan_market(manual=False,auto_eligible=False):
@@ -313,7 +327,13 @@ def scan_market(manual=False,auto_eligible=False):
         results.sort(key=lambda s:s["score"],reverse=True)
         LAST_SCAN_FINISHED=time.time(); LAST_SCAN_CANDIDATES=len(results); LAST_SCAN_SCANNED=scanned; LAST_SCAN_TOTAL=total
         LAST_SCAN_TIMED_OUT=timed_out; LAST_SCAN_ERROR=error_text
-        logging.info("Batch finished: scanned=%d/%d attempted=%d candidates=%d timeout=%s error=%s",scanned,total,attempted,len(results),timed_out,error_text or "none")
+        with STATE_LOCK:
+            STATE["last_scan"]=utc_now().isoformat(); STATE["last_scan_count"]=scanned; STATE["last_scan_setups"]=len(results)
+            STATE["last_scan_rejections"]=dict(sorted(rejected.items(),key=lambda item:item[1],reverse=True)[:8])
+        logging.info("Batch finished: scanned=%d/%d attempted=%d candidates=%d timeout=%s error=%s rejections=%s",scanned,total,attempted,len(results),timed_out,error_text or "none",rejected)
+        if not manual and not results:
+            top=sorted(rejected.items(),key=lambda item:item[1],reverse=True)[:3]
+            logging.info("NO TRADE — top rejection reasons: %s", "; ".join(f"{name}={count}" for name,count in top) or "none")
         if manual: send_manual_scan_results(results,scanned,total,rejected,timed_out)
         SCAN_RESULTS_QUEUE.put({"manual":manual,"auto_eligible":auto_eligible,"finished_at":time.time(),"results":results,
           "scanned":scanned,"total":total,"timed_out":timed_out,"error":error_text})
@@ -363,6 +383,7 @@ def execute_signal(signal):
     key=str(order_id)
     with STATE_LOCK:
         OPEN_TRADES[key]={"signal_id":sid,"asset":asset,"direction":direction,"stake":STAKE,"score":signal.get("score",0),"started":time.time(),"candle_time":candle_time}
+        STATE["pending_order_id"]=key; STATE["pending_asset"]=asset; STATE["pending_direction"]=direction; STATE["pending_started"]=utc_now().isoformat()
         LAST_SIGNAL_BY_ASSET[asset]=str(candle_time); STATE["executed"]+=1; STATE["signals"]+=1
     save_state()
     telegram_send(f"🟡 PRACTICE TRADE ACCEPTED\nSignal ID: {sid}\nOrder ID: {key}\nAsset: {asset}\nDirection: {direction.upper()}\nStake: {money(STAKE)}\nExpiry: 1 minute\nScore: {signal.get('score',0)}/100\nScore is not win probability.")
@@ -378,9 +399,9 @@ def reconcile_trades():
             trade=OPEN_TRADES.get(oid)
             if not trade or time.time()-safe_float(trade.get("started"),time.time())<60: continue
             q=queue.Queue(maxsize=1)
-            def worker(client=IQ,order=oid):
-                try: q.put(("ok",client.check_win_v4(int(order))))
-                except Exception as e: q.put(("error",str(e)))
+            def worker(client=IQ,order=oid,result_queue=q):
+                try: result_queue.put(("ok",client.check_win_v4(int(order))))
+                except Exception as e: result_queue.put(("error",str(e)))
             threading.Thread(target=worker,daemon=True,name="trade-result").start()
             try: status,result=q.get(timeout=RESULT_CHECK_TIMEOUT)
             except queue.Empty: logging.warning("Result lookup timed out for %s; will retry.",oid); continue
@@ -392,6 +413,10 @@ def reconcile_trades():
             with STATE_LOCK:
                 if oid not in OPEN_TRADES: continue
                 OPEN_TRADES.pop(oid,None); STATE["resolved"]+=1; STATE["daily_pl"]=safe_float(STATE.get("daily_pl"))+result
+                settled_list=[str(x) for x in STATE.get("settled_order_ids",[]) if str(x)!=str(oid)]
+                settled_list.append(str(oid)); STATE["settled_order_ids"]=settled_list[-200:]
+                if str(STATE.get("pending_order_id",""))==str(oid):
+                    STATE["pending_order_id"]=None; STATE["pending_asset"]=None; STATE["pending_direction"]=None; STATE["pending_started"]=None
                 if result>0: STATE["wins"]+=1; STATE["consecutive_losses"]=0; outcome="WIN"
                 elif result<0: STATE["losses"]+=1; STATE["consecutive_losses"]+=1; outcome="LOSS"
                 else: outcome="BREAKEVEN"
@@ -436,10 +461,22 @@ def process_telegram_update(update):
     elif cmd in ("SCAN MARKET","/SCAN"):
         MANUAL_SCAN_REQUESTED=True
     elif cmd in ("STATUS","/STATUS"): telegram_send(status_message())
+    elif cmd.startswith("/WIN ") or cmd.startswith("/LOSS "):
+        parts=text.split(maxsplit=1)
+        if len(parts)<2 or not parts[1].strip(): telegram_send("Usage: /win SIGNAL-ID or /loss SIGNAL-ID"); return
+        sid=parts[1].strip(); outcome="WIN" if cmd.startswith("/WIN ") else "LOSS"
+        with STATE_LOCK:
+            tracked=STATE.setdefault("tracked_signals",{}); item=tracked.get(sid)
+            if not item: telegram_send(f"Signal ID not found: {sid}"); return
+            if item.get("status") in ("WIN","LOSS"): telegram_send(f"{sid} already recorded as {item.get('status')}."); return
+            item["status"]=outcome; item["resolved_at"]=utc_now().isoformat(); item["result_source"]="manual"
+        save_state(); telegram_send(f"✅ Signal result saved\nSignal ID: {sid}\nOutcome: {outcome}\nThis manual signal tracker does not change broker P/L.")
     elif cmd.startswith("/STATS"):
         with STATE_LOCK:
             total=STATE["wins"]+STATE["losses"]; rate=STATE["wins"]/total*100 if total else 0
-            out=f"📈 MOMENTUM 10 STATS\nWins: {STATE['wins']}\nLosses: {STATE['losses']}\nWin rate: {rate:.2f}%\nDaily P/L: {money(STATE['daily_pl'])}\nResolved: {STATE['resolved']}\nOpen trades tracked: {len(OPEN_TRADES)}"
+            tracked=STATE.get("tracked_signals",{}); tracked_wins=sum(1 for v in tracked.values() if v.get("status")=="WIN"); tracked_losses=sum(1 for v in tracked.values() if v.get("status")=="LOSS"); tracked_pending=sum(1 for v in tracked.values() if v.get("status")=="PENDING")
+            tracked_total=tracked_wins+tracked_losses; tracked_rate=tracked_wins/tracked_total*100 if tracked_total else 0
+            out=f"📈 MOMENTUM 10 STATS\nBroker W/L: {STATE['wins']}/{STATE['losses']}\nBroker win rate: {rate:.2f}%\nDaily P/L: {money(STATE['daily_pl'])}\nResolved broker trades: {STATE['resolved']}\nOpen broker trades: {len(OPEN_TRADES)}\n\nManual signal tracker W/L: {tracked_wins}/{tracked_losses}\nManual signal win rate: {tracked_rate:.2f}%\nPending tracked signals: {tracked_pending}"
         telegram_send(out)
     elif cmd.startswith("/RECONCILE"):
         threading.Thread(target=reconcile_trades,daemon=True).start(); telegram_send("Reconciliation requested. Check STATUS or /stats.")
@@ -467,7 +504,7 @@ def heartbeat():
     if time.time()-LAST_HEARTBEAT<HEARTBEAT_SECONDS: return
     LAST_HEARTBEAT=time.time()
     with STATE_LOCK:
-        msg=("💓 MOMENTUM 10 HEARTBEAT\nAccount: PRACTICE ONLY\n" f"Connection: {'CONNECTED' if practice_mode_verified() else 'NOT VERIFIED'}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nDaily P/L: {money(STATE['daily_pl'])}\nResolved: {STATE['resolved']}/{MAX_RESOLVED_TRADES}\nW/L: {STATE['wins']}/{STATE['losses']}\nOpen trades tracked: {len(OPEN_TRADES)}\nOrders accepted: {STATE['executed']}\nOrders blocked/rejected: {STATE['blocked']}\nScan in progress: {'YES' if SCAN_IN_PROGRESS else 'NO'}\nLast candidates: {LAST_SCAN_CANDIDATES}\nNo qualifying setup means NO TRADE.")
+        msg=("💓 MOMENTUM 10 HEARTBEAT\nAccount: PRACTICE ONLY\n" f"Connection: {'CONNECTED' if practice_mode_verified() else 'NOT VERIFIED'}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nDaily P/L: {money(STATE['daily_pl'])}\nResolved: {STATE['resolved']}/{MAX_RESOLVED_TRADES}\nW/L: {STATE['wins']}/{STATE['losses']}\nOpen trades tracked: {len(OPEN_TRADES)}\nOrders accepted: {STATE['executed']}\nOrders blocked/rejected: {STATE['blocked']}\nManual tracker W/L: {sum(1 for v in STATE.get('tracked_signals',{}).values() if v.get('status')=='WIN')}/{sum(1 for v in STATE.get('tracked_signals',{}).values() if v.get('status')=='LOSS')}\nScan in progress: {'YES' if SCAN_IN_PROGRESS else 'NO'}\nLast candidates: {LAST_SCAN_CANDIDATES}\nTop rejection reasons: {'; '.join(f"{k}: {v}" for k,v in list(STATE.get("last_scan_rejections",{}).items())[:3]) or "No rejection data yet"}\nNo qualifying setup means NO TRADE.")
     telegram_send(msg)
 
 
