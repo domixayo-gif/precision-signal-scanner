@@ -330,6 +330,7 @@ def scan_market(manual=False,auto_eligible=False):
     global SCAN_IN_PROGRESS,ASSET_CURSOR,LAST_ASSET_COUNT,LAST_SCAN_FINISHED,LAST_SCAN_CANDIDATES
     global LAST_SCAN_SCANNED,LAST_SCAN_TOTAL,LAST_SCAN_TIMED_OUT,LAST_SCAN_ERROR
     results=[]; rejected={}; scanned=attempted=total=0; timed_out=False; error_text=""; start=ASSET_CURSOR
+    consecutive_candle_timeouts=0
     try:
         if not ensure_connection():
             error_text="IQ Option disconnected; reconnect failed."
@@ -345,7 +346,17 @@ def scan_market(manual=False,auto_eligible=False):
             if IQ is None: timed_out=True; rejected["connection reset after timeout"]=1; break
             attempted+=1; candles=fetch_candles(asset)
             if candles is None:
-                timed_out=True; rejected["candle request timeout/reconnect"]=rejected.get("candle request timeout/reconnect",0)+1; break
+                timed_out=True
+                consecutive_candle_timeouts+=1
+                rejected["candle request timeout/reconnect"]=rejected.get("candle request timeout/reconnect",0)+1
+                logging.warning("Skipping timed-out asset %s; reconnecting before continuing (%d consecutive timeout(s)).",asset,consecutive_candle_timeouts)
+                # Never trade results from a batch that experienced a timeout.
+                # Candle reads are safe to skip; order requests are never retried automatically.
+                if consecutive_candle_timeouts>=2 or not ensure_connection():
+                    logging.error("Ending scan batch safely after repeated timeout or failed reconnect.")
+                    break
+                continue
+            consecutive_candle_timeouts=0
             scanned+=1
             if len(candles)<MOMENTUM_PERIOD+4:
                 rejected["no candles/unavailable"]=rejected.get("no candles/unavailable",0)+1
