@@ -756,7 +756,7 @@ def main():
                     telegram_send("🛑 QUEUED AUTO NOT ENABLED. Unresolved broker order(s) remain; reconcile and verify first.")
                 elif daily_limit_reason():
                     reason=daily_limit_reason(); set_auto(False,reason)
-                    telegram_send("🛑 QUEUED AUTO NOT ENABLED.\\n"+reason)
+                    telegram_send("🛑 QUEUED AUTO NOT ENABLED.\n"+reason)
                 elif not ensure_connection() or not practice_mode_verified():
                     set_auto(False,"Queued AUTO denied: PRACTICE verification failed")
                     telegram_send("🛑 QUEUED AUTO NOT ENABLED. Connection or PRACTICE verification failed. AUTO remains OFF.")
