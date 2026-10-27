@@ -1,52 +1,56 @@
 {
   "date": "2026-10-27",
-  "daily_pl": 0,
-  "resolved": 0,
-  "wins": 0,
-  "losses": 0,
-  "consecutive_losses": 0,
+  "daily_pl": -0.26,
+  "resolved": 4,
+  "wins": 2,
+  "losses": 2,
+  "consecutive_losses": 1,
   "signals": 4,
   "executed": 4,
   "blocked": 135,
-  "history": [],
-  "open_trades": {
-    "14394710731": {
+  "history": [
+    {
       "signal_id": "M10-SPY-CALL-1793114940",
+      "order_id": "14394710731",
       "asset": "SPY",
       "direction": "call",
-      "stake": 1.0,
-      "score": 50,
-      "started": 1793115115.0850236,
-      "candle_time": 1793114940
+      "outcome": "WIN",
+      "net": 0.87,
+      "time": "2026-10-27T16:40:00+01:00",
+      "result_source": "user-provided broker history"
     },
-    "14394713142": {
+    {
       "signal_id": "M10-USDINR-OTC-CALL-1793115060",
+      "order_id": "14394713142",
       "asset": "USDINR-OTC",
       "direction": "call",
-      "stake": 1.0,
-      "score": 80,
-      "started": 1793115161.4984937,
-      "candle_time": 1793115060
+      "outcome": "LOSS",
+      "net": -1,
+      "time": "2026-10-27T16:40:00+01:00",
+      "result_source": "user-provided broker history"
     },
-    "14394728953": {
+    {
       "signal_id": "M10-GDX-CALL-1793115480",
+      "order_id": "14394728953",
       "asset": "GDX",
       "direction": "call",
-      "stake": 1.0,
-      "score": 70,
-      "started": 1793115563.8595006,
-      "candle_time": 1793115480
+      "outcome": "WIN",
+      "net": 0.87,
+      "time": "2026-10-27T16:40:00+01:00",
+      "result_source": "user-provided broker history"
     },
-    "14394731247": {
+    {
       "signal_id": "M10-IWM-PUT-1793115480",
+      "order_id": "14394731247",
       "asset": "IWM",
       "direction": "put",
-      "stake": 1.0,
-      "score": 90,
-      "started": 1793115630.5752907,
-      "candle_time": 1793115480
+      "outcome": "LOSS",
+      "net": -1,
+      "time": "2026-10-27T16:40:00+01:00",
+      "result_source": "user-provided broker history"
     }
-  },
+  ],
+  "open_trades": {},
   "last_signal_candles": {
     "SPY": "1793114940",
     "USDINR-OTC": "1793115060",
@@ -55,7 +59,7 @@
   },
   "last_update_id": 840821806,
   "auto_enabled": false,
-  "stop_reason": "Unresolved broker order(s); reconcile and verify before AUTO",
+  "stop_reason": "Reconciled 4 closed broker orders; AUTO remains OFF until explicitly started",
   "tracked_signals": {
     "M10-SCAN-ADAUSD-L-CALL-1793106720": {
       "signal_id": "M10-SCAN-ADAUSD-L-CALL-1793106720",
@@ -100,10 +104,10 @@
     "14384143457",
     "14384151657",
     "14384157593",
-    "14384186300"
-  ],
-  "pending_order_id": "14394731247",
-  "pending_asset": "IWM",
-  "pending_direction": "put",
-  "pending_started": "2026-10-27T15:40:30.575296+00:00"
+    "14384186300",
+    "14394710731",
+    "14394713142",
+    "14394728953",
+    "14394731247"
+  ]
 }
