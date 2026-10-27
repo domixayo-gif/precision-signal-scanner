@@ -57,7 +57,7 @@
     "GDX": "1793115480",
     "IWM": "1793115480"
   },
-  "last_update_id": 840821812,
+  "last_update_id": 840821813,
   "auto_enabled": false,
   "stop_reason": "Reconciled 4 closed broker orders; AUTO remains OFF until explicitly started",
   "tracked_signals": {
@@ -81,16 +81,18 @@
     }
   },
   "last_scan_rejections": {
-    "no bearish reversal after upward momentum": 6,
-    "no bullish reversal after downward momentum": 2,
-    "no usable candle range": 2,
-    "candle request timeout/reconnect": 1
+    "no bearish reversal after upward momentum": 13,
+    "no bullish reversal after downward momentum": 7,
+    "zero momentum": 3,
+    "flat latest candle": 2,
+    "candle request timeout/reconnect": 1,
+    "no usable candle range": 1
   },
-  "last_scan": "2026-10-27T19:11:23.734330+00:00",
+  "last_scan": "2026-10-27T19:37:48.306331+00:00",
   "daily_pnl": 0,
   "resolved_trades": 0,
-  "last_scan_count": 11,
-  "last_scan_setups": 1,
+  "last_scan_count": 39,
+  "last_scan_setups": 13,
   "last_auto_candles": {},
   "pending_trade": null,
   "session_id": "40042578009-1",
