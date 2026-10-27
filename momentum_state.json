@@ -54,8 +54,8 @@
     "IWM": "1793115480"
   },
   "last_update_id": 840821804,
-  "auto_enabled": true,
-  "stop_reason": "",
+  "auto_enabled": false,
+  "stop_reason": "Connection lost; waiting for reconnect",
   "tracked_signals": {
     "M10-SCAN-ADAUSD-L-CALL-1793106720": {
       "signal_id": "M10-SCAN-ADAUSD-L-CALL-1793106720",
@@ -77,18 +77,17 @@
     }
   },
   "last_scan_rejections": {
-    "no bearish reversal after upward momentum": 19,
-    "no bullish reversal after downward momentum": 3,
-    "no usable candle range": 3,
-    "zero momentum": 2,
-    "flat latest candle": 1,
+    "no bearish reversal after upward momentum": 10,
+    "no bullish reversal after downward momentum": 5,
+    "flat latest candle": 2,
+    "no usable candle range": 1,
     "candle request timeout/reconnect": 1
   },
-  "last_scan": "2026-10-27T15:46:17.546204+00:00",
+  "last_scan": "2026-10-27T15:47:21.274056+00:00",
   "daily_pnl": 0,
   "resolved_trades": 0,
-  "last_scan_count": 39,
-  "last_scan_setups": 11,
+  "last_scan_count": 30,
+  "last_scan_setups": 12,
   "last_auto_candles": {},
   "pending_trade": null,
   "session_id": "40042578009-1",
