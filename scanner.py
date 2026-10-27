@@ -360,13 +360,24 @@ def scan_market(manual=False,auto_eligible=False):
             return
         assets=get_asset_names(); total=len(assets); LAST_ASSET_COUNT=total
         if not assets:
-            error_text="IQ Option returned zero symbols."
+            if IQ is None:
+                timed_out=True
+                error_text="Asset discovery timed out or connection was lost; reconnect required."
+            else:
+                error_text="IQ Option returned zero symbols."
             logging.warning(error_text); return
         start=ASSET_CURSOR%total; batch=[assets[(start+i)%total] for i in range(min(MAX_SYMBOLS_PER_SCAN,total))]
         logging.info("Scanning batch: %d symbols; total=%d; start=%d; auto_eligible=%s",len(batch),total,start,auto_eligible)
         for i,asset in enumerate(batch,1):
             if not RUNNING: break
-            if IQ is None: timed_out=True; rejected["connection reset after timeout"]=1; break
+            # A candle timeout retires the affected IQ client. Reconnect before
+            # the next symbol; otherwise this guard would end the batch before
+            # the consecutive-timeout recovery logic could run.
+            if IQ is None and not ensure_connection():
+                timed_out=True
+                rejected["connection reset; reconnect failed"]=rejected.get("connection reset; reconnect failed",0)+1
+                logging.error("Ending scan batch safely: IQ Option reconnect failed before %s.",asset)
+                break
             attempted+=1; candles=fetch_candles(asset)
             if candles is None:
                 timed_out=True
@@ -659,8 +670,13 @@ def process_telegram_update(update):
         elif OPEN_TRADES or STATE.get("unknown_order_request"):
             telegram_send(f"AUTO refused: {len(OPEN_TRADES)} unresolved broker trade(s) or an unknown order request remains. Reconcile and verify IQ Option history first.")
         elif daily_limit_reason(): telegram_send("Cannot start AUTO.\n"+daily_limit_reason())
-        elif not ensure_connection() or not practice_mode_verified(): telegram_send("AUTO refused: connection or PRACTICE verification failed.")
-        else: set_auto(True,""); telegram_send("🟢 AUTO MODE ON\nPRACTICE verified. $1 stake / 1-minute expiry.\nSCAN MARKET remains report-only.")
+        elif SCAN_IN_PROGRESS:
+            telegram_send("AUTO refused: a market scan is still running. Wait until STATUS shows Scan in progress: NO, then try START AUTO again.")
+        elif not ensure_connection() or not practice_mode_verified():
+            telegram_send("AUTO refused: connection or PRACTICE verification failed. AUTO remains OFF; send STATUS and retry after connection verification recovers.")
+        else:
+            set_auto(True,"")
+            telegram_send("🟢 AUTO MODE ON\nPRACTICE verified. $1 stake / 1-minute expiry.\nSCAN MARKET remains report-only.")
     elif cmd in ("/STOP","STOP AUTO"):
         set_auto(False,"Stopped manually"); telegram_send("🔴 AUTO MODE OFF. No new automatic trades will be started.")
     elif cmd in ("SCAN MARKET","/SCAN"):
