@@ -5,12 +5,24 @@
   "wins": 0,
   "losses": 0,
   "consecutive_losses": 0,
-  "signals": 0,
-  "executed": 0,
+  "signals": 1,
+  "executed": 1,
   "blocked": 17,
   "history": [],
-  "open_trades": {},
-  "last_signal_candles": {},
+  "open_trades": {
+    "14394710731": {
+      "signal_id": "M10-SPY-CALL-1793114940",
+      "asset": "SPY",
+      "direction": "call",
+      "stake": 1.0,
+      "score": 50,
+      "started": 1793115115.0850236,
+      "candle_time": 1793114940
+    }
+  },
+  "last_signal_candles": {
+    "SPY": "1793114940"
+  },
   "last_update_id": 840821804,
   "auto_enabled": true,
   "stop_reason": "",
@@ -66,5 +78,9 @@
     "14384151657",
     "14384157593",
     "14384186300"
-  ]
+  ],
+  "pending_order_id": "14394710731",
+  "pending_asset": "SPY",
+  "pending_direction": "call",
+  "pending_started": "2026-10-27T15:31:55.085030+00:00"
 }
