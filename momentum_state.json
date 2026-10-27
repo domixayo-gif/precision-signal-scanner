@@ -5,8 +5,8 @@
   "wins": 2,
   "losses": 2,
   "consecutive_losses": 1,
-  "signals": 5,
-  "executed": 5,
+  "signals": 6,
+  "executed": 6,
   "blocked": 146,
   "history": [
     {
@@ -59,6 +59,15 @@
       "score": 80,
       "started": 1793130629.1798313,
       "candle_time": 1793130540
+    },
+    "14395317515": {
+      "signal_id": "M10-GBPJPY-OTC-PUT-1793130600",
+      "asset": "GBPJPY-OTC",
+      "direction": "put",
+      "stake": 1.0,
+      "score": 100,
+      "started": 1793130740.843046,
+      "candle_time": 1793130600
     }
   },
   "last_signal_candles": {
@@ -66,7 +75,8 @@
     "USDINR-OTC": "1793115060",
     "GDX": "1793115480",
     "IWM": "1793115480",
-    "EURGBP-OTC": "1793130540"
+    "EURGBP-OTC": "1793130540",
+    "GBPJPY-OTC": "1793130600"
   },
   "last_update_id": 840821819,
   "auto_enabled": true,
@@ -126,8 +136,8 @@
     "14394728953",
     "14394731247"
   ],
-  "pending_order_id": "14395314284",
-  "pending_asset": "EURGBP-OTC",
+  "pending_order_id": "14395317515",
+  "pending_asset": "GBPJPY-OTC",
   "pending_direction": "put",
-  "pending_started": "2026-10-27T19:50:29.179837+00:00"
+  "pending_started": "2026-10-27T19:52:20.843052+00:00"
 }
