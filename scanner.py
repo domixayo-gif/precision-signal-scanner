@@ -134,7 +134,19 @@ def load_state():
         except Exception: pass
         STATE["open_trades"][str(pending)]={"signal_id":f"RECOVERED-{pending}","asset":str(STATE.get("pending_asset") or "Unknown"),
           "direction":str(STATE.get("pending_direction") or "unknown"),"stake":STAKE,"score":0,"started":started,"recovered":True}
-    OPEN_TRADES={str(k):dict(v) for k,v in STATE["open_trades"].items() if isinstance(v,dict)}
+    # Never resurrect an order already reconciled and recorded as settled.
+    # Older state snapshots can still contain the same order in open_trades.
+    settled={str(x) for x in STATE.get("settled_order_ids",[])}
+    for order_id in list(STATE["open_trades"]):
+        if str(order_id) in settled:
+            STATE["open_trades"].pop(order_id,None)
+    pending=STATE.get("pending_order_id")
+    if pending and str(pending) in settled:
+        STATE.pop("pending_order_id",None)
+        STATE.pop("pending_asset",None)
+        STATE.pop("pending_direction",None)
+        STATE.pop("pending_started",None)
+    OPEN_TRADES={str(k):dict(v) for k,v in STATE["open_trades"].items() if isinstance(v,dict) and str(k) not in settled}
     LAST_SIGNAL_BY_ASSET={str(k):str(v) for k,v in STATE["last_signal_candles"].items()}
     try: TELEGRAM_OFFSET=int(STATE.get("last_update_id",0))+1
     except Exception: TELEGRAM_OFFSET=0
