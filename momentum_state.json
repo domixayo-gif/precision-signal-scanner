@@ -5,8 +5,8 @@
   "wins": 0,
   "losses": 0,
   "consecutive_losses": 0,
-  "signals": 3,
-  "executed": 3,
+  "signals": 4,
+  "executed": 4,
   "blocked": 87,
   "history": [],
   "open_trades": {
@@ -36,12 +36,22 @@
       "score": 70,
       "started": 1793115563.8595006,
       "candle_time": 1793115480
+    },
+    "14394731247": {
+      "signal_id": "M10-IWM-PUT-1793115480",
+      "asset": "IWM",
+      "direction": "put",
+      "stake": 1.0,
+      "score": 90,
+      "started": 1793115630.5752907,
+      "candle_time": 1793115480
     }
   },
   "last_signal_candles": {
     "SPY": "1793114940",
     "USDINR-OTC": "1793115060",
-    "GDX": "1793115480"
+    "GDX": "1793115480",
+    "IWM": "1793115480"
   },
   "last_update_id": 840821804,
   "auto_enabled": true,
@@ -101,8 +111,8 @@
     "14384157593",
     "14384186300"
   ],
-  "pending_order_id": "14394728953",
-  "pending_asset": "GDX",
-  "pending_direction": "call",
-  "pending_started": "2026-10-27T15:39:23.859506+00:00"
+  "pending_order_id": "14394731247",
+  "pending_asset": "IWM",
+  "pending_direction": "put",
+  "pending_started": "2026-10-27T15:40:30.575296+00:00"
 }
