@@ -128,6 +128,11 @@ def load_state():
     if STATE.get("date")!=today:
         STATE.update({"date":today,"daily_pl":0.0,"resolved":0,"wins":0,"losses":0,"consecutive_losses":0,
           "signals":0,"executed":0,"blocked":0,"history":[],"stop_reason":""})
+    # Never restore AUTO while any broker order remains unresolved.
+    if OPEN_TRADES or STATE.get("unknown_order_request"):
+        STATE["auto_enabled"]=False
+        STATE["stop_reason"]="Unresolved broker order(s); reconcile and verify before AUTO"
+        logging.error("AUTO forced OFF at startup: %d unresolved trade(s); unknown order request=%s.",len(OPEN_TRADES),bool(STATE.get("unknown_order_request")))
     save_state()
 
 
@@ -503,6 +508,8 @@ def process_telegram_update(update):
     cmd=text.upper(); logging.info("Telegram command received: %s",cmd)
     if cmd in ("/START","START AUTO"):
         if not AUTO_TRADING_ALLOWED: telegram_send("AUTO refused: automatic trading is disabled.")
+        elif OPEN_TRADES or STATE.get("unknown_order_request"):
+            telegram_send(f"AUTO refused: {len(OPEN_TRADES)} unresolved broker trade(s) or an unknown order request remains. Reconcile and verify IQ Option history first.")
         elif daily_limit_reason(): telegram_send("Cannot start AUTO.\n"+daily_limit_reason())
         elif not ensure_connection() or not practice_mode_verified(): telegram_send("AUTO refused: connection or PRACTICE verification failed.")
         else: set_auto(True,""); telegram_send("🟢 AUTO MODE ON\nPRACTICE verified. $1 stake / 1-minute expiry.\nSCAN MARKET remains report-only.")
