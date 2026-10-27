@@ -476,48 +476,126 @@ def execute_signal(signal):
     logging.info("Practice order accepted: %s id=%s",asset,key); return True
 
 
+def _history_net_for_order(node, order_id):
+    """Return a confirmed net result for an exact broker order ID in option history."""
+    target=str(order_id)
+    def net_from_row(row):
+        if not isinstance(row,dict): return None
+        for key in ("net","net_profit","profit_amount_net"):
+            value=row.get(key)
+            if isinstance(value,(int,float)) and math.isfinite(float(value)): return float(value)
+        for gross_key,stake_key in (("profit_amount","amount"),("profit","deposit")):
+            gross=row.get(gross_key); stake=row.get(stake_key)
+            if isinstance(gross,(int,float)) and isinstance(stake,(int,float)):
+                return float(gross)-float(stake)
+        result=str(row.get("win",row.get("result",""))).lower()
+        stake=row.get("amount",row.get("deposit"))
+        gross=row.get("profit_amount",row.get("profit"))
+        if isinstance(stake,(int,float)) and result in ("loose","loss","lost","lose"):
+            return -abs(float(stake))
+        if isinstance(stake,(int,float)) and result in ("equal","draw","tie","breakeven"):
+            return 0.0
+        if isinstance(stake,(int,float)) and isinstance(gross,(int,float)) and result in ("win","won"):
+            return float(gross)-float(stake)
+        return None
+    seen=set()
+    def walk(value):
+        if isinstance(value,(dict,list)):
+            if id(value) in seen: return None
+            seen.add(id(value))
+        if isinstance(value,dict):
+            row_id=next((value.get(k) for k in ("id","order_id","option_id","position_id","external_id") if value.get(k) is not None),None)
+            if str(row_id)==target:
+                net=net_from_row(value)
+                if net is not None: return net
+            for key,child in value.items():
+                if str(key)==target:
+                    net=net_from_row(child)
+                    if net is not None: return net
+                found=walk(child)
+                if found is not None: return found
+        elif isinstance(value,list):
+            for child in value:
+                found=walk(child)
+                if found is not None: return found
+        return None
+    return walk(node)
+
+
+def _fetch_option_history(client, timeout=8):
+    """Bound the caller's wait; iqoptionapi history retrieval can hang internally."""
+    result_queue=queue.Queue(maxsize=1)
+    def worker():
+        try:
+            # This method has a separate response slot in iqoptionapi. Do not hold
+            # the shared API lock here: a hung history request must not freeze all
+            # other broker calls behind that lock.
+            data=client.get_optioninfo_v2(50)
+            try: result_queue.put(("ok",data),timeout=0.2)
+            except queue.Full: pass
+        except Exception as exc:
+            try: result_queue.put(("error",str(exc)),timeout=0.2)
+            except queue.Full: pass
+    threading.Thread(target=worker,daemon=True,name="option-history").start()
+    try:
+        status,data=result_queue.get(timeout=timeout)
+        if status=="ok": return data
+        logging.warning("Option-history lookup failed: %s",data)
+    except queue.Empty:
+        logging.warning("Option-history lookup timed out; will retry on a later reconciliation.")
+    return None
+
+
 def reconcile_trades():
     global RECONCILE_IN_PROGRESS
     if RECONCILE_IN_PROGRESS or not OPEN_TRADES or not ensure_connection(): return
     RECONCILE_IN_PROGRESS=True
     try:
+        client=IQ
+        history_data=_fetch_option_history(client,timeout=8) if client is not None else None
         for oid in list(OPEN_TRADES):
             trade=OPEN_TRADES.get(oid)
             if not trade or time.time()-safe_float(trade.get("started"),time.time())<60: continue
-            with RESULT_LOOKUP_LOCK:
-                retry_after=RESULT_LOOKUP_RETRY_AFTER.get(str(oid),0)
-                if time.time()<retry_after:
-                    logging.info("Result lookup cooldown for %s; retry in %.1fs.",oid,retry_after-time.time()); continue
-                if str(oid) in RESULT_LOOKUPS_IN_FLIGHT:
-                    logging.info("Result lookup still running for %s; skipping duplicate request.",oid); continue
-                RESULT_LOOKUP_RETRY_AFTER.pop(str(oid),None)
-                lookup_token=object()
-                RESULT_LOOKUPS_IN_FLIGHT[str(oid)]=lookup_token
-            q=queue.Queue(maxsize=1); client=IQ
-            def worker(client=client,order=oid,result_queue=q,token=lookup_token):
-                try:
-                    with client_api_lock(client): result=client.check_win_v4(int(order))
-                    result_queue.put(("ok",result))
-                except Exception as e: result_queue.put(("error",str(e)))
-                finally:
-                    with RESULT_LOOKUP_LOCK:
-                        if RESULT_LOOKUPS_IN_FLIGHT.get(str(order)) is token:
-                            RESULT_LOOKUPS_IN_FLIGHT.pop(str(order),None)
-            threading.Thread(target=worker,daemon=True,name="trade-result").start()
-            try: status,result=q.get(timeout=RESULT_CHECK_TIMEOUT)
-            except queue.Empty:
-                # iqoptionapi check_win_v4 may wait indefinitely internally. The
-                # worker is daemonized, so release this order's in-flight marker
-                # and permit a retry against a fresh client after a cooldown.
-                # This is a result lookup only; it never places/retries an order.
+
+            # First reconcile against completed broker history by exact order ID.
+            # This is read-only and can recover when check_win_v4 never returns.
+            history_net=_history_net_for_order(history_data,oid) if history_data is not None else None
+            if history_net is not None and math.isfinite(float(history_net)):
+                status="ok"
+                result=float(history_net)
+            else:
                 with RESULT_LOOKUP_LOCK:
-                    if RESULT_LOOKUPS_IN_FLIGHT.get(str(oid)) is lookup_token:
-                        RESULT_LOOKUPS_IN_FLIGHT.pop(str(oid),None)
-                    RESULT_LOOKUP_RETRY_AFTER[str(oid)]=time.time()+30
-                logging.warning("Result lookup timed out for %s; retry scheduled after cooldown on a fresh client. Trade remains unresolved.",oid)
-                if IQ is client:
-                    with RECONNECT_LOCK: globals()["IQ"]=None
-                continue
+                    retry_after=RESULT_LOOKUP_RETRY_AFTER.get(str(oid),0)
+                    if time.time()<retry_after:
+                        logging.info("Result lookup cooldown for %s; retry in %.1fs.",oid,retry_after-time.time()); continue
+                    if str(oid) in RESULT_LOOKUPS_IN_FLIGHT:
+                        logging.info("Result lookup still running for %s; skipping duplicate request.",oid); continue
+                    RESULT_LOOKUP_RETRY_AFTER.pop(str(oid),None)
+                    lookup_token=object()
+                    RESULT_LOOKUPS_IN_FLIGHT[str(oid)]=lookup_token
+                q=queue.Queue(maxsize=1); result_client=IQ
+                def worker(client=result_client,order=oid,result_queue=q,token=lookup_token):
+                    try:
+                        with client_api_lock(client): value=client.check_win_v4(int(order))
+                        result_queue.put(("ok",value))
+                    except Exception as e:
+                        try: result_queue.put(("error",str(e)))
+                        except queue.Full: pass
+                    finally:
+                        with RESULT_LOOKUP_LOCK:
+                            if RESULT_LOOKUPS_IN_FLIGHT.get(str(order)) is token:
+                                RESULT_LOOKUPS_IN_FLIGHT.pop(str(order),None)
+                threading.Thread(target=worker,daemon=True,name="trade-result").start()
+                try: status,result=q.get(timeout=RESULT_CHECK_TIMEOUT)
+                except queue.Empty:
+                    with RESULT_LOOKUP_LOCK:
+                        if RESULT_LOOKUPS_IN_FLIGHT.get(str(oid)) is lookup_token:
+                            RESULT_LOOKUPS_IN_FLIGHT.pop(str(oid),None)
+                        RESULT_LOOKUP_RETRY_AFTER[str(oid)]=time.time()+30
+                    logging.warning("Result lookup timed out for %s; retry scheduled after cooldown. Trade remains unresolved.",oid)
+                    if IQ is result_client:
+                        with RECONNECT_LOCK: globals()["IQ"]=None
+                    continue
             if status!="ok" or result is None:
                 if status!="ok": logging.warning("Result check failed for %s: %s",oid,result)
                 continue
