@@ -2,6 +2,11 @@ name: Momentum 10 IQ Option Scanner
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - "scanner.py"
+      - "requirements.txt"
+      - ".github/workflows/scanner.yml"
   schedule:
     # Fallback start every 6 hours if a dispatch fails.
     - cron: "0 */6 * * *"
@@ -12,7 +17,7 @@ permissions:
 
 concurrency:
   group: momentum-10-iq-option-scanner
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   scan:
