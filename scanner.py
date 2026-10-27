@@ -26,6 +26,10 @@ except Exception: logging.warning("Could not disable digital-open discovery.")
 
 IQ, RUNNING, AUTO_MODE = None, True, False
 STATE_LOCK, SAVE_LOCK = threading.RLock(), threading.Lock()
+CLIENT_LOCKS_GUARD = threading.Lock()
+CLIENT_LOCKS = {}
+RESULT_LOOKUP_LOCK = threading.Lock()
+RESULT_LOOKUPS_IN_FLIGHT = set()
 TELEGRAM_OFFSET, OPEN_TRADES, LAST_SIGNAL_BY_ASSET = 0, {}, {}
 MANUAL_SCAN_REQUESTED, SCAN_IN_PROGRESS = False, False
 SCAN_RESULTS_QUEUE = queue.Queue()
@@ -41,6 +45,16 @@ STATE = dict(DEFAULT_STATE)
 
 def utc_now(): return datetime.now(timezone.utc)
 def money(v): return f"${float(v):.2f}"
+
+
+def client_api_lock(client):
+    """Give each IQ client its own lock so concurrent calls cannot corrupt replies."""
+    key=id(client)
+    with CLIENT_LOCKS_GUARD:
+        lock=CLIENT_LOCKS.get(key)
+        if lock is None:
+            lock=threading.RLock(); CLIENT_LOCKS[key]=lock
+        return lock
 def safe_float(v, default=0.0):
     try:
         x=float(v); return x if math.isfinite(x) else default
@@ -165,15 +179,32 @@ def ensure_connection():
 
 
 def practice_mode_verified():
-    try: return IQ is not None and IQ.check_connect() and "PRACTICE" in str(IQ.get_balance_mode()).upper()
+    client=IQ
+    if client is None: return False
+    lock=client_api_lock(client)
+    if not lock.acquire(timeout=1): return False
+    try: return bool(client.check_connect() and "PRACTICE" in str(client.get_balance_mode()).upper())
     except Exception: return False
+    finally: lock.release()
 
 
 def get_asset_names():
-    try:
-        m=IQ.get_all_ACTIVES_OPCODE()
-        return sorted({s.strip() for s in m if isinstance(s,str) and s.strip()}) if isinstance(m,dict) else []
-    except Exception as e: logging.warning("Asset discovery failed: %s",e); return []
+    client=IQ
+    if client is None: return []
+    q=queue.Queue(maxsize=1)
+    def worker():
+        try:
+            with client_api_lock(client): m=client.get_all_ACTIVES_OPCODE()
+            q.put(("ok",m))
+        except Exception as e: q.put(("error",str(e)))
+    threading.Thread(target=worker,daemon=True,name="asset-discovery").start()
+    try: status,m=q.get(timeout=CANDLE_REQUEST_TIMEOUT)
+    except queue.Empty:
+        logging.error("ASSET DISCOVERY TIMEOUT: exceeded %ss; reconnect required.",CANDLE_REQUEST_TIMEOUT)
+        if IQ is client: globals()["IQ"]=None
+        return []
+    if status!="ok": logging.warning("Asset discovery failed: %s",m); return []
+    return sorted({s.strip() for s in m if isinstance(s,str) and s.strip()}) if isinstance(m,dict) else []
 
 
 def fetch_candles(asset):
@@ -182,7 +213,9 @@ def fetch_candles(asset):
     if client is None: return None
     q=queue.Queue(maxsize=1)
     def worker():
-        try: q.put(("ok",client.get_candles(asset,CANDLE_SECONDS,LOOKBACK_CANDLES,int(time.time()))))
+        try:
+            with client_api_lock(client): candles=client.get_candles(asset,CANDLE_SECONDS,LOOKBACK_CANDLES,int(time.time()))
+            q.put(("ok",candles))
         except Exception as e: q.put(("error",str(e)))
     threading.Thread(target=worker,daemon=True).start()
     try: status,candles=q.get(timeout=CANDLE_REQUEST_TIMEOUT)
@@ -361,17 +394,23 @@ def execute_signal(signal):
     if age>MAX_SIGNAL_AGE_SECONDS or age < -5: logging.info("Skipping stale signal: %s age=%.1f",asset,age); return False
     if not asset or direction not in ("call","put") or LAST_SIGNAL_BY_ASSET.get(asset)==str(candle_time): return False
     sid=f"M10-{asset}-{direction.upper()}-{candle_time}"; q=queue.Queue(maxsize=1)
-    def order_worker():
+    def order_worker(client=IQ):
         try:
             if not practice_mode_verified(): q.put(("safety","PRACTICE verification failed"))
-            else: q.put(("result",IQ.buy(STAKE,asset,direction,EXPIRY_MINUTES)))
+            else:
+                with client_api_lock(client): response=client.buy(STAKE,asset,direction,EXPIRY_MINUTES)
+                q.put(("result",response))
         except Exception as e: q.put(("error",str(e)))
     threading.Thread(target=order_worker,daemon=True,name="place-order").start()
     try: status,response=q.get(timeout=12)
     except queue.Empty:
-        with STATE_LOCK: STATE["blocked"]+=1
-        save_state(); logging.error("Order request timed out for %s; not retrying to avoid duplicate order.",asset)
-        telegram_send(f"⚠️ AUTO ORDER STATUS UNKNOWN\n{asset}: broker request timed out. Check IQ Option before retrying."); return False
+        with STATE_LOCK:
+            STATE["blocked"]+=1
+            STATE["unknown_order_request"]={"signal_id":sid,"asset":asset,"direction":direction,"stake":STAKE,"requested_at":utc_now().isoformat(),"status":"UNKNOWN — verify in IQ Option history"}
+        save_state()
+        set_auto(False,"Order request timed out; broker outcome unknown")
+        logging.error("Order request timed out for %s; AUTO stopped to prevent duplicate orders.",asset)
+        telegram_send(f"⚠️ AUTO STOPPED — ORDER STATUS UNKNOWN\n{asset} {direction.upper()}\nSignal: {sid}\nCheck IQ Option history before restarting. No automatic retry was made."); return False
     if status=="safety": set_auto(False,response); telegram_send("🚨 SAFETY STOP: "+response); return False
     if status!="result" or not isinstance(response,tuple) or len(response)<2:
         with STATE_LOCK: STATE["blocked"]+=1
@@ -398,13 +437,24 @@ def reconcile_trades():
         for oid in list(OPEN_TRADES):
             trade=OPEN_TRADES.get(oid)
             if not trade or time.time()-safe_float(trade.get("started"),time.time())<60: continue
-            q=queue.Queue(maxsize=1)
-            def worker(client=IQ,order=oid,result_queue=q):
-                try: result_queue.put(("ok",client.check_win_v4(int(order))))
+            with RESULT_LOOKUP_LOCK:
+                if str(oid) in RESULT_LOOKUPS_IN_FLIGHT:
+                    logging.info("Result lookup still running for %s; skipping duplicate request.",oid); continue
+                RESULT_LOOKUPS_IN_FLIGHT.add(str(oid))
+            q=queue.Queue(maxsize=1); client=IQ
+            def worker(client=client,order=oid,result_queue=q):
+                try:
+                    with client_api_lock(client): result=client.check_win_v4(int(order))
+                    result_queue.put(("ok",result))
                 except Exception as e: result_queue.put(("error",str(e)))
+                finally:
+                    with RESULT_LOOKUP_LOCK: RESULT_LOOKUPS_IN_FLIGHT.discard(str(order))
             threading.Thread(target=worker,daemon=True,name="trade-result").start()
             try: status,result=q.get(timeout=RESULT_CHECK_TIMEOUT)
-            except queue.Empty: logging.warning("Result lookup timed out for %s; will retry.",oid); continue
+            except queue.Empty:
+                logging.warning("Result lookup timed out for %s; keeping one lookup in flight and reconnecting with a fresh client.",oid)
+                if IQ is client: globals()["IQ"]=None
+                continue
             if status!="ok" or result is None:
                 if status!="ok": logging.warning("Result check failed for %s: %s",oid,result)
                 continue
