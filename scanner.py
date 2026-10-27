@@ -114,16 +114,23 @@ def connect_iq():
     telegram_send(f"🟢 MOMENTUM 10 CONNECTED\nAccount: PRACTICE ONLY\nBalance: {money(balance)}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nExpiry: 1 minute | Stake: $1\nManual scans never place trades.")
 
 
-def practice_mode_verified():
+def practice_mode_verified(timeout=15):
     client = IQ
     if client is None:
         return False
     lock = client_api_lock(client)
-    if not lock.acquire(timeout=2):
+    if not lock.acquire(timeout=timeout):
+        logging.warning("PRACTICE verification deferred: IQ Option API is busy.")
         return False
     try:
-        return bool(client.check_connect() and "PRACTICE" in str(client.get_balance_mode()).upper())
-    except Exception:
+        connected = bool(client.check_connect())
+        mode = str(client.get_balance_mode()).upper() if connected else ""
+        verified = connected and "PRACTICE" in mode
+        if not verified:
+            logging.warning("PRACTICE verification failed: connected=%s mode=%s", connected, mode or "unavailable")
+        return verified
+    except Exception as exc:
+        logging.warning("PRACTICE verification error: %s", exc)
         return False
     finally:
         lock.release()
@@ -132,11 +139,8 @@ def practice_mode_verified():
 def ensure_connection():
     global IQ
     with RECONNECT_LOCK:
-        try:
-            if IQ is not None and IQ.check_connect() and "PRACTICE" in str(IQ.get_balance_mode()).upper():
-                return True
-        except Exception:
-            pass
+        if IQ is not None and practice_mode_verified():
+            return True
         IQ = None
         try:
             connect_iq()
@@ -495,9 +499,9 @@ def process_telegram_update(update):
     if command in ("/START", "START AUTO"):
         if not AUTO_TRADING_ALLOWED:
             telegram_send("AUTO is disabled in this scanner.")
-        elif not ensure_connection() or not practice_mode_verified():
-            set_auto(False, "PRACTICE verification failed")
-            telegram_send("AUTO refused: connection or PRACTICE verification failed. AUTO remains OFF.")
+        elif not ensure_connection():
+            set_auto(False, "Connection or PRACTICE verification failed")
+            telegram_send("AUTO refused: connection or PRACTICE verification failed. Check STATUS; AUTO remains OFF.")
         else:
             set_auto(True)
             telegram_send("🟢 AUTO MODE ON\nPRACTICE verified. $1 stake / 1-minute expiry.\nSCAN MARKET remains report-only.\nWins/losses and trade history are not recorded.")
