@@ -7,7 +7,7 @@
   "consecutive_losses": 0,
   "signals": 2,
   "executed": 2,
-  "blocked": 61,
+  "blocked": 62,
   "history": [],
   "open_trades": {
     "14394710731": {
@@ -57,17 +57,17 @@
     }
   },
   "last_scan_rejections": {
-    "no bullish reversal after downward momentum": 9,
-    "no bearish reversal after upward momentum": 8,
-    "no usable candle range": 5,
-    "candle request timeout/reconnect": 2,
-    "zero momentum": 1
+    "no bearish reversal after upward momentum": 15,
+    "no bullish reversal after downward momentum": 8,
+    "flat latest candle": 2,
+    "candle request timeout/reconnect": 1,
+    "no usable candle range": 1
   },
-  "last_scan": "2026-10-27T15:37:31.901709+00:00",
+  "last_scan": "2026-10-27T15:38:22.435470+00:00",
   "daily_pnl": 0,
   "resolved_trades": 0,
-  "last_scan_count": 38,
-  "last_scan_setups": 15,
+  "last_scan_count": 39,
+  "last_scan_setups": 13,
   "last_auto_candles": {},
   "pending_trade": null,
   "session_id": "40042578009-1",
