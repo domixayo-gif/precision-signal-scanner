@@ -7,7 +7,7 @@
   "consecutive_losses": 0,
   "signals": 0,
   "executed": 0,
-  "blocked": 9,
+  "blocked": 10,
   "history": [],
   "open_trades": {},
   "last_signal_candles": {},
