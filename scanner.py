@@ -33,6 +33,9 @@ CLIENT_LOCKS = {}
 RECONNECT_LOCK = threading.RLock()
 RESULT_LOOKUP_LOCK = threading.Lock()
 RESULT_LOOKUPS_IN_FLIGHT = set()
+# A broker result lookup can hang inside iqoptionapi forever. Cool down retries
+# per order, but never let one abandoned worker permanently lock reconciliation.
+RESULT_LOOKUP_RETRY_AFTER = {}
 TELEGRAM_OFFSET, OPEN_TRADES, LAST_SIGNAL_BY_ASSET = 0, {}, {}
 MANUAL_SCAN_REQUESTED, SCAN_IN_PROGRESS = False, False
 SCAN_RESULTS_QUEUE = queue.Queue()
@@ -482,8 +485,12 @@ def reconcile_trades():
             trade=OPEN_TRADES.get(oid)
             if not trade or time.time()-safe_float(trade.get("started"),time.time())<60: continue
             with RESULT_LOOKUP_LOCK:
+                retry_after=RESULT_LOOKUP_RETRY_AFTER.get(str(oid),0)
+                if time.time()<retry_after:
+                    logging.info("Result lookup cooldown for %s; retry in %.1fs.",oid,retry_after-time.time()); continue
                 if str(oid) in RESULT_LOOKUPS_IN_FLIGHT:
                     logging.info("Result lookup still running for %s; skipping duplicate request.",oid); continue
+                RESULT_LOOKUP_RETRY_AFTER.pop(str(oid),None)
                 RESULT_LOOKUPS_IN_FLIGHT.add(str(oid))
             q=queue.Queue(maxsize=1); client=IQ
             def worker(client=client,order=oid,result_queue=q):
@@ -496,8 +503,16 @@ def reconcile_trades():
             threading.Thread(target=worker,daemon=True,name="trade-result").start()
             try: status,result=q.get(timeout=RESULT_CHECK_TIMEOUT)
             except queue.Empty:
-                logging.warning("Result lookup timed out for %s; keeping one lookup in flight and reconnecting with a fresh client.",oid)
-                if IQ is client: globals()["IQ"]=None
+                # iqoptionapi check_win_v4 may wait indefinitely internally. The
+                # worker is daemonized, so release this order's in-flight marker
+                # and permit a retry against a fresh client after a cooldown.
+                # This is a result lookup only; it never places/retries an order.
+                with RESULT_LOOKUP_LOCK:
+                    RESULT_LOOKUPS_IN_FLIGHT.discard(str(oid))
+                    RESULT_LOOKUP_RETRY_AFTER[str(oid)]=time.time()+30
+                logging.warning("Result lookup timed out for %s; retry scheduled after cooldown on a fresh client. Trade remains unresolved.",oid)
+                if IQ is client:
+                    with RECONNECT_LOCK: globals()["IQ"]=None
                 continue
             if status!="ok" or result is None:
                 if status!="ok": logging.warning("Result check failed for %s: %s",oid,result)
