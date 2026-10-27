@@ -12,8 +12,8 @@
   "open_trades": {},
   "last_signal_candles": {},
   "last_update_id": 840821803,
-  "auto_enabled": false,
-  "stop_reason": "Connection lost; waiting for reconnect",
+  "auto_enabled": true,
+  "stop_reason": "",
   "tracked_signals": {
     "M10-SCAN-ADAUSD-L-CALL-1793106720": {
       "signal_id": "M10-SCAN-ADAUSD-L-CALL-1793106720",
@@ -35,18 +35,19 @@
     }
   },
   "last_scan_rejections": {
-    "no bearish reversal after upward momentum": 18,
-    "no bullish reversal after downward momentum": 5,
-    "no usable candle range": 3,
-    "potential setup too close to candle close": 3,
-    "flat latest candle": 2,
-    "candle request timeout/reconnect": 1
+    "no bullish reversal after downward momentum": 12,
+    "no bearish reversal after upward momentum": 8,
+    "no usable candle range": 2,
+    "momentum not extreme enough": 1,
+    "candle request timeout/reconnect": 1,
+    "flat latest candle": 1,
+    "zero momentum": 1
   },
-  "last_scan": "2026-10-27T15:23:49.972236+00:00",
+  "last_scan": "2026-10-27T15:28:50.842177+00:00",
   "daily_pnl": 0,
   "resolved_trades": 0,
   "last_scan_count": 39,
-  "last_scan_setups": 8,
+  "last_scan_setups": 14,
   "last_auto_candles": {},
   "pending_trade": null,
   "session_id": "40042578009-1",
