@@ -171,6 +171,23 @@ def ensure_connection():
             return False
 
 
+def is_supported_binary_asset(asset):
+    # Restrict AUTO orders to recognizable FX pairs (including OTC). IQ Option's
+    # active list also contains stocks and other instruments that binary buy()
+    # rejects, such as FIS:US, Ferrari, GS, MMM:US, and MA:US.
+    name = str(asset or "").strip().upper().replace("/", "").replace(" ", "")
+    name = re.sub(r"[-_]?OTC$", "", name)
+    if not re.fullmatch(r"[A-Z]{6}", name):
+        return False
+    currencies = {
+        "USD", "EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD", "SGD",
+        "HKD", "NOK", "SEK", "MXN", "TRY", "ZAR", "PLN", "CZK", "HUF",
+        "DKK", "CNH", "THB", "INR", "BRL", "IDR", "MYR", "PHP", "NGN",
+        "AED", "SAR"
+    }
+    return name[:3] in currencies and name[3:] in currencies and name[:3] != name[3:]
+
+
 def get_asset_names():
     client = IQ
     if client is None:
@@ -195,7 +212,10 @@ def get_asset_names():
         return []
     if not isinstance(data, dict):
         return []
-    return sorted({name.strip() for name in data if isinstance(name, str) and name.strip()})
+    all_names = {name.strip() for name in data if isinstance(name, str) and name.strip()}
+    supported = sorted(name for name in all_names if is_supported_binary_asset(name))
+    logging.info("Discovered %d total active symbols; %d supported FX binary candidates.", len(all_names), len(supported))
+    return supported
 
 
 def fetch_candles(asset):
@@ -467,7 +487,9 @@ def execute_signal(signal):
     success, order_id = bool(response[0]), response[1]
     if not success or order_id is None or str(order_id) == "":
         logging.info("Practice order rejected for %s: %r", asset, response)
-        telegram_send(f"⚪ ORDER REJECTED\n{display_asset(asset)} {direction.upper()}\nNo trade was confirmed.")
+        detail = str(response[1] if len(response) > 1 else "broker returned no order ID")
+        detail = re.sub(r"[\\r\\n]+", " ", detail)[:220]
+        telegram_send(f"⚪ ORDER REJECTED\n{display_asset(asset)} {direction.upper()}\nNo trade was confirmed.\nBroker response: {detail}")
         return False
     telegram_send(f"🟡 PRACTICE ORDER ACCEPTED\n{display_asset(asset)} — {direction.upper()}\nOrder ID: {order_id}\nStake: $1 | Expiry: 1 minute\nThis bot does not record wins or losses.")
     logging.info("Practice order accepted for %s; order id=%s", asset, order_id)
