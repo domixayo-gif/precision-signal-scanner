@@ -195,27 +195,52 @@ def get_asset_names():
     result_queue = queue.Queue(maxsize=1)
     def worker():
         try:
+            # Do not use get_all_ACTIVES_OPCODE here: it can include stocks and
+            # other instruments that binary-option buy() cannot trade. Build the
+            # universe only from IQ Option's binary/turbo active tables.
             with client_api_lock(client):
-                result_queue.put(("ok", client.get_all_ACTIVES_OPCODE()))
+                init_info = client.get_all_init()
+            result_queue.put(("ok", init_info))
         except Exception as exc:
             result_queue.put(("error", str(exc)))
     threading.Thread(target=worker, daemon=True, name="asset-discovery").start()
     try:
         status, data = result_queue.get(timeout=REQUEST_TIMEOUT)
     except queue.Empty:
-        logging.error("Asset discovery timed out.")
+        logging.error("Binary/turbo asset discovery timed out.")
         if IQ is client:
             globals()["IQ"] = None
         return []
     if status != "ok":
-        logging.warning("Asset discovery failed: %s", data)
+        logging.warning("Binary/turbo asset discovery failed: %s", data)
         return []
-    if not isinstance(data, dict):
+    try:
+        result = data.get("result", {})
+        candidates = set()
+        total_binary_turbo = 0
+        for market in ("binary", "turbo"):
+            market_data = result.get(market, {})
+            actives = market_data.get("actives", {})
+            if not isinstance(actives, dict):
+                continue
+            for active in actives.values():
+                if not isinstance(active, dict):
+                    continue
+                total_binary_turbo += 1
+                # Only take enabled, unsuspended binary/turbo instruments.
+                if active.get("enabled") is not True or active.get("is_suspended") is not False:
+                    continue
+                raw_name = str(active.get("name", "")).strip()
+                if "." in raw_name:
+                    raw_name = raw_name.split(".", 1)[1].strip()
+                if raw_name and is_supported_binary_asset(raw_name):
+                    candidates.add(raw_name)
+        supported = sorted(candidates)
+        logging.info("Read %d binary/turbo actives; %d enabled, unsuspended FX candidates.", total_binary_turbo, len(supported))
+        return supported
+    except Exception as exc:
+        logging.warning("Could not parse IQ Option binary/turbo active list: %s", exc)
         return []
-    all_names = {name.strip() for name in data if isinstance(name, str) and name.strip()}
-    supported = sorted(name for name in all_names if is_supported_binary_asset(name))
-    logging.info("Discovered %d total active symbols; %d supported FX binary candidates.", len(all_names), len(supported))
-    return supported
 
 
 def fetch_candles(asset):
