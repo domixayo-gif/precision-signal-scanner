@@ -83,36 +83,57 @@ def telegram_send(message, keyboard=True):
         return False
 
 
-def connect_iq():
+def connect_iq(timeout=40):
+    """Connect without allowing a stalled IQ Option handshake to freeze the scanner loop."""
     global IQ
     if not IQ_EMAIL or not IQ_PASSWORD:
         raise RuntimeError("Missing IQ_EMAIL or IQ_PASSWORD secret.")
-    client = IQ_Option(IQ_EMAIL, IQ_PASSWORD)
-    result = client.connect()
-    if result is False:
-        raise RuntimeError("IQ Option connection failed.")
-    for _ in range(15):
+
+    result_queue = queue.Queue(maxsize=1)
+
+    def connection_worker():
+        client = None
         try:
-            if client.check_connect():
-                break
-        except Exception:
-            pass
-        time.sleep(1)
-    else:
-        raise RuntimeError("IQ Option connection timed out.")
-    client.change_balance("PRACTICE")
-    time.sleep(1)
+            client = IQ_Option(IQ_EMAIL, IQ_PASSWORD)
+            result = client.connect()
+            if result is False:
+                raise RuntimeError("IQ Option connection failed.")
+            for _ in range(15):
+                try:
+                    if client.check_connect():
+                        break
+                except Exception:
+                    pass
+                time.sleep(1)
+            else:
+                raise RuntimeError("IQ Option connection timed out.")
+            client.change_balance("PRACTICE")
+            time.sleep(1)
+            try:
+                mode = str(client.get_balance_mode()).upper()
+            except Exception:
+                mode = ""
+            if "PRACTICE" not in mode:
+                raise RuntimeError("Safety stop: PRACTICE account mode could not be verified.")
+            balance = safe_float(client.get_balance(), 0.0)
+            result_queue.put_nowait(("ok", client, balance))
+        except Exception as exc:
+            try:
+                result_queue.put_nowait(("error", str(exc), None))
+            except queue.Full:
+                pass
+
+    threading.Thread(target=connection_worker, daemon=True, name="iq-connect").start()
     try:
-        mode = str(client.get_balance_mode()).upper()
-    except Exception:
-        mode = ""
-    if "PRACTICE" not in mode:
-        raise RuntimeError("Safety stop: PRACTICE account mode could not be verified.")
-    IQ = client
-    balance = safe_float(client.get_balance(), 0.0)
+        result = result_queue.get(timeout=timeout)
+    except queue.Empty:
+        raise RuntimeError(f"IQ Option connection attempt exceeded {timeout}s; scanner will retry without freezing.")
+    if result[0] != "ok":
+        raise RuntimeError(result[1])
+    IQ = result[1]
+    balance = result[2]
     logging.info("Connected in PRACTICE. Balance %s", money(balance))
     telegram_send(f"🟢 MOMENTUM 10 CONNECTED\nAccount: PRACTICE ONLY\nBalance: {money(balance)}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nExpiry: 1 minute | Stake: $1\nManual scans never place trades.")
-
 
 def practice_mode_verified(timeout=15):
     client = IQ
