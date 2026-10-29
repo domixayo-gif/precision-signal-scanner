@@ -443,13 +443,14 @@ def scan_market(manual=False, auto_eligible=False):
                 if signal:
                     if LAST_SIGNAL_BY_ASSET.get(asset) != str(signal["candle_time"]):
                         signal["entry_time"] = int(signal.get("candle_time", time.time())) + CANDLE_SECONDS
-                        if signal["entry_time"] - time.time() >= 3:
+                        seconds_to_entry = signal["entry_time"] - time.time()
+                        if -10 <= seconds_to_entry <= 5:
                             results.append(signal)
                             LAST_SIGNAL_BY_ASSET[asset] = str(signal["candle_time"])
                             if manual and len(results) <= TOP_SIGNALS:
                                 send_signal(signal, manual=True)
                         else:
-                            rejected["closed-candle setup too old for next entry"] = rejected.get("closed-candle setup too old for next entry", 0) + 1
+                            rejected["closed-candle setup outside entry window"] = rejected.get("closed-candle setup outside entry window", 0) + 1
                 else:
                     rejected[reason] = rejected.get(reason, 0) + 1
             if index % PROGRESS_EVERY == 0:
