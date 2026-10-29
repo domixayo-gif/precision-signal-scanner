@@ -282,10 +282,15 @@ def get_asset_names():
         total_actives = 0
         candidates = set()
         order_asset_by_base = {}
+        order_asset_priority = {}
+        active_id_priority = {}
         for table_path, entries in active_tables:
-            # Only accept active tables associated with binary/turbo market sections.
-            if not any(market in table_path.lower() for market in ("binary", "turbo")):
+            # Some IQ Option sessions publish regular FX pairs in blitz instead
+            # of binary/turbo. Search all three explicit market tables.
+            market_path = table_path.lower()
+            if not any(market in market_path for market in ("binary", "turbo", "blitz")):
                 continue
+            source_priority = 2 if any(market in market_path for market in ("binary", "turbo")) else 1
             for active_key, active in entries:
                 if not isinstance(active, dict):
                     continue
@@ -310,8 +315,9 @@ def get_asset_names():
                     # while the scanner continues using the canonical six-letter base for candles.
                     broker_name = raw_name.rsplit(".", 1)[-1].strip()
                     previous = order_asset_by_base.get(normalized_name, "")
-                    if broker_name and (not previous or broker_name.upper().endswith("-OP")):
+                    if broker_name and (not previous or source_priority >= order_asset_priority.get(normalized_name, 0)):
                         order_asset_by_base[normalized_name] = broker_name
+                        order_asset_priority[normalized_name] = source_priority
                     # Refresh the order-name -> active-ID lookup from this live feed.
                     # The previous code discarded dictionary keys and could leave a stale ID,
                     # leading to repeated "asset is not available" order rejections.
@@ -319,8 +325,9 @@ def get_asset_names():
                     if active_id is None:
                         active_id = active.get("id", active.get("active_id"))
                     try:
-                        if broker_name and active_id is not None:
+                        if broker_name and active_id is not None and source_priority >= active_id_priority.get(broker_name.upper(), 0):
                             OP_code.ACTIVES[broker_name] = int(active_id)
+                            active_id_priority[broker_name.upper()] = source_priority
                     except (TypeError, ValueError):
                         logging.debug("Could not map active ID for %s: %r", broker_name, active_id)
 
@@ -336,7 +343,7 @@ def get_asset_names():
         table_paths = [path for path, _ in active_tables][:12]
         sample_names = []
         for table_path, entries in active_tables:
-            if any(market in table_path.lower() for market in ("binary", "turbo")):
+            if any(market in table_path.lower() for market in ("binary", "turbo", "blitz")):
                 for active_key, active in entries:
                     if isinstance(active, dict):
                         sample_names.append({"name": active.get("name"), "active_id": active_key if active_key is not None else active.get("id", active.get("active_id")), "enabled": active.get("enabled"), "suspended": active.get("is_suspended", active.get("suspended"))})
