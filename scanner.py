@@ -297,10 +297,9 @@ def get_asset_names():
                 if enabled_text in ("false", "0", "no") or suspended_text in ("true", "1", "yes"):
                     continue
                 raw_name = str(active.get("name", "")).strip()
-                # IQ Option's active list may advertise regular FX as e.g. GBPAUD-op,
-                # while candle and binary order calls use the canonical GBPAUD symbol.
-                # Validate the full raw name first (OTC/HC are rejected), then use its
-                # validated six-letter currency-pair base for candles and any practice order.
+                # IQ Option may advertise regular FX as e.g. GBPAUD-op. Validate the raw
+                # name first so OTC/HC stay excluded; use the canonical base for candles
+                # and preserve the exact broker name separately for order submission.
                 normalized_name = regular_fx_base_name(raw_name)
                 if normalized_name:
                     candidates.add(normalized_name)
@@ -616,7 +615,7 @@ def execute_signal(signal):
     order_asset = ORDER_ASSET_BY_BASE.get(asset)
     if not order_asset:
         logging.warning("Skipping %s: no broker active identifier was captured for this FX pair.", asset)
-        telegram_send(f"⚠️ ORDER SKIPPED\\n{display_asset(asset)} {direction.upper()}\\nNo exact broker active identifier was found; no order was sent.")
+        telegram_send(f"⚠️ ORDER SKIPPED\n{display_asset(asset)} {direction.upper()}\nNo exact broker active identifier was found; no order was sent.")
         return False
     candle_time = int(signal.get("candle_time") or time.time())
     age = time.time() - candle_time
