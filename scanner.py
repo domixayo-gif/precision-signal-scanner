@@ -228,8 +228,10 @@ def get_asset_names():
                 if not isinstance(active, dict):
                     continue
                 total_binary_turbo += 1
-                # Only take enabled, unsuspended binary/turbo instruments.
-                if active.get("enabled") is not True or active.get("is_suspended") is not False:
+                # IQ Option payloads may encode flags as booleans or 1/0 strings/integers.
+                enabled_flag = str(active.get("enabled", "")).strip().lower() in ("true", "1")
+                unsuspended_flag = str(active.get("is_suspended", "")).strip().lower() in ("false", "0")
+                if not enabled_flag or not unsuspended_flag:
                     continue
                 raw_name = str(active.get("name", "")).strip()
                 if "." in raw_name:
