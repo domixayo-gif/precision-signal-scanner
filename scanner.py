@@ -385,11 +385,11 @@ def send_signal(signal, manual=False):
     entry = int(signal.get("entry_time", signal.get("candle_time", time.time())))
     sid = f"AC-{signal.get('asset','UNKNOWN')}-{signal['direction'].upper()}-{int(signal.get('candle_time',time.time()))}"
     telegram_send(
-        f"📣 ALMA + CHOP SIGNAL\\n{display_asset(signal.get('asset'))} — {direction}\\n"
-        f"Signal ID: {sid}\\nEntry: {lagos_time(entry)}\\nExpiry: 1 minute | Stake: $1\\n"
-        f"ALMA 7: {signal.get('alma_fast', 0):.6f} | ALMA 12: {signal.get('alma_slow', 0):.6f}\\n"
-        f"CHOP(2): {signal.get('chop', 0):.1f} | filter: below {CHOP_MAX:.1f}\\n"
-        f"Setup ranking: {signal.get('score', 0)}/100 (not win probability)\\n"
+        f"📣 ALMA + CHOP SIGNAL\n{display_asset(signal.get('asset'))} — {direction}\n"
+        f"Signal ID: {sid}\nEntry: {lagos_time(entry)}\nExpiry: 1 minute | Stake: $1\n"
+        f"ALMA 7: {signal.get('alma_fast', 0):.6f} | ALMA 12: {signal.get('alma_slow', 0):.6f}\n"
+        f"CHOP(2): {signal.get('chop', 0):.1f} | filter: below {CHOP_MAX:.1f}\n"
+        f"Setup ranking: {signal.get('score', 0)}/100 (not win probability)\n"
         f"{'MANUAL SCAN — no trade placed.' if manual else 'AUTO MODE — practice order checked before placement.'}"
     )
 
@@ -543,7 +543,7 @@ def execute_signal(signal):
     if not success or order_id is None or str(order_id) == "":
         logging.info("Practice order rejected for %s: %r", asset, response)
         detail = str(response[1] if len(response) > 1 else "broker returned no order ID")
-        detail = re.sub(r"[\\r\\n]+", " ", detail)[:220]
+        detail = re.sub(r"[\\r\n]+", " ", detail)[:220]
         telegram_send(f"⚪ ORDER REJECTED\n{display_asset(asset)} {direction.upper()}\nNo trade was confirmed.\nBroker response: {detail}")
         return False
     telegram_send(f"🟡 PRACTICE ORDER ACCEPTED\n{display_asset(asset)} — {direction.upper()}\nOrder ID: {order_id}\nStake: $1 | Expiry: 1 minute\nThis bot does not record wins or losses.")
@@ -570,7 +570,7 @@ def status_message():
     except Exception:
         connected = practice = False
     age = f"{int(time.time()-LAST_SCAN_FINISHED)} seconds ago" if LAST_SCAN_FINISHED else "Not completed yet"
-    return (f"📊 MOMENTUM 10 STATUS\nConnection: {'CONNECTED' if connected else 'DISCONNECTED'}\n"
+    return (f"📊 ALMA + CHOP STATUS\nConnection: {'CONNECTED' if connected else 'DISCONNECTED'}\n"
             f"Practice verification: {'OK' if practice else 'NOT VERIFIED'}\nBalance: {balance}\n"
             f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nStake: $1 | Expiry: 1 minute\n"
             f"Discovered assets: {LAST_ASSET_COUNT}\nLast scan: {age}\n"
@@ -665,7 +665,7 @@ def heartbeat():
     if time.time() - LAST_HEARTBEAT < HEARTBEAT_SECONDS:
         return
     LAST_HEARTBEAT = time.time()
-    telegram_send(f"💓 MOMENTUM 10 HEARTBEAT\nAccount: PRACTICE ONLY\n"
+    telegram_send(f"💓 ALMA + CHOP HEARTBEAT\nAccount: PRACTICE ONLY\n"
                   f"Connection: {'OK' if practice_mode_verified() else 'NOT VERIFIED'}\n"
                   f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\n"
                   f"Discovered assets: {LAST_ASSET_COUNT}\nLast scan: {LAST_SCAN_SCANNED}/{LAST_SCAN_TOTAL}\n"
@@ -675,7 +675,7 @@ def heartbeat():
 
 def main():
     global RUNNING, MANUAL_SCAN_REQUESTED
-    telegram_send("🚀 MOMENTUM 10 STARTING\nPRACTICE-only scanner is connecting.\nManual SCAN MARKET sends signals only and never places trades.\nNo win/loss tracking or trade-history recording.")
+    telegram_send("🚀 ALMA + CHOP STARTING\nPRACTICE-only scanner is connecting.\nManual SCAN MARKET sends signals only and never places trades.\nNo win/loss tracking or trade-history recording.")
     threading.Thread(target=telegram_listener, daemon=True, name="telegram-listener").start()
     while RUNNING:
         try:
