@@ -201,12 +201,38 @@ def regular_fx_base_name(asset):
     return name if name[:3] in currencies and name[3:] in currencies and name[:3] != name[3:] else ""
 
 
+def otc_fx_asset_name(asset):
+    """Return a normalized six-letter OTC FX symbol, e.g. CADCHF-OTC; reject stocks/HC."""
+    raw = str(asset or "").strip().upper().replace("/", "").replace(" ", "")
+    if re.search(r"(?:^|[-_])HC(?:$|[-_])", raw):
+        return ""
+    if "." in raw:
+        raw = raw.rsplit(".", 1)[1]
+    # Some feeds append -op after the market suffix; accept either ordering.
+    if raw.endswith("-OP"):
+        raw = raw[:-3]
+    if not raw.endswith("-OTC"):
+        return ""
+    base = raw[:-4].replace("-", "").replace("_", "")
+    if not re.fullmatch(r"[A-Z]{6}", base):
+        return ""
+    currencies = {
+        "USD", "EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD", "SGD",
+        "HKD", "NOK", "SEK", "MXN", "TRY", "ZAR", "PLN", "CZK", "HUF",
+        "DKK", "CNH", "THB", "INR", "BRL", "IDR", "MYR", "PHP", "NGN",
+        "AED", "SAR"
+    }
+    if base[:3] not in currencies or base[3:] not in currencies or base[:3] == base[3:]:
+        return ""
+    return base + "-OTC"
+
+
 def is_supported_binary_asset(asset):
-    """Only regular FX pairs; reject OTC and HC instruments before normalization."""
-    return bool(regular_fx_base_name(asset))
+    """Only OTC FX pairs are enabled for this test; reject regular FX and non-FX OTC."""
+    return bool(otc_fx_asset_name(asset))
 
 def get_asset_names():
-    """Discover regular FX pairs from IQ Option's binary/turbo initialization payloads."""
+    """Discover available OTC FX pairs from IQ Option binary/turbo/blitz initialization feeds."""
     global IQ, LAST_DISCOVERY_DIAGNOSTICS, ORDER_ASSET_BY_BASE
     client = IQ
     if client is None:
@@ -284,13 +310,13 @@ def get_asset_names():
         order_asset_by_base = {}
         order_asset_priority = {}
         active_id_priority = {}
-        raw_fx_seen = 0
-        disabled_fx_seen = 0
-        suspended_fx_seen = 0
-        raw_fx_samples = []
+        raw_otc_seen = 0
+        disabled_otc_seen = 0
+        suspended_otc_seen = 0
+        raw_otc_samples = []
         for table_path, entries in active_tables:
-            # Some IQ Option sessions publish regular FX pairs in blitz instead
-            # of binary/turbo. Search all three explicit market tables.
+            # OTC FX may appear in binary, turbo, or blitz depending on the session.
+            # Search only these explicit market tables; no arbitrary instruments.
             market_path = table_path.lower()
             if not any(market in market_path for market in ("binary", "turbo", "blitz")):
                 continue
@@ -304,29 +330,26 @@ def get_asset_names():
                 enabled_text = str(enabled).strip().lower()
                 suspended_text = str(suspended).strip().lower()
                 raw_name = str(active.get("name", "")).strip()
-                # Count FX-like names before availability flags so diagnostics can tell
-                # whether zero candidates means naming/parser failure or all pairs disabled.
-                raw_normalized_name = regular_fx_base_name(raw_name)
+                # Count OTC FX names before availability flags for useful diagnostics.
+                raw_normalized_name = otc_fx_asset_name(raw_name)
                 if raw_normalized_name:
-                    raw_fx_seen += 1
+                    raw_otc_seen += 1
                     if enabled_text in ("false", "0", "no"):
-                        disabled_fx_seen += 1
+                        disabled_otc_seen += 1
                     if suspended_text in ("true", "1", "yes"):
-                        suspended_fx_seen += 1
-                    if len(raw_fx_samples) < 8:
-                        raw_fx_samples.append({"name": raw_name, "enabled": enabled, "suspended": suspended})
+                        suspended_otc_seen += 1
+                    if len(raw_otc_samples) < 8:
+                        raw_otc_samples.append({"name": raw_name, "enabled": enabled, "suspended": suspended})
                 # Do not submit orders for assets the broker explicitly marks disabled or suspended.
                 if enabled_text in ("false", "0", "no") or suspended_text in ("true", "1", "yes"):
                     continue
-                # IQ Option may advertise regular FX as e.g. GBPAUD-op. Validate the raw
-                # name first so OTC/HC stay excluded; use the canonical base for candles
-                # and preserve the exact broker name separately for order submission.
-                normalized_name = regular_fx_base_name(raw_name)
+                # Accept only enabled OTC FX symbols. Use the normalized OTC name for
+                # candle requests and preserve the exact broker-provided name for orders.
+                normalized_name = otc_fx_asset_name(raw_name)
                 if normalized_name:
                     candidates.add(normalized_name)
                     # stable_api.buy() resolves the exact active key in OP_code.ACTIVES.
-                    # Keep the broker-provided suffix (e.g. AUDCHF-op) for orders,
-                    # while the scanner continues using the canonical six-letter base for candles.
+                    # Keep the broker-provided OTC name for orders and candles.
                     broker_name = raw_name.rsplit(".", 1)[-1].strip()
                     previous = order_asset_by_base.get(normalized_name, "")
                     if broker_name and (not previous or source_priority >= order_asset_priority.get(normalized_name, 0)):
@@ -368,13 +391,13 @@ def get_asset_names():
         LAST_DISCOVERY_DIAGNOSTICS = (
             f"payload={type(data).__name__}; root_keys={list(data.keys())[:15]}; "
             f"active_paths={table_paths}; market_entries={total_actives}; "
-            f"FX_candidates={len(supported)}; raw_FX_names={raw_fx_seen}; "
-            f"disabled_FX={disabled_fx_seen}; suspended_FX={suspended_fx_seen}; "
-            f"raw_FX_samples={raw_fx_samples}; sample={sample_names}"
+            f"OTC_FX_candidates={len(supported)}; raw_OTC_FX_names={raw_otc_seen}; "
+            f"disabled_OTC_FX={disabled_otc_seen}; suspended_OTC_FX={suspended_otc_seen}; "
+            f"raw_OTC_FX_samples={raw_otc_samples}; sample={sample_names}"
         )[:1200]
         logging.info("Asset discovery diagnostic: %s", LAST_DISCOVERY_DIAGNOSTICS)
         logging.info(
-            "Asset discovery: active_tables=%d binary/turbo entries=%d regular_FX_candidates=%d",
+            "Asset discovery: active_tables=%d binary/turbo/blitz entries=%d OTC_FX_candidates=%d",
             len(active_tables), total_actives, len(supported)
         )
         return supported
@@ -555,7 +578,7 @@ def scan_market(manual=False, auto_eligible=False):
             timed_out = IQ is None
             error_text = "Asset discovery timed out or IQ Option returned zero symbols."
             logging.error("Zero supported assets. %s", LAST_DISCOVERY_DIAGNOSTICS)
-            telegram_send(f"⚠️ ASSET DISCOVERY DIAGNOSTIC\nNo regular FX assets found.\n{LAST_DISCOVERY_DIAGNOSTICS}\nAUTO MODE remains OFF; no trade placed.", keyboard=False)
+            telegram_send(f"⚠️ OTC ASSET DISCOVERY DIAGNOSTIC\nNo available OTC FX assets found.\n{LAST_DISCOVERY_DIAGNOSTICS}\nAUTO MODE remains OFF; no trade placed.", keyboard=False)
             return
         start = ASSET_CURSOR % total
         batch = [assets[(start+i) % total] for i in range(min(MAX_SYMBOLS_PER_SCAN, total))]
