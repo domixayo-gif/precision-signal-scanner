@@ -174,21 +174,33 @@ def ensure_connection():
             return False
 
 
-def is_supported_binary_asset(asset):
-    """Only regular FX pairs; reject OTC and HC instruments before normalization."""
+def regular_fx_base_name(asset):
+    """Return the six-letter FX base for known IQ Option naming variants, else empty."""
     raw = str(asset or "").strip().upper().replace("/", "").replace(" ", "")
+    # Explicitly reject OTC and HC before removing any known platform prefixes/suffixes.
     if "OTC" in raw or re.search(r"(?:^|[-_])HC(?:$|[-_])", raw):
-        return False
+        return ""
+    if "." in raw:
+        raw = raw.rsplit(".", 1)[1]
+    # IQ Option's binary/turbo init feed can label a regular FX active as EURNZD-op.
+    # Keep that exact active name for candle requests, but validate its FX base.
+    if raw.endswith("-OP"):
+        raw = raw[:-3]
     name = raw.replace("-", "").replace("_", "")
     if not re.fullmatch(r"[A-Z]{6}", name):
-        return False
+        return ""
     currencies = {
         "USD", "EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD", "SGD",
         "HKD", "NOK", "SEK", "MXN", "TRY", "ZAR", "PLN", "CZK", "HUF",
         "DKK", "CNH", "THB", "INR", "BRL", "IDR", "MYR", "PHP", "NGN",
         "AED", "SAR"
     }
-    return name[:3] in currencies and name[3:] in currencies and name[:3] != name[3:]
+    return name if name[:3] in currencies and name[3:] in currencies and name[:3] != name[3:] else ""
+
+
+def is_supported_binary_asset(asset):
+    """Only regular FX pairs; reject OTC and HC instruments before normalization."""
+    return bool(regular_fx_base_name(asset))
 
 def get_asset_names():
     """Discover regular FX pairs from IQ Option's binary/turbo initialization payloads."""
@@ -282,10 +294,10 @@ def get_asset_names():
                 if enabled_text in ("false", "0", "no") or suspended_text in ("true", "1", "yes"):
                     continue
                 raw_name = str(active.get("name", "")).strip()
-                if "." in raw_name:
-                    raw_name = raw_name.split(".", 1)[1].strip()
+                # Preserve the exact active name (including a known -op suffix) for
+                # IQ Option candle lookup; validate only its normalized FX base.
                 if raw_name and is_supported_binary_asset(raw_name):
-                    candidates.add(raw_name)
+                    candidates.add(raw_name.rsplit(".", 1)[-1].strip())
 
         # If the expected tables are missing, record payload structure for the next diagnosis.
         if not active_tables or total_actives == 0:
@@ -452,6 +464,8 @@ def display_asset(asset):
     name = str(asset or "").strip()
     otc = bool(re.search(r"(?:[-_\s]?OTC)$", name, re.IGNORECASE))
     base = re.sub(r"(?:[-_\s]?OTC)$", "", name, flags=re.IGNORECASE).strip()
+    base = re.sub(r"-op$", "", base, flags=re.IGNORECASE)
+    base = base.rsplit(".", 1)[-1]
     if len(base) == 6 and base.isalpha():
         base = base[:3].upper() + "/" + base[3:].upper()
     else:
