@@ -39,6 +39,8 @@ LAST_ASSET_COUNT = LAST_SCAN_SCANNED = LAST_SCAN_TOTAL = LAST_SCAN_CANDIDATES = 
 LAST_SCAN_TIMED_OUT, LAST_SCAN_ERROR = False, ""
 LAST_REJECTIONS = {}
 LAST_DISCOVERY_DIAGNOSTICS = "Not collected yet"
+# Broker order names may include a suffix such as EURNZD-op; candles use the normalized FX base.
+ORDER_ASSET_BY_BASE = {}
 
 
 def utc_now():
@@ -204,7 +206,7 @@ def is_supported_binary_asset(asset):
 
 def get_asset_names():
     """Discover regular FX pairs from IQ Option's binary/turbo initialization payloads."""
-    global IQ, LAST_DISCOVERY_DIAGNOSTICS
+    global IQ, LAST_DISCOVERY_DIAGNOSTICS, ORDER_ASSET_BY_BASE
     client = IQ
     if client is None:
         return []
@@ -277,6 +279,7 @@ def get_asset_names():
         walk(data)
         total_actives = 0
         candidates = set()
+        order_asset_by_base = {}
         for table_path, entries in active_tables:
             # Only accept active tables associated with binary/turbo market sections.
             if not any(market in table_path.lower() for market in ("binary", "turbo")):
@@ -301,6 +304,13 @@ def get_asset_names():
                 normalized_name = regular_fx_base_name(raw_name)
                 if normalized_name:
                     candidates.add(normalized_name)
+                    # stable_api.buy() resolves the exact active key in OP_code.ACTIVES.
+                    # Keep the broker-provided suffix (e.g. AUDCHF-op) for orders,
+                    # while the scanner continues using the canonical six-letter base for candles.
+                    broker_name = raw_name.rsplit(".", 1)[-1].strip()
+                    previous = order_asset_by_base.get(normalized_name, "")
+                    if broker_name and (not previous or broker_name.upper().endswith("-OP")):
+                        order_asset_by_base[normalized_name] = broker_name
 
         # If the expected tables are missing, record payload structure for the next diagnosis.
         if not active_tables or total_actives == 0:
@@ -310,6 +320,7 @@ def get_asset_names():
                 [path for path, _ in active_tables][:20]
             )
         supported = sorted(candidates)
+        ORDER_ASSET_BY_BASE = dict(order_asset_by_base)
         table_paths = [path for path, _ in active_tables][:12]
         sample_names = []
         for table_path, entries in active_tables:
@@ -601,6 +612,12 @@ def execute_signal(signal):
         return False
     asset = str(signal.get("asset", ""))
     direction = str(signal.get("direction", "")).lower()
+    # Candles use canonical FX names; the IQ Option order API needs its exact active key.
+    order_asset = ORDER_ASSET_BY_BASE.get(asset)
+    if not order_asset:
+        logging.warning("Skipping %s: no broker active identifier was captured for this FX pair.", asset)
+        telegram_send(f"⚠️ ORDER SKIPPED\\n{display_asset(asset)} {direction.upper()}\\nNo exact broker active identifier was found; no order was sent.")
+        return False
     candle_time = int(signal.get("candle_time") or time.time())
     age = time.time() - candle_time
     if age > MAX_SIGNAL_AGE_SECONDS or age < -5:
@@ -618,7 +635,7 @@ def execute_signal(signal):
                 result_queue.put(("safety", "PRACTICE verification failed"))
                 return
             with client_api_lock(client):
-                response = client.buy(STAKE, asset, direction, EXPIRY_MINUTES)
+                response = client.buy(STAKE, order_asset, direction, EXPIRY_MINUTES)
             result_queue.put(("result", response))
         except Exception as exc:
             try:
@@ -647,7 +664,7 @@ def execute_signal(signal):
         telegram_send(f"⚪ ORDER REJECTED\n{display_asset(asset)} {direction.upper()}\nNo trade was confirmed.\nBroker response: {detail}")
         return False
     telegram_send(f"🟡 PRACTICE ORDER ACCEPTED\n{display_asset(asset)} — {direction.upper()}\nOrder ID: {order_id}\nStake: $1 | Expiry: 1 minute\nThis bot does not record wins or losses.")
-    logging.info("Practice order accepted for %s; order id=%s", asset, order_id)
+    logging.info("Practice order accepted for %s (broker active %s); order id=%s", asset, order_asset, order_id)
     return True
 
 
