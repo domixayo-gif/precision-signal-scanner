@@ -3,12 +3,14 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from iqoptionapi.stable_api import IQ_Option
 
-# MOMENTUM 10 — PRACTICE ONLY. Manual scans never place trades.
-BOT_NAME = "Momentum 10 IQ Option Scanner"
+# ALMA + CHOP — PRACTICE ONLY. Manual scans never place trades.
+BOT_NAME = "ALMA + Choppiness IQ Option Scanner"
 AUTO_TRADING_ALLOWED = True
 STAKE, EXPIRY_MINUTES, CANDLE_SECONDS, LOOKBACK_CANDLES = 1.0, 1, 60, 50
-# Keep the existing strategy filters unchanged.
-MOMENTUM_PERIOD, EXTREME_PERCENTILE, MIN_TURN_DISTANCE = 10, 0.08, 0.06
+# TradingView-style ALMA settings; standard offset/sigma used because the video did not specify them.
+ALMA_FAST, ALMA_SLOW, ALMA_OFFSET, ALMA_SIGMA = 7, 12, 0.85, 6.0
+CHOP_PERIOD, CHOP_MAX = 2, 59.9
+CHOP_LOWER_BAND, CHOP_MIDDLE_BAND, CHOP_UPPER_BAND = 38.2, 50.0, 61.8
 SCAN_INTERVAL_SECONDS, REQUEST_PAUSE_SECONDS, RECONNECT_SECONDS = 60, 0.12, 30
 HEARTBEAT_SECONDS, REQUEST_TIMEOUT = 300, 15
 MAX_SYMBOLS_PER_SCAN, TOP_SIGNALS, PROGRESS_EVERY = 40, 3, 10
@@ -133,7 +135,7 @@ def connect_iq(timeout=40):
     IQ = result[1]
     balance = result[2]
     logging.info("Connected in PRACTICE. Balance %s", money(balance))
-    telegram_send(f"🟢 MOMENTUM 10 CONNECTED\nAccount: PRACTICE ONLY\nBalance: {money(balance)}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nExpiry: 1 minute | Stake: $1\nManual scans never place trades.")
+    telegram_send(f"🟢 ALMA + CHOP CONNECTED\nAccount: PRACTICE ONLY\nBalance: {money(balance)}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nExpiry: 1 minute | Stake: $1\nManual scans never place trades.")
 
 def practice_mode_verified(timeout=15):
     client = IQ
@@ -172,11 +174,11 @@ def ensure_connection():
 
 
 def is_supported_binary_asset(asset):
-    # Restrict AUTO orders to recognizable FX pairs (including OTC). IQ Option's
-    # active list also contains stocks and other instruments that binary buy()
-    # rejects, such as FIS:US, Ferrari, GS, MMM:US, and MA:US.
-    name = str(asset or "").strip().upper().replace("/", "").replace(" ", "")
-    name = re.sub(r"[-_]?OTC$", "", name)
+    """Only regular FX pairs; reject OTC and HC instruments before normalization."""
+    raw = str(asset or "").strip().upper().replace("/", "").replace(" ", "")
+    if "OTC" in raw or re.search(r"(?:^|[-_])HC(?:$|[-_])", raw):
+        return False
+    name = raw.replace("-", "").replace("_", "")
     if not re.fullmatch(r"[A-Z]{6}", name):
         return False
     currencies = {
@@ -186,7 +188,6 @@ def is_supported_binary_asset(asset):
         "AED", "SAR"
     }
     return name[:3] in currencies and name[3:] in currencies and name[:3] != name[3:]
-
 
 def get_asset_names():
     client = IQ
@@ -278,56 +279,87 @@ def fetch_candles(asset):
     return cleaned
 
 
+def alma_series(values, length, offset=ALMA_OFFSET, sigma=ALMA_SIGMA):
+    """Arnaud Legoux Moving Average with TradingView's common defaults."""
+    if len(values) < length:
+        return None
+    m = offset * (length - 1)
+    s = length / sigma
+    weights = [math.exp(-((i - m) ** 2) / (2 * s * s)) for i in range(length)]
+    total = sum(weights)
+    if total <= 0:
+        return None
+    return sum(values[-length + i] * weights[i] for i in range(length)) / total
+
+
+def choppiness_index(candles, period=CHOP_PERIOD):
+    """Standard Choppiness Index; returns a 0..100 value or None if undefined."""
+    if len(candles) < period + 1:
+        return None
+    recent = candles[-period:]
+    true_ranges = []
+    for i, candle in enumerate(recent):
+        if len(candles) - period + i == 0:
+            previous_close = candle["close"]
+        else:
+            previous_close = candles[len(candles) - period + i - 1]["close"]
+        true_ranges.append(max(
+            candle["high"] - candle["low"],
+            abs(candle["high"] - previous_close),
+            abs(candle["low"] - previous_close)
+        ))
+    total_tr = sum(true_ranges)
+    highest = max(c["high"] for c in recent)
+    lowest = min(c["low"] for c in recent)
+    span = highest - lowest
+    if total_tr <= 0 or span <= 0:
+        return None
+    value = 100.0 * math.log10(total_tr / span) / math.log10(period)
+    return max(0.0, min(100.0, value))
+
+
 def calculate_signal(asset, candles):
-    if len(candles) < MOMENTUM_PERIOD + 3:
-        return None, "insufficient candles"
+    # A crossover requires the fast/slow ALMA relationship on two closed candles.
+    if len(candles) < ALMA_SLOW + 2:
+        return None, "insufficient candles for ALMA 12 / crossover"
     closes = [c["close"] for c in candles]
-    opens = [c["open"] for c in candles]
-    highs = [c["high"] for c in candles]
-    lows = [c["low"] for c in candles]
-    current, previous, old = closes[-1], closes[-2], closes[-1-MOMENTUM_PERIOD]
-    if old <= 0:
-        return None, "invalid reference price"
-    momentum = (current - old) / old
-    ranges = [highs[i] - lows[i] for i in range(max(0, len(candles)-14), len(candles))]
-    average_range = sum(ranges) / len(ranges) if ranges else 0.0
-    if average_range <= 0:
-        return None, "no usable candle range"
-    candle_range = highs[-1] - lows[-1]
-    if candle_range <= 0:
-        return None, "flat latest candle"
-    body = abs(current - opens[-1]) / candle_range
-    upper = (highs[-1] - current) / candle_range
-    lower = (current - lows[-1]) / candle_range
-    if momentum < 0:
-        if current <= opens[-1]:
-            return None, "no bullish reversal after downward momentum"
-        turn, direction = lower, "call"
-    elif momentum > 0:
-        if current >= opens[-1]:
-            return None, "no bearish reversal after upward momentum"
-        turn, direction = upper, "put"
+    fast_now = alma_series(closes, ALMA_FAST)
+    slow_now = alma_series(closes, ALMA_SLOW)
+    fast_prev = alma_series(closes[:-1], ALMA_FAST)
+    slow_prev = alma_series(closes[:-1], ALMA_SLOW)
+    if None in (fast_now, slow_now, fast_prev, slow_prev):
+        return None, "ALMA unavailable"
+    chop = choppiness_index(candles, CHOP_PERIOD)
+    if chop is None:
+        return None, "CHOP unavailable (flat range)"
+    if chop >= CHOP_MAX:
+        return None, f"CHOP too high ({chop:.1f} >= {CHOP_MAX:.1f}); ranging market"
+    crossed_up = fast_prev <= slow_prev and fast_now > slow_now
+    crossed_down = fast_prev >= slow_prev and fast_now < slow_now
+    if crossed_up:
+        direction = "call"
+    elif crossed_down:
+        direction = "put"
     else:
-        return None, "zero momentum"
-    if turn < MIN_TURN_DISTANCE:
-        return None, "reversal distance too small"
-    normalized = abs(current - old) / average_range
-    if normalized < EXTREME_PERCENTILE:
-        return None, "momentum not extreme enough"
-    if direction == "call" and current <= previous:
-        return None, "bullish reversal lacks close confirmation"
-    if direction == "put" and current >= previous:
-        return None, "bearish reversal lacks close confirmation"
-    score = 50 + (10 if normalized >= 0.5 else 0) + (10 if normalized >= 1.0 else 0) + (10 if body >= 0.4 else 0) + (10 if body >= 0.65 else 0) + (5 if turn >= 0.3 else 0) + (5 if turn >= 0.5 else 0)
+        return None, "no fresh ALMA 7/12 crossover"
+    candle = candles[-1]
     try:
-        candle_time = int(candles[-1].get("from") or time.time())
+        candle_time = int(candle.get("from") or time.time())
     except Exception:
         candle_time = int(time.time())
-    return {"asset":asset, "direction":direction, "score":min(score,100),
-            "momentum":momentum, "normalized_momentum":normalized, "body_ratio":body,
-            "turn_distance":turn, "price":current, "candle_time":candle_time,
-            "time":utc_now().strftime("%H:%M:%S UTC")}, ""
-
+    # This is a setup-quality ranking, not a probability of winning.
+    score = int(round(100.0 - chop))
+    return {
+        "asset": asset,
+        "direction": direction,
+        "score": score,
+        "alma_fast": fast_now,
+        "alma_slow": slow_now,
+        "chop": chop,
+        "price": closes[-1],
+        "candle_time": candle_time,
+        "time": utc_now().strftime("%H:%M:%S UTC")
+    }, ""
 
 def lagos_time(timestamp):
     try:
@@ -351,9 +383,15 @@ def display_asset(asset):
 def send_signal(signal, manual=False):
     direction = "CALL 🟢" if signal["direction"] == "call" else "PUT 🔴"
     entry = int(signal.get("entry_time", signal.get("candle_time", time.time())))
-    sid = f"M10-{signal.get('asset','UNKNOWN')}-{signal['direction'].upper()}-{int(signal.get('candle_time',time.time()))}"
-    telegram_send(f"📣 MOMENTUM 10 SIGNAL\n{display_asset(signal.get('asset'))} — {direction}\nSignal ID: {sid}\nEntry: {lagos_time(entry)}\nExpiry: 1 minute\nScore: {signal.get('score',0)}/100\n{'MANUAL SCAN — no trade placed.' if manual else 'AUTO MODE — order will be checked before placement.'}\nScore is not win probability.")
-
+    sid = f"AC-{signal.get('asset','UNKNOWN')}-{signal['direction'].upper()}-{int(signal.get('candle_time',time.time()))}"
+    telegram_send(
+        f"📣 ALMA + CHOP SIGNAL\\n{display_asset(signal.get('asset'))} — {direction}\\n"
+        f"Signal ID: {sid}\\nEntry: {lagos_time(entry)}\\nExpiry: 1 minute | Stake: $1\\n"
+        f"ALMA 7: {signal.get('alma_fast', 0):.6f} | ALMA 12: {signal.get('alma_slow', 0):.6f}\\n"
+        f"CHOP(2): {signal.get('chop', 0):.1f} | filter: below {CHOP_MAX:.1f}\\n"
+        f"Setup ranking: {signal.get('score', 0)}/100 (not win probability)\\n"
+        f"{'MANUAL SCAN — no trade placed.' if manual else 'AUTO MODE — practice order checked before placement.'}"
+    )
 
 def scan_market(manual=False, auto_eligible=False):
     global SCAN_IN_PROGRESS, ASSET_CURSOR, LAST_ASSET_COUNT, LAST_SCAN_FINISHED
@@ -396,30 +434,22 @@ def scan_market(manual=False, auto_eligible=False):
                 continue
             timeouts = 0
             scanned += 1
-            if len(candles) < MOMENTUM_PERIOD + 4:
+            if len(candles) < ALMA_SLOW + 3:
                 rejected["no candles/unavailable"] = rejected.get("no candles/unavailable", 0) + 1
-            elif manual:
-                # Evaluate the forming candle for an advance warning; report only.
-                signal, reason = calculate_signal(asset, candles)
-                if signal:
-                    signal["entry_time"] = int(signal.get("candle_time", time.time())) + CANDLE_SECONDS
-                    if signal["entry_time"] - time.time() >= 8:
-                        if LAST_SIGNAL_BY_ASSET.get(asset) != str(signal["candle_time"]):
-                            results.append(signal)
-                            LAST_SIGNAL_BY_ASSET[asset] = str(signal["candle_time"])
-                            # Send promptly; waiting for the whole batch can make a warning stale.
-                            if len(results) <= TOP_SIGNALS:
-                                send_signal(signal, manual=True)
-                    else:
-                        rejected["setup too close to candle close"] = rejected.get("setup too close to candle close", 0) + 1
-                else:
-                    rejected[reason] = rejected.get(reason, 0) + 1
             else:
-                # Automatic entries use only fully closed candles.
-                signal, reason = calculate_signal(asset, candles[:-1])
+                # Use closed candles for both manual alerts and AUTO to avoid repainting.
+                closed_candles = candles[:-1]
+                signal, reason = calculate_signal(asset, closed_candles)
                 if signal:
                     if LAST_SIGNAL_BY_ASSET.get(asset) != str(signal["candle_time"]):
-                        results.append(signal)
+                        signal["entry_time"] = int(signal.get("candle_time", time.time())) + CANDLE_SECONDS
+                        if signal["entry_time"] - time.time() >= 3:
+                            results.append(signal)
+                            LAST_SIGNAL_BY_ASSET[asset] = str(signal["candle_time"])
+                            if manual and len(results) <= TOP_SIGNALS:
+                                send_signal(signal, manual=True)
+                        else:
+                            rejected["closed-candle setup too old for next entry"] = rejected.get("closed-candle setup too old for next entry", 0) + 1
                 else:
                     rejected[reason] = rejected.get(reason, 0) + 1
             if index % PROGRESS_EVERY == 0:
