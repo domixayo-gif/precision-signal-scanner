@@ -1,4 +1,4 @@
-name: Momentum 10 IQ Option Scanner
+name: ALMA + CHOP IQ Option Scanner
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ permissions:
   actions: write
 
 concurrency:
-  group: momentum-10-iq-option-scanner
+  group: alma-chop-iq-option-scanner
   cancel-in-progress: true
 
 jobs:
@@ -44,7 +44,7 @@ jobs:
         run: |
           python -m py_compile scanner.py
 
-      - name: Run Momentum 10 scanner
+      - name: Run ALMA + CHOP scanner
         env:
           IQ_EMAIL: ${{ secrets.IQ_EMAIL }}
           IQ_PASSWORD: ${{ secrets.IQ_PASSWORD }}
