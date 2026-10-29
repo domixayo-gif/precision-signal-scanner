@@ -12,7 +12,7 @@ ALMA_FAST, ALMA_SLOW, ALMA_OFFSET, ALMA_SIGMA = 7, 12, 0.85, 6.0
 CHOP_PERIOD, CHOP_MAX = 2, 59.8
 CHOP_LOWER_BAND, CHOP_MIDDLE_BAND, CHOP_UPPER_BAND = 38.2, 50.0, 61.8
 SCAN_INTERVAL_SECONDS, REQUEST_PAUSE_SECONDS, RECONNECT_SECONDS = 60, 0.12, 30
-HEARTBEAT_SECONDS, REQUEST_TIMEOUT = 300, 15
+HEARTBEAT_SECONDS, REQUEST_TIMEOUT, ASSET_DISCOVERY_TIMEOUT = 300, 15, 40
 MAX_SYMBOLS_PER_SCAN, TOP_SIGNALS, PROGRESS_EVERY = 40, 3, 10
 MAX_SIGNAL_AGE_SECONDS, ORDER_REQUEST_TIMEOUT = 180, 12
 IQ_EMAIL, IQ_PASSWORD = os.getenv("IQ_EMAIL", ""), os.getenv("IQ_PASSWORD", "")
@@ -217,14 +217,14 @@ def get_asset_names():
 
     threading.Thread(target=worker, daemon=True, name="asset-discovery").start()
     try:
-        status, data = result_queue.get(timeout=REQUEST_TIMEOUT)
+        status, data = result_queue.get(timeout=ASSET_DISCOVERY_TIMEOUT)
     except queue.Empty:
-        logging.error("Binary/turbo asset discovery timed out in get_all_init().")
+        logging.error("Binary/turbo asset discovery exceeded %ss; IQ Option init feed may be stalled.", ASSET_DISCOVERY_TIMEOUT)
         if IQ is client:
             IQ = None
         return []
     if status != "ok":
-        logging.warning("get_all_init() asset discovery failed: %s", data)
+        logging.warning("IQ Option init-feed asset discovery failed: %s", data)
         return []
 
     try:
