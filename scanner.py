@@ -446,9 +446,10 @@ def scan_market(manual=False, auto_eligible=False):
                         seconds_to_entry = signal["entry_time"] - time.time()
                         if -10 <= seconds_to_entry <= 5:
                             results.append(signal)
-                            LAST_SIGNAL_BY_ASSET[asset] = str(signal["candle_time"])
-                            if manual and len(results) <= TOP_SIGNALS:
-                                send_signal(signal, manual=True)
+                            if manual:
+                                LAST_SIGNAL_BY_ASSET[asset] = str(signal["candle_time"])
+                                if len(results) <= TOP_SIGNALS:
+                                    send_signal(signal, manual=True)
                         else:
                             rejected["closed-candle setup outside entry window"] = rejected.get("closed-candle setup outside entry window", 0) + 1
                 else:
