@@ -200,7 +200,17 @@ def get_asset_names():
     def worker():
         try:
             with client_api_lock(client):
-                payload = client.get_all_init()
+                # Prefer the v2 initialization feed; some IQ Option sessions populate
+                # this feed while the legacy init-all response is empty or delayed.
+                payload = None
+                v2_method = getattr(client, "get_all_init_v2", None)
+                if callable(v2_method):
+                    try:
+                        payload = v2_method()
+                    except Exception as exc:
+                        logging.warning("get_all_init_v2() discovery failed: %s", exc)
+                if not payload:
+                    payload = client.get_all_init()
                 result_queue.put(("ok", payload))
         except Exception as exc:
             result_queue.put(("error", str(exc)))
