@@ -2,6 +2,7 @@ import os, time, math, logging, threading, traceback, requests, queue, re, json
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from iqoptionapi.stable_api import IQ_Option
+import iqoptionapi.constants as OP_code
 
 # ALMA + CHOP — PRACTICE ONLY. Manual scans never place trades.
 BOT_NAME = "ALMA + Choppiness IQ Option Scanner"
@@ -266,9 +267,10 @@ def get_asset_names():
                 for key, value in node.items():
                     if str(key).lower() == "actives":
                         if isinstance(value, dict):
-                            active_tables.append((path + ".actives", list(value.values())))
+                            # Keep active ID keys so orders use the live broker mapping.
+                            active_tables.append((path + ".actives", list(value.items())))
                         elif isinstance(value, list):
-                            active_tables.append((path + ".actives", value))
+                            active_tables.append((path + ".actives", [(None, item) for item in value]))
                     if isinstance(value, (dict, list)):
                         walk(value, path + "." + str(key))
             elif isinstance(node, list):
@@ -284,12 +286,12 @@ def get_asset_names():
             # Only accept active tables associated with binary/turbo market sections.
             if not any(market in table_path.lower() for market in ("binary", "turbo")):
                 continue
-            for active in entries:
+            for active_key, active in entries:
                 if not isinstance(active, dict):
                     continue
                 total_actives += 1
                 enabled = active.get("enabled")
-                suspended = active.get("is_suspended")
+                suspended = active.get("is_suspended", active.get("suspended"))
                 # Missing flags vary across API versions. Explicit disabled/suspended flags
                 # are rejected; the strict six-letter FX-pair allowlist below remains mandatory.
                 enabled_text = str(enabled).strip().lower()
@@ -310,6 +312,17 @@ def get_asset_names():
                     previous = order_asset_by_base.get(normalized_name, "")
                     if broker_name and (not previous or broker_name.upper().endswith("-OP")):
                         order_asset_by_base[normalized_name] = broker_name
+                    # Refresh the order-name -> active-ID lookup from this live feed.
+                    # The previous code discarded dictionary keys and could leave a stale ID,
+                    # leading to repeated "asset is not available" order rejections.
+                    active_id = active_key
+                    if active_id is None:
+                        active_id = active.get("id", active.get("active_id"))
+                    try:
+                        if broker_name and active_id is not None:
+                            OP_code.ACTIVES[broker_name] = int(active_id)
+                    except (TypeError, ValueError):
+                        logging.debug("Could not map active ID for %s: %r", broker_name, active_id)
 
         # If the expected tables are missing, record payload structure for the next diagnosis.
         if not active_tables or total_actives == 0:
@@ -324,9 +337,9 @@ def get_asset_names():
         sample_names = []
         for table_path, entries in active_tables:
             if any(market in table_path.lower() for market in ("binary", "turbo")):
-                for active in entries:
+                for active_key, active in entries:
                     if isinstance(active, dict):
-                        sample_names.append({"name": active.get("name"), "enabled": active.get("enabled"), "suspended": active.get("is_suspended")})
+                        sample_names.append({"name": active.get("name"), "active_id": active_key if active_key is not None else active.get("id", active.get("active_id")), "enabled": active.get("enabled"), "suspended": active.get("is_suspended", active.get("suspended"))})
                         if len(sample_names) >= 6:
                             break
             if len(sample_names) >= 6:
