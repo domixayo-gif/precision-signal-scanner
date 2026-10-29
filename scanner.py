@@ -294,10 +294,13 @@ def get_asset_names():
                 if enabled_text in ("false", "0", "no") or suspended_text in ("true", "1", "yes"):
                     continue
                 raw_name = str(active.get("name", "")).strip()
-                # Preserve the exact active name (including a known -op suffix) for
-                # IQ Option candle lookup; validate only its normalized FX base.
-                if raw_name and is_supported_binary_asset(raw_name):
-                    candidates.add(raw_name.rsplit(".", 1)[-1].strip())
+                # IQ Option's active list may advertise regular FX as e.g. GBPAUD-op,
+                # while candle and binary order calls use the canonical GBPAUD symbol.
+                # Validate the full raw name first (OTC/HC are rejected), then use its
+                # validated six-letter currency-pair base for candles and any practice order.
+                normalized_name = regular_fx_base_name(raw_name)
+                if normalized_name:
+                    candidates.add(normalized_name)
 
         # If the expected tables are missing, record payload structure for the next diagnosis.
         if not active_tables or total_actives == 0:
