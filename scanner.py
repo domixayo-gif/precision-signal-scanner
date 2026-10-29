@@ -284,6 +284,10 @@ def get_asset_names():
         order_asset_by_base = {}
         order_asset_priority = {}
         active_id_priority = {}
+        raw_fx_seen = 0
+        disabled_fx_seen = 0
+        suspended_fx_seen = 0
+        raw_fx_samples = []
         for table_path, entries in active_tables:
             # Some IQ Option sessions publish regular FX pairs in blitz instead
             # of binary/turbo. Search all three explicit market tables.
@@ -297,13 +301,23 @@ def get_asset_names():
                 total_actives += 1
                 enabled = active.get("enabled")
                 suspended = active.get("is_suspended", active.get("suspended"))
-                # Missing flags vary across API versions. Explicit disabled/suspended flags
-                # are rejected; the strict six-letter FX-pair allowlist below remains mandatory.
                 enabled_text = str(enabled).strip().lower()
                 suspended_text = str(suspended).strip().lower()
+                raw_name = str(active.get("name", "")).strip()
+                # Count FX-like names before availability flags so diagnostics can tell
+                # whether zero candidates means naming/parser failure or all pairs disabled.
+                raw_normalized_name = regular_fx_base_name(raw_name)
+                if raw_normalized_name:
+                    raw_fx_seen += 1
+                    if enabled_text in ("false", "0", "no"):
+                        disabled_fx_seen += 1
+                    if suspended_text in ("true", "1", "yes"):
+                        suspended_fx_seen += 1
+                    if len(raw_fx_samples) < 8:
+                        raw_fx_samples.append({"name": raw_name, "enabled": enabled, "suspended": suspended})
+                # Do not submit orders for assets the broker explicitly marks disabled or suspended.
                 if enabled_text in ("false", "0", "no") or suspended_text in ("true", "1", "yes"):
                     continue
-                raw_name = str(active.get("name", "")).strip()
                 # IQ Option may advertise regular FX as e.g. GBPAUD-op. Validate the raw
                 # name first so OTC/HC stay excluded; use the canonical base for candles
                 # and preserve the exact broker name separately for order submission.
@@ -354,8 +368,10 @@ def get_asset_names():
         LAST_DISCOVERY_DIAGNOSTICS = (
             f"payload={type(data).__name__}; root_keys={list(data.keys())[:15]}; "
             f"active_paths={table_paths}; market_entries={total_actives}; "
-            f"FX_candidates={len(supported)}; sample={sample_names}"
-        )[:900]
+            f"FX_candidates={len(supported)}; raw_FX_names={raw_fx_seen}; "
+            f"disabled_FX={disabled_fx_seen}; suspended_FX={suspended_fx_seen}; "
+            f"raw_FX_samples={raw_fx_samples}; sample={sample_names}"
+        )[:1200]
         logging.info("Asset discovery diagnostic: %s", LAST_DISCOVERY_DIAGNOSTICS)
         logging.info(
             "Asset discovery: active_tables=%d binary/turbo entries=%d regular_FX_candidates=%d",
