@@ -38,6 +38,7 @@ LAST_HEARTBEAT = LAST_SCAN_STARTED = LAST_SCAN_FINISHED = 0
 LAST_ASSET_COUNT = LAST_SCAN_SCANNED = LAST_SCAN_TOTAL = LAST_SCAN_CANDIDATES = ASSET_CURSOR = 0
 LAST_SCAN_TIMED_OUT, LAST_SCAN_ERROR = False, ""
 LAST_REJECTIONS = {}
+LAST_DISCOVERY_DIAGNOSTICS = "Not collected yet"
 
 
 def utc_now():
@@ -191,7 +192,7 @@ def is_supported_binary_asset(asset):
 
 def get_asset_names():
     """Discover regular FX pairs from IQ Option's binary/turbo initialization payloads."""
-    global IQ
+    global IQ, LAST_DISCOVERY_DIAGNOSTICS
     client = IQ
     if client is None:
         return []
@@ -219,11 +220,13 @@ def get_asset_names():
     try:
         status, data = result_queue.get(timeout=ASSET_DISCOVERY_TIMEOUT)
     except queue.Empty:
+        LAST_DISCOVERY_DIAGNOSTICS = f"Init feed did not return within {ASSET_DISCOVERY_TIMEOUT}s (v2/legacy call stalled)."
         logging.error("Binary/turbo asset discovery exceeded %ss; IQ Option init feed may be stalled.", ASSET_DISCOVERY_TIMEOUT)
         if IQ is client:
             IQ = None
         return []
     if status != "ok":
+        LAST_DISCOVERY_DIAGNOSTICS = f"Init feed raised: {str(data)[:180]}"
         logging.warning("IQ Option init-feed asset discovery failed: %s", data)
         return []
 
@@ -231,6 +234,7 @@ def get_asset_names():
         if isinstance(data, str):
             data = json.loads(data)
         if not isinstance(data, dict):
+            LAST_DISCOVERY_DIAGNOSTICS = f"Unexpected payload type: {type(data).__name__}"
             logging.warning("Unexpected IQ Option init payload type: %s", type(data).__name__)
             return []
 
@@ -291,12 +295,30 @@ def get_asset_names():
                 [path for path, _ in active_tables][:20]
             )
         supported = sorted(candidates)
+        table_paths = [path for path, _ in active_tables][:12]
+        sample_names = []
+        for table_path, entries in active_tables:
+            if any(market in table_path.lower() for market in ("binary", "turbo")):
+                for active in entries:
+                    if isinstance(active, dict):
+                        sample_names.append({"name": active.get("name"), "enabled": active.get("enabled"), "suspended": active.get("is_suspended")})
+                        if len(sample_names) >= 6:
+                            break
+            if len(sample_names) >= 6:
+                break
+        LAST_DISCOVERY_DIAGNOSTICS = (
+            f"payload={type(data).__name__}; root_keys={list(data.keys())[:15]}; "
+            f"active_paths={table_paths}; market_entries={total_actives}; "
+            f"FX_candidates={len(supported)}; sample={sample_names}"
+        )[:900]
+        logging.info("Asset discovery diagnostic: %s", LAST_DISCOVERY_DIAGNOSTICS)
         logging.info(
             "Asset discovery: active_tables=%d binary/turbo entries=%d regular_FX_candidates=%d",
             len(active_tables), total_actives, len(supported)
         )
         return supported
     except Exception as exc:
+        LAST_DISCOVERY_DIAGNOSTICS = f"Parser error: {type(data).__name__}: {str(exc)[:180]}"
         logging.warning("Could not parse IQ Option active list (%s): %s", type(data).__name__, exc)
         return []
 
@@ -469,6 +491,8 @@ def scan_market(manual=False, auto_eligible=False):
         if not assets:
             timed_out = IQ is None
             error_text = "Asset discovery timed out or IQ Option returned zero symbols."
+            logging.error("Zero supported assets. %s", LAST_DISCOVERY_DIAGNOSTICS)
+            telegram_send(f"⚠️ ASSET DISCOVERY DIAGNOSTIC\nNo regular FX assets found.\n{LAST_DISCOVERY_DIAGNOSTICS}\nAUTO MODE remains OFF; no trade placed.", keyboard=False)
             return
         start = ASSET_CURSOR % total
         batch = [assets[(start+i) % total] for i in range(min(MAX_SYMBOLS_PER_SCAN, total))]
@@ -637,6 +661,7 @@ def status_message():
             f"Scan in progress: {'YES' if SCAN_IN_PROGRESS else 'NO'}\n"
             f"Last timeout: {'YES' if LAST_SCAN_TIMED_OUT else 'NO'}\n"
             f"Last error: {LAST_SCAN_ERROR or 'None'}\n"
+            f"Asset discovery details: {LAST_DISCOVERY_DIAGNOSTICS}\n"
             f"Top rejection reasons: {'; '.join(f'{k}: {v}' for k,v in LAST_REJECTIONS.items()) or 'No scan data yet'}")
 
 
