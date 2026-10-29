@@ -1,4 +1,4 @@
-import os, time, math, logging, threading, traceback, requests, queue, re
+import os, time, math, logging, threading, traceback, requests, queue, re, json
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from iqoptionapi.stable_api import IQ_Option
@@ -190,59 +190,104 @@ def is_supported_binary_asset(asset):
     return name[:3] in currencies and name[3:] in currencies and name[:3] != name[3:]
 
 def get_asset_names():
+    """Discover regular FX pairs from IQ Option's binary/turbo initialization payloads."""
+    global IQ
     client = IQ
     if client is None:
         return []
     result_queue = queue.Queue(maxsize=1)
+
     def worker():
         try:
-            # Do not use get_all_ACTIVES_OPCODE here: it can include stocks and
-            # other instruments that binary-option buy() cannot trade. Build the
-            # universe only from IQ Option's binary/turbo active tables.
             with client_api_lock(client):
-                init_info = client.get_all_init()
-            result_queue.put(("ok", init_info))
+                payload = client.get_all_init()
+                result_queue.put(("ok", payload))
         except Exception as exc:
             result_queue.put(("error", str(exc)))
+
     threading.Thread(target=worker, daemon=True, name="asset-discovery").start()
     try:
         status, data = result_queue.get(timeout=REQUEST_TIMEOUT)
     except queue.Empty:
-        logging.error("Binary/turbo asset discovery timed out.")
+        logging.error("Binary/turbo asset discovery timed out in get_all_init().")
         if IQ is client:
-            globals()["IQ"] = None
+            IQ = None
         return []
     if status != "ok":
-        logging.warning("Binary/turbo asset discovery failed: %s", data)
+        logging.warning("get_all_init() asset discovery failed: %s", data)
         return []
+
     try:
-        result = data.get("result", {})
+        if isinstance(data, str):
+            data = json.loads(data)
+        if not isinstance(data, dict):
+            logging.warning("Unexpected IQ Option init payload type: %s", type(data).__name__)
+            return []
+
+        # API/library versions differ in where the binary/turbo active tables live.
+        # Search only keys explicitly named 'actives'; never treat arbitrary instruments as tradable.
+        active_tables = []
+        visited = set()
+
+        def walk(node, path="root"):
+            if isinstance(node, dict):
+                identity = id(node)
+                if identity in visited:
+                    return
+                visited.add(identity)
+                for key, value in node.items():
+                    if str(key).lower() == "actives":
+                        if isinstance(value, dict):
+                            active_tables.append((path + ".actives", list(value.values())))
+                        elif isinstance(value, list):
+                            active_tables.append((path + ".actives", value))
+                    if isinstance(value, (dict, list)):
+                        walk(value, path + "." + str(key))
+            elif isinstance(node, list):
+                for index, value in enumerate(node):
+                    if isinstance(value, (dict, list)):
+                        walk(value, f"{path}[{index}]")
+
+        walk(data)
+        total_actives = 0
         candidates = set()
-        total_binary_turbo = 0
-        for market in ("binary", "turbo"):
-            market_data = result.get(market, {})
-            actives = market_data.get("actives", {})
-            if not isinstance(actives, dict):
+        for table_path, entries in active_tables:
+            # Only accept active tables associated with binary/turbo market sections.
+            if not any(market in table_path.lower() for market in ("binary", "turbo")):
                 continue
-            for active in actives.values():
+            for active in entries:
                 if not isinstance(active, dict):
                     continue
-                total_binary_turbo += 1
-                # IQ Option payloads may encode flags as booleans or 1/0 strings/integers.
-                enabled_flag = str(active.get("enabled", "")).strip().lower() in ("true", "1")
-                unsuspended_flag = str(active.get("is_suspended", "")).strip().lower() in ("false", "0")
-                if not enabled_flag or not unsuspended_flag:
+                total_actives += 1
+                enabled = active.get("enabled")
+                suspended = active.get("is_suspended")
+                # Missing flags vary across API versions. Explicit disabled/suspended flags
+                # are rejected; the strict six-letter FX-pair allowlist below remains mandatory.
+                enabled_text = str(enabled).strip().lower()
+                suspended_text = str(suspended).strip().lower()
+                if enabled_text in ("false", "0", "no") or suspended_text in ("true", "1", "yes"):
                     continue
                 raw_name = str(active.get("name", "")).strip()
                 if "." in raw_name:
                     raw_name = raw_name.split(".", 1)[1].strip()
                 if raw_name and is_supported_binary_asset(raw_name):
                     candidates.add(raw_name)
+
+        # If the expected tables are missing, record payload structure for the next diagnosis.
+        if not active_tables or total_actives == 0:
+            logging.warning(
+                "No binary/turbo active entries found. init payload type=%s root_keys=%s active_table_paths=%s",
+                type(data).__name__, list(data.keys())[:30],
+                [path for path, _ in active_tables][:20]
+            )
         supported = sorted(candidates)
-        logging.info("Read %d binary/turbo actives; %d enabled, unsuspended FX candidates.", total_binary_turbo, len(supported))
+        logging.info(
+            "Asset discovery: active_tables=%d binary/turbo entries=%d regular_FX_candidates=%d",
+            len(active_tables), total_actives, len(supported)
+        )
         return supported
     except Exception as exc:
-        logging.warning("Could not parse IQ Option binary/turbo active list: %s", exc)
+        logging.warning("Could not parse IQ Option active list (%s): %s", type(data).__name__, exc)
         return []
 
 
