@@ -1,18 +1,16 @@
-import os, time, math, logging, threading, traceback, requests, queue, re, json
+import os, time, math, logging, threading, traceback, requests, queue, re
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from iqoptionapi.stable_api import IQ_Option
-import iqoptionapi.constants as OP_code
 
-# ALMA + CHOP — PRACTICE ONLY. Manual scans never place trades.
-BOT_NAME = "ALMA + Choppiness IQ Option Scanner"
+# MOMENTUM 10 — PRACTICE ONLY. Manual scans never place trades.
+BOT_NAME = "Momentum 10 IQ Option Scanner"
 AUTO_TRADING_ALLOWED = True
-STAKE, EXPIRY_SECONDS, CANDLE_SECONDS, LOOKBACK_CANDLES = 1.0, 60, 60, 50
-# TradingView-style ALMA settings; standard offset/sigma used because the video did not specify them.
-ALMA_FAST, ALMA_SLOW, ALMA_OFFSET, ALMA_SIGMA = 7, 12, 0.85, 6.0
-CHOP_PERIOD, CHOP_MAX = 2, 59.8
-CHOP_LOWER_BAND, CHOP_MIDDLE_BAND, CHOP_UPPER_BAND = 38.2, 50.0, 61.8
+STAKE, EXPIRY_MINUTES, CANDLE_SECONDS, LOOKBACK_CANDLES = 1.0, 1, 60, 50
+# Keep the existing strategy filters unchanged.
+MOMENTUM_PERIOD, EXTREME_PERCENTILE, MIN_TURN_DISTANCE = 10, 0.08, 0.06
 SCAN_INTERVAL_SECONDS, REQUEST_PAUSE_SECONDS, RECONNECT_SECONDS = 60, 0.12, 30
-HEARTBEAT_SECONDS, REQUEST_TIMEOUT, ASSET_DISCOVERY_TIMEOUT = 300, 15, 40
+HEARTBEAT_SECONDS, REQUEST_TIMEOUT = 300, 15
 MAX_SYMBOLS_PER_SCAN, TOP_SIGNALS, PROGRESS_EVERY = 40, 3, 10
 MAX_SIGNAL_AGE_SECONDS, ORDER_REQUEST_TIMEOUT = 180, 12
 IQ_EMAIL, IQ_PASSWORD = os.getenv("IQ_EMAIL", ""), os.getenv("IQ_PASSWORD", "")
@@ -24,8 +22,6 @@ except Exception:
     logging.warning("Could not disable digital-open discovery.")
 
 IQ, RUNNING, AUTO_MODE = None, True, False
-MARKET_MODE_OVERRIDE = "REGULAR"  # Manual Telegram market selection; defaults to regular FX.
-ACTIVE_MARKET_MODE = ""
 TELEGRAM_OFFSET = None
 STATE_LOCK = threading.RLock()
 CLIENT_LOCKS_GUARD = threading.Lock()
@@ -40,9 +36,6 @@ LAST_HEARTBEAT = LAST_SCAN_STARTED = LAST_SCAN_FINISHED = 0
 LAST_ASSET_COUNT = LAST_SCAN_SCANNED = LAST_SCAN_TOTAL = LAST_SCAN_CANDIDATES = ASSET_CURSOR = 0
 LAST_SCAN_TIMED_OUT, LAST_SCAN_ERROR = False, ""
 LAST_REJECTIONS = {}
-LAST_DISCOVERY_DIAGNOSTICS = "Not collected yet"
-# Broker order names may include a suffix such as EURNZD-op; candles use the normalized FX base.
-ORDER_ASSET_BY_BASE = {}
 
 
 def utc_now():
@@ -79,8 +72,7 @@ def telegram_send(message, keyboard=True):
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": str(message)[:4000], "disable_web_page_preview": True}
     if keyboard:
         payload["reply_markup"] = {"keyboard": [[{"text":"START AUTO"},{"text":"STOP AUTO"}],
-            [{"text":"SCAN MARKET"},{"text":"STATUS"}],
-            [{"text":"USE REGULAR FX"},{"text":"USE OTC FX"}]], "resize_keyboard": True}
+            [{"text":"SCAN MARKET"},{"text":"STATUS"}]], "resize_keyboard": True}
     try:
         response = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
                                  json=payload, timeout=12)
@@ -141,7 +133,7 @@ def connect_iq(timeout=40):
     IQ = result[1]
     balance = result[2]
     logging.info("Connected in PRACTICE. Balance %s", money(balance))
-    telegram_send(f"🟢 ALMA + CHOP CONNECTED\nAccount: PRACTICE ONLY\nBalance: {money(balance)}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nExpiry: 60 seconds | Stake: $1\nManual scans never place trades.")
+    telegram_send(f"🟢 MOMENTUM 10 CONNECTED\nAccount: PRACTICE ONLY\nBalance: {money(balance)}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nExpiry: 1 minute | Stake: $1\nManual scans never place trades.")
 
 def practice_mode_verified(timeout=15):
     client = IQ
@@ -179,255 +171,75 @@ def ensure_connection():
             return False
 
 
-def regular_fx_base_name(asset):
-    """Return the six-letter FX base for known IQ Option naming variants, else empty."""
-    raw = str(asset or "").strip().upper().replace("/", "").replace(" ", "")
-    # Explicitly reject OTC and HC before removing any known platform prefixes/suffixes.
-    if "OTC" in raw or re.search(r"(?:^|[-_])HC(?:$|[-_])", raw):
-        return ""
-    if "." in raw:
-        raw = raw.rsplit(".", 1)[1]
-    # IQ Option's binary/turbo init feed can label a regular FX active as EURNZD-op.
-    # Keep that exact active name for candle requests, but validate its FX base.
-    if raw.endswith("-OP"):
-        raw = raw[:-3]
-    name = raw.replace("-", "").replace("_", "")
-    if not re.fullmatch(r"[A-Z]{6}", name):
-        return ""
-    currencies = {
-        "USD", "EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD", "SGD",
-        "HKD", "NOK", "SEK", "MXN", "TRY", "ZAR", "PLN", "CZK", "HUF",
-        "DKK", "CNH", "THB", "INR", "BRL", "IDR", "MYR", "PHP", "NGN",
-        "AED", "SAR"
-    }
-    return name if name[:3] in currencies and name[3:] in currencies and name[:3] != name[3:] else ""
-
-
-def otc_fx_asset_name(asset):
-    """Return a normalized six-letter OTC FX symbol, e.g. CADCHF-OTC; reject stocks/HC."""
-    raw = str(asset or "").strip().upper().replace("/", "").replace(" ", "")
-    if re.search(r"(?:^|[-_])HC(?:$|[-_])", raw):
-        return ""
-    if "." in raw:
-        raw = raw.rsplit(".", 1)[1]
-    # Some feeds append -op after the market suffix; accept either ordering.
-    if raw.endswith("-OP"):
-        raw = raw[:-3]
-    if not raw.endswith("-OTC"):
-        return ""
-    base = raw[:-4].replace("-", "").replace("_", "")
-    if not re.fullmatch(r"[A-Z]{6}", base):
-        return ""
-    currencies = {
-        "USD", "EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD", "SGD",
-        "HKD", "NOK", "SEK", "MXN", "TRY", "ZAR", "PLN", "CZK", "HUF",
-        "DKK", "CNH", "THB", "INR", "BRL", "IDR", "MYR", "PHP", "NGN",
-        "AED", "SAR"
-    }
-    if base[:3] not in currencies or base[3:] not in currencies or base[:3] == base[3:]:
-        return ""
-    return base + "-OTC"
-
-
-def current_market_mode():
-    """Return the user-selected market; never switch automatically by time."""
-    return MARKET_MODE_OVERRIDE or "REGULAR"
-
-
-def set_market_mode(mode):
-    """Manually select regular FX or OTC FX for subsequent scans."""
-    global MARKET_MODE_OVERRIDE, ACTIVE_MARKET_MODE, ASSET_CURSOR
-    if mode not in ("REGULAR", "OTC"):
-        return False
-    MARKET_MODE_OVERRIDE = mode
-    ACTIVE_MARKET_MODE = mode
-    ASSET_CURSOR = 0
-    return True
-
-
-def market_asset_name(asset, mode=None):
-    selected = mode or current_market_mode()
-    return regular_fx_base_name(asset) if selected == "REGULAR" else otc_fx_asset_name(asset)
-
-
 def is_supported_binary_asset(asset):
-    return bool(market_asset_name(asset))
+    # Restrict AUTO orders to recognizable FX pairs (including OTC). IQ Option's
+    # active list also contains stocks and other instruments that binary buy()
+    # rejects, such as FIS:US, Ferrari, GS, MMM:US, and MA:US.
+    name = str(asset or "").strip().upper().replace("/", "").replace(" ", "")
+    name = re.sub(r"[-_]?OTC$", "", name)
+    if not re.fullmatch(r"[A-Z]{6}", name):
+        return False
+    currencies = {
+        "USD", "EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD", "SGD",
+        "HKD", "NOK", "SEK", "MXN", "TRY", "ZAR", "PLN", "CZK", "HUF",
+        "DKK", "CNH", "THB", "INR", "BRL", "IDR", "MYR", "PHP", "NGN",
+        "AED", "SAR"
+    }
+    return name[:3] in currencies and name[3:] in currencies and name[:3] != name[3:]
 
-def get_asset_names(market_mode=None):
-    """Discover only the FX market manually selected by the user."""
-    global IQ, LAST_DISCOVERY_DIAGNOSTICS, ORDER_ASSET_BY_BASE, ACTIVE_MARKET_MODE
-    market_mode = market_mode or current_market_mode()
-    ACTIVE_MARKET_MODE = market_mode
+
+def get_asset_names():
     client = IQ
     if client is None:
         return []
     result_queue = queue.Queue(maxsize=1)
-
     def worker():
         try:
+            # Do not use get_all_ACTIVES_OPCODE here: it can include stocks and
+            # other instruments that binary-option buy() cannot trade. Build the
+            # universe only from IQ Option's binary/turbo active tables.
             with client_api_lock(client):
-                # Prefer the v2 initialization feed; some IQ Option sessions populate
-                # this feed while the legacy init-all response is empty or delayed.
-                payload = None
-                v2_method = getattr(client, "get_all_init_v2", None)
-                if callable(v2_method):
-                    try:
-                        payload = v2_method()
-                    except Exception as exc:
-                        logging.warning("get_all_init_v2() discovery failed: %s", exc)
-                if not payload:
-                    payload = client.get_all_init()
-                result_queue.put(("ok", payload))
+                init_info = client.get_all_init()
+            result_queue.put(("ok", init_info))
         except Exception as exc:
             result_queue.put(("error", str(exc)))
-
     threading.Thread(target=worker, daemon=True, name="asset-discovery").start()
     try:
-        status, data = result_queue.get(timeout=ASSET_DISCOVERY_TIMEOUT)
+        status, data = result_queue.get(timeout=REQUEST_TIMEOUT)
     except queue.Empty:
-        LAST_DISCOVERY_DIAGNOSTICS = f"Init feed did not return within {ASSET_DISCOVERY_TIMEOUT}s (v2/legacy call stalled)."
-        logging.error("Binary/turbo asset discovery exceeded %ss; IQ Option init feed may be stalled.", ASSET_DISCOVERY_TIMEOUT)
+        logging.error("Binary/turbo asset discovery timed out.")
         if IQ is client:
-            IQ = None
+            globals()["IQ"] = None
         return []
     if status != "ok":
-        LAST_DISCOVERY_DIAGNOSTICS = f"Init feed raised: {str(data)[:180]}"
-        logging.warning("IQ Option init-feed asset discovery failed: %s", data)
+        logging.warning("Binary/turbo asset discovery failed: %s", data)
         return []
-
     try:
-        if isinstance(data, str):
-            data = json.loads(data)
-        if not isinstance(data, dict):
-            LAST_DISCOVERY_DIAGNOSTICS = f"Unexpected payload type: {type(data).__name__}"
-            logging.warning("Unexpected IQ Option init payload type: %s", type(data).__name__)
-            return []
-
-        # API/library versions differ in where the binary/turbo active tables live.
-        # Search only keys explicitly named 'actives'; never treat arbitrary instruments as tradable.
-        active_tables = []
-        visited = set()
-
-        def walk(node, path="root"):
-            if isinstance(node, dict):
-                identity = id(node)
-                if identity in visited:
-                    return
-                visited.add(identity)
-                for key, value in node.items():
-                    if str(key).lower() == "actives":
-                        if isinstance(value, dict):
-                            # Keep active ID keys so orders use the live broker mapping.
-                            active_tables.append((path + ".actives", list(value.items())))
-                        elif isinstance(value, list):
-                            active_tables.append((path + ".actives", [(None, item) for item in value]))
-                    if isinstance(value, (dict, list)):
-                        walk(value, path + "." + str(key))
-            elif isinstance(node, list):
-                for index, value in enumerate(node):
-                    if isinstance(value, (dict, list)):
-                        walk(value, f"{path}[{index}]")
-
-        walk(data)
-        total_actives = 0
+        result = data.get("result", {})
         candidates = set()
-        order_asset_by_base = {}
-        order_asset_priority = {}
-        active_id_priority = {}
-        raw_fx_seen = 0
-        disabled_fx_seen = 0
-        suspended_fx_seen = 0
-        raw_fx_samples = []
-        for table_path, entries in active_tables:
-            # Regular and OTC FX may appear in binary, turbo, or blitz market tables.
-            # Search only these explicit market tables; no arbitrary instruments.
-            market_path = table_path.lower()
-            if not any(market in market_path for market in ("binary", "turbo", "blitz")):
+        total_binary_turbo = 0
+        for market in ("binary", "turbo"):
+            market_data = result.get(market, {})
+            actives = market_data.get("actives", {})
+            if not isinstance(actives, dict):
                 continue
-            source_priority = 2 if any(market in market_path for market in ("binary", "turbo")) else 1
-            for active_key, active in entries:
+            for active in actives.values():
                 if not isinstance(active, dict):
                     continue
-                total_actives += 1
-                enabled = active.get("enabled")
-                suspended = active.get("is_suspended", active.get("suspended"))
-                enabled_text = str(enabled).strip().lower()
-                suspended_text = str(suspended).strip().lower()
-                raw_name = str(active.get("name", "")).strip()
-                # Count scheduled FX names before availability flags for diagnostics.
-                raw_normalized_name = market_asset_name(raw_name, market_mode)
-                if raw_normalized_name:
-                    raw_fx_seen += 1
-                    if enabled_text in ("false", "0", "no"):
-                        disabled_fx_seen += 1
-                    if suspended_text in ("true", "1", "yes"):
-                        suspended_fx_seen += 1
-                    if len(raw_fx_samples) < 8:
-                        raw_fx_samples.append({"name": raw_name, "enabled": enabled, "suspended": suspended})
-                # Do not submit orders for assets the broker explicitly marks disabled or suspended.
-                if enabled_text in ("false", "0", "no") or suspended_text in ("true", "1", "yes"):
+                total_binary_turbo += 1
+                # Only take enabled, unsuspended binary/turbo instruments.
+                if active.get("enabled") is not True or active.get("is_suspended") is not False:
                     continue
-                # Accept only the manually selected FX market; candles use canonical symbols
-                # while orders retain the exact broker-provided active name.
-                normalized_name = market_asset_name(raw_name, market_mode)
-                if normalized_name:
-                    candidates.add(normalized_name)
-                    # stable_api.buy() resolves the exact active key in OP_code.ACTIVES.
-                    # Keep the broker-provided OTC name for orders and candles.
-                    broker_name = raw_name.rsplit(".", 1)[-1].strip()
-                    previous = order_asset_by_base.get(normalized_name, "")
-                    if broker_name and (not previous or source_priority >= order_asset_priority.get(normalized_name, 0)):
-                        order_asset_by_base[normalized_name] = broker_name
-                        order_asset_priority[normalized_name] = source_priority
-                    # Refresh the order-name -> active-ID lookup from this live feed.
-                    # The previous code discarded dictionary keys and could leave a stale ID,
-                    # leading to repeated "asset is not available" order rejections.
-                    active_id = active_key
-                    if active_id is None:
-                        active_id = active.get("id", active.get("active_id"))
-                    try:
-                        if broker_name and active_id is not None and source_priority >= active_id_priority.get(broker_name.upper(), 0):
-                            OP_code.ACTIVES[broker_name] = int(active_id)
-                            active_id_priority[broker_name.upper()] = source_priority
-                    except (TypeError, ValueError):
-                        logging.debug("Could not map active ID for %s: %r", broker_name, active_id)
-
-        # If the expected tables are missing, record payload structure for the next diagnosis.
-        if not active_tables or total_actives == 0:
-            logging.warning(
-                "No binary/turbo active entries found. init payload type=%s root_keys=%s active_table_paths=%s",
-                type(data).__name__, list(data.keys())[:30],
-                [path for path, _ in active_tables][:20]
-            )
+                raw_name = str(active.get("name", "")).strip()
+                if "." in raw_name:
+                    raw_name = raw_name.split(".", 1)[1].strip()
+                if raw_name and is_supported_binary_asset(raw_name):
+                    candidates.add(raw_name)
         supported = sorted(candidates)
-        ORDER_ASSET_BY_BASE = dict(order_asset_by_base)
-        table_paths = [path for path, _ in active_tables][:12]
-        sample_names = []
-        for table_path, entries in active_tables:
-            if any(market in table_path.lower() for market in ("binary", "turbo", "blitz")):
-                for active_key, active in entries:
-                    if isinstance(active, dict):
-                        sample_names.append({"name": active.get("name"), "active_id": active_key if active_key is not None else active.get("id", active.get("active_id")), "enabled": active.get("enabled"), "suspended": active.get("is_suspended", active.get("suspended"))})
-                        if len(sample_names) >= 6:
-                            break
-            if len(sample_names) >= 6:
-                break
-        LAST_DISCOVERY_DIAGNOSTICS = (
-            f"payload={type(data).__name__}; root_keys={list(data.keys())[:15]}; "
-            f"active_paths={table_paths}; market_entries={total_actives}; "
-            f"market_mode={market_mode}; FX_candidates={len(supported)}; raw_FX_names={raw_fx_seen}; "
-            f"disabled_FX={disabled_fx_seen}; suspended_FX={suspended_fx_seen}; "
-            f"raw_FX_samples={raw_fx_samples}; sample={sample_names}"
-        )[:1200]
-        logging.info("Asset discovery diagnostic: %s", LAST_DISCOVERY_DIAGNOSTICS)
-        logging.info(
-            "Asset discovery: active_tables=%d binary/turbo/blitz entries=%d FX_candidates=%d",
-            len(active_tables), total_actives, len(supported)
-        )
+        logging.info("Read %d binary/turbo actives; %d enabled, unsuspended FX candidates.", total_binary_turbo, len(supported))
         return supported
     except Exception as exc:
-        LAST_DISCOVERY_DIAGNOSTICS = f"Parser error: {type(data).__name__}: {str(exc)[:180]}"
-        logging.warning("Could not parse IQ Option active list (%s): %s", type(data).__name__, exc)
+        logging.warning("Could not parse IQ Option binary/turbo active list: %s", exc)
         return []
 
 
@@ -466,87 +278,56 @@ def fetch_candles(asset):
     return cleaned
 
 
-def alma_series(values, length, offset=ALMA_OFFSET, sigma=ALMA_SIGMA):
-    """Arnaud Legoux Moving Average with TradingView's common defaults."""
-    if len(values) < length:
-        return None
-    m = offset * (length - 1)
-    s = length / sigma
-    weights = [math.exp(-((i - m) ** 2) / (2 * s * s)) for i in range(length)]
-    total = sum(weights)
-    if total <= 0:
-        return None
-    return sum(values[-length + i] * weights[i] for i in range(length)) / total
-
-
-def choppiness_index(candles, period=CHOP_PERIOD):
-    """Standard Choppiness Index; returns a 0..100 value or None if undefined."""
-    if len(candles) < period + 1:
-        return None
-    recent = candles[-period:]
-    true_ranges = []
-    for i, candle in enumerate(recent):
-        if len(candles) - period + i == 0:
-            previous_close = candle["close"]
-        else:
-            previous_close = candles[len(candles) - period + i - 1]["close"]
-        true_ranges.append(max(
-            candle["high"] - candle["low"],
-            abs(candle["high"] - previous_close),
-            abs(candle["low"] - previous_close)
-        ))
-    total_tr = sum(true_ranges)
-    highest = max(c["high"] for c in recent)
-    lowest = min(c["low"] for c in recent)
-    span = highest - lowest
-    if total_tr <= 0 or span <= 0:
-        return None
-    value = 100.0 * math.log10(total_tr / span) / math.log10(period)
-    return max(0.0, min(100.0, value))
-
-
 def calculate_signal(asset, candles):
-    # A crossover requires the fast/slow ALMA relationship on two closed candles.
-    if len(candles) < ALMA_SLOW + 2:
-        return None, "insufficient candles for ALMA 12 / crossover"
+    if len(candles) < MOMENTUM_PERIOD + 3:
+        return None, "insufficient candles"
     closes = [c["close"] for c in candles]
-    fast_now = alma_series(closes, ALMA_FAST)
-    slow_now = alma_series(closes, ALMA_SLOW)
-    fast_prev = alma_series(closes[:-1], ALMA_FAST)
-    slow_prev = alma_series(closes[:-1], ALMA_SLOW)
-    if None in (fast_now, slow_now, fast_prev, slow_prev):
-        return None, "ALMA unavailable"
-    chop = choppiness_index(candles, CHOP_PERIOD)
-    if chop is None:
-        return None, "CHOP unavailable (flat range)"
-    if chop >= CHOP_MAX:
-        return None, f"CHOP too high ({chop:.1f} >= {CHOP_MAX:.1f}); ranging market"
-    crossed_up = fast_prev <= slow_prev and fast_now > slow_now
-    crossed_down = fast_prev >= slow_prev and fast_now < slow_now
-    if crossed_up:
-        direction = "call"
-    elif crossed_down:
-        direction = "put"
+    opens = [c["open"] for c in candles]
+    highs = [c["high"] for c in candles]
+    lows = [c["low"] for c in candles]
+    current, previous, old = closes[-1], closes[-2], closes[-1-MOMENTUM_PERIOD]
+    if old <= 0:
+        return None, "invalid reference price"
+    momentum = (current - old) / old
+    ranges = [highs[i] - lows[i] for i in range(max(0, len(candles)-14), len(candles))]
+    average_range = sum(ranges) / len(ranges) if ranges else 0.0
+    if average_range <= 0:
+        return None, "no usable candle range"
+    candle_range = highs[-1] - lows[-1]
+    if candle_range <= 0:
+        return None, "flat latest candle"
+    body = abs(current - opens[-1]) / candle_range
+    upper = (highs[-1] - current) / candle_range
+    lower = (current - lows[-1]) / candle_range
+    if momentum < 0:
+        if current <= opens[-1]:
+            return None, "no bullish reversal after downward momentum"
+        turn, direction = lower, "call"
+    elif momentum > 0:
+        if current >= opens[-1]:
+            return None, "no bearish reversal after upward momentum"
+        turn, direction = upper, "put"
     else:
-        return None, "no fresh ALMA 7/12 crossover"
-    candle = candles[-1]
+        return None, "zero momentum"
+    if turn < MIN_TURN_DISTANCE:
+        return None, "reversal distance too small"
+    normalized = abs(current - old) / average_range
+    if normalized < EXTREME_PERCENTILE:
+        return None, "momentum not extreme enough"
+    if direction == "call" and current <= previous:
+        return None, "bullish reversal lacks close confirmation"
+    if direction == "put" and current >= previous:
+        return None, "bearish reversal lacks close confirmation"
+    score = 50 + (10 if normalized >= 0.5 else 0) + (10 if normalized >= 1.0 else 0) + (10 if body >= 0.4 else 0) + (10 if body >= 0.65 else 0) + (5 if turn >= 0.3 else 0) + (5 if turn >= 0.5 else 0)
     try:
-        candle_time = int(candle.get("from") or time.time())
+        candle_time = int(candles[-1].get("from") or time.time())
     except Exception:
         candle_time = int(time.time())
-    # This is a setup-quality ranking, not a probability of winning.
-    score = int(round(100.0 - chop))
-    return {
-        "asset": asset,
-        "direction": direction,
-        "score": score,
-        "alma_fast": fast_now,
-        "alma_slow": slow_now,
-        "chop": chop,
-        "price": closes[-1],
-        "candle_time": candle_time,
-        "time": utc_now().strftime("%H:%M:%S UTC")
-    }, ""
+    return {"asset":asset, "direction":direction, "score":min(score,100),
+            "momentum":momentum, "normalized_momentum":normalized, "body_ratio":body,
+            "turn_distance":turn, "price":current, "candle_time":candle_time,
+            "time":utc_now().strftime("%H:%M:%S UTC")}, ""
+
 
 def lagos_time(timestamp):
     try:
@@ -560,8 +341,6 @@ def display_asset(asset):
     name = str(asset or "").strip()
     otc = bool(re.search(r"(?:[-_\s]?OTC)$", name, re.IGNORECASE))
     base = re.sub(r"(?:[-_\s]?OTC)$", "", name, flags=re.IGNORECASE).strip()
-    base = re.sub(r"-op$", "", base, flags=re.IGNORECASE)
-    base = base.rsplit(".", 1)[-1]
     if len(base) == 6 and base.isalpha():
         base = base[:3].upper() + "/" + base[3:].upper()
     else:
@@ -572,21 +351,14 @@ def display_asset(asset):
 def send_signal(signal, manual=False):
     direction = "CALL 🟢" if signal["direction"] == "call" else "PUT 🔴"
     entry = int(signal.get("entry_time", signal.get("candle_time", time.time())))
-    sid = f"AC-{signal.get('asset','UNKNOWN')}-{signal['direction'].upper()}-{int(signal.get('candle_time',time.time()))}"
-    telegram_send(
-        f"📣 ALMA + CHOP SIGNAL\n{display_asset(signal.get('asset'))} — {direction}\n"
-        f"Signal ID: {sid}\nEntry: {lagos_time(entry)}\nExpiry: 60 seconds | Stake: $1\n"
-        f"ALMA 7: {signal.get('alma_fast', 0):.6f} | ALMA 12: {signal.get('alma_slow', 0):.6f}\n"
-        f"CHOP(2): {signal.get('chop', 0):.1f} | filter: below {CHOP_MAX:.1f}\n"
-        f"Setup ranking: {signal.get('score', 0)}/100 (not win probability)\n"
-        f"{'MANUAL SCAN — no trade placed.' if manual else 'AUTO MODE — practice order checked before placement.'}"
-    )
+    sid = f"M10-{signal.get('asset','UNKNOWN')}-{signal['direction'].upper()}-{int(signal.get('candle_time',time.time()))}"
+    telegram_send(f"📣 MOMENTUM 10 SIGNAL\n{display_asset(signal.get('asset'))} — {direction}\nSignal ID: {sid}\nEntry: {lagos_time(entry)}\nExpiry: 1 minute\nScore: {signal.get('score',0)}/100\n{'MANUAL SCAN — no trade placed.' if manual else 'AUTO MODE — order will be checked before placement.'}\nScore is not win probability.")
+
 
 def scan_market(manual=False, auto_eligible=False):
     global SCAN_IN_PROGRESS, ASSET_CURSOR, LAST_ASSET_COUNT, LAST_SCAN_FINISHED
     global LAST_SCAN_CANDIDATES, LAST_SCAN_SCANNED, LAST_SCAN_TOTAL, LAST_SCAN_TIMED_OUT
     global LAST_SCAN_ERROR, LAST_REJECTIONS
-    scan_market_mode = current_market_mode()
     results, rejected = [], {}
     scanned = attempted = total = 0
     timed_out, error_text = False, ""
@@ -596,18 +368,16 @@ def scan_market(manual=False, auto_eligible=False):
         if not ensure_connection():
             error_text = "IQ Option disconnected; reconnect failed."
             return
-        assets = get_asset_names(scan_market_mode)
+        assets = get_asset_names()
         total = len(assets)
         LAST_ASSET_COUNT = total
         if not assets:
             timed_out = IQ is None
             error_text = "Asset discovery timed out or IQ Option returned zero symbols."
-            logging.error("Zero supported %s FX assets. %s", ACTIVE_MARKET_MODE, LAST_DISCOVERY_DIAGNOSTICS)
-            telegram_send(f"⚠️ {ACTIVE_MARKET_MODE} FX ASSET DISCOVERY DIAGNOSTIC\nNo available assets found for the manually selected market.\n{LAST_DISCOVERY_DIAGNOSTICS}\nNo trade placed.", keyboard=False)
             return
         start = ASSET_CURSOR % total
         batch = [assets[(start+i) % total] for i in range(min(MAX_SYMBOLS_PER_SCAN, total))]
-        logging.info("Scanning %s FX: %d of %d discovered assets; manual=%s auto_eligible=%s", ACTIVE_MARKET_MODE, len(batch), total, manual, auto_eligible)
+        logging.info("Scanning %d of %d discovered assets; manual=%s auto_eligible=%s", len(batch), total, manual, auto_eligible)
         for index, asset in enumerate(batch, 1):
             if not RUNNING:
                 break
@@ -626,24 +396,30 @@ def scan_market(manual=False, auto_eligible=False):
                 continue
             timeouts = 0
             scanned += 1
-            if len(candles) < ALMA_SLOW + 3:
+            if len(candles) < MOMENTUM_PERIOD + 4:
                 rejected["no candles/unavailable"] = rejected.get("no candles/unavailable", 0) + 1
+            elif manual:
+                # Evaluate the forming candle for an advance warning; report only.
+                signal, reason = calculate_signal(asset, candles)
+                if signal:
+                    signal["entry_time"] = int(signal.get("candle_time", time.time())) + CANDLE_SECONDS
+                    if signal["entry_time"] - time.time() >= 8:
+                        if LAST_SIGNAL_BY_ASSET.get(asset) != str(signal["candle_time"]):
+                            results.append(signal)
+                            LAST_SIGNAL_BY_ASSET[asset] = str(signal["candle_time"])
+                            # Send promptly; waiting for the whole batch can make a warning stale.
+                            if len(results) <= TOP_SIGNALS:
+                                send_signal(signal, manual=True)
+                    else:
+                        rejected["setup too close to candle close"] = rejected.get("setup too close to candle close", 0) + 1
+                else:
+                    rejected[reason] = rejected.get(reason, 0) + 1
             else:
-                # Use closed candles for both manual alerts and AUTO to avoid repainting.
-                closed_candles = candles[:-1]
-                signal, reason = calculate_signal(asset, closed_candles)
+                # Automatic entries use only fully closed candles.
+                signal, reason = calculate_signal(asset, candles[:-1])
                 if signal:
                     if LAST_SIGNAL_BY_ASSET.get(asset) != str(signal["candle_time"]):
-                        signal["entry_time"] = int(signal.get("candle_time", time.time())) + CANDLE_SECONDS
-                        seconds_to_entry = signal["entry_time"] - time.time()
-                        if -55 <= seconds_to_entry <= 5:
-                            results.append(signal)
-                            if manual:
-                                LAST_SIGNAL_BY_ASSET[asset] = str(signal["candle_time"])
-                                if len(results) <= TOP_SIGNALS:
-                                    send_signal(signal, manual=True)
-                        else:
-                            rejected["closed-candle setup outside entry window"] = rejected.get("closed-candle setup outside entry window", 0) + 1
+                        results.append(signal)
                 else:
                     rejected[reason] = rejected.get(reason, 0) + 1
             if index % PROGRESS_EVERY == 0:
@@ -667,7 +443,7 @@ def scan_market(manual=False, auto_eligible=False):
             reasons = "; ".join(f"{name}: {count}" for name,count in top) or "No valid candles returned."
             suffix = "\nConnection timed out; scanner will reconnect." if timed_out else (f"\n{error_text}" if error_text else "")
             telegram_send(f"NO TRADE\nScanned: {scanned}/{total}\nTop rejection reasons: {reasons}{suffix}")
-        SCAN_RESULTS_QUEUE.put({"manual":manual, "auto_eligible":auto_eligible, "market_mode":scan_market_mode, "results":results,
+        SCAN_RESULTS_QUEUE.put({"manual":manual, "auto_eligible":auto_eligible, "results":results,
                                 "timed_out":timed_out, "error":error_text})
         with STATE_LOCK:
             SCAN_IN_PROGRESS = False
@@ -689,21 +465,12 @@ def start_scan(manual=False):
 def execute_signal(signal):
     if not AUTO_TRADING_ALLOWED or not AUTO_MODE:
         return False
-    if ACTIVE_MARKET_MODE and ACTIVE_MARKET_MODE != current_market_mode():
-        logging.info("Skipping signal because the Lagos market session changed.")
-        return False
     if not practice_mode_verified():
         set_auto(False, "PRACTICE mode could not be verified")
         telegram_send("🛑 AUTO STOPPED: PRACTICE mode could not be verified.")
         return False
     asset = str(signal.get("asset", ""))
     direction = str(signal.get("direction", "")).lower()
-    # Candles use canonical FX names; the IQ Option order API needs its exact active key.
-    order_asset = ORDER_ASSET_BY_BASE.get(asset)
-    if not order_asset:
-        logging.warning("Skipping %s: no broker active identifier was captured for this FX pair.", asset)
-        telegram_send(f"⚠️ ORDER SKIPPED\n{display_asset(asset)} {direction.upper()}\nNo exact broker active identifier was found; no order was sent.")
-        return False
     candle_time = int(signal.get("candle_time") or time.time())
     age = time.time() - candle_time
     if age > MAX_SIGNAL_AGE_SECONDS or age < -5:
@@ -721,24 +488,7 @@ def execute_signal(signal):
                 result_queue.put(("safety", "PRACTICE verification failed"))
                 return
             with client_api_lock(client):
-                # The regular buy() method rounds 1-minute trades to IQ Option's
-                # clock expiry window (which can add 15 seconds). Use the raw
-                # absolute expiry API so the requested expiry is server_now + 60s.
-                raw_buy = getattr(client, "buy_by_raw_expirations", None)
-                if not callable(raw_buy):
-                    raise RuntimeError("IQ Option API has no raw-expiry method; refusing a clock-rounded order.")
-                server_now = safe_float(
-                    getattr(getattr(getattr(client, "api", None), "timesync", None), "server_timestamp", 0),
-                    0.0,
-                )
-                if server_now <= 0:
-                    raise RuntimeError("IQ Option server time is unavailable; refusing an unverified expiry.")
-                expiry_timestamp = int(round(server_now + EXPIRY_SECONDS))
-                logging.info(
-                    "Submitting %s %s with raw 60-second expiry: server_now=%.3f expiry_epoch=%d",
-                    asset, direction.upper(), server_now, expiry_timestamp
-                )
-                response = raw_buy(STAKE, order_asset, direction, "turbo", expiry_timestamp)
+                response = client.buy(STAKE, asset, direction, EXPIRY_MINUTES)
             result_queue.put(("result", response))
         except Exception as exc:
             try:
@@ -763,11 +513,11 @@ def execute_signal(signal):
     if not success or order_id is None or str(order_id) == "":
         logging.info("Practice order rejected for %s: %r", asset, response)
         detail = str(response[1] if len(response) > 1 else "broker returned no order ID")
-        detail = re.sub(r"[\\r\n]+", " ", detail)[:220]
+        detail = re.sub(r"[\\r\\n]+", " ", detail)[:220]
         telegram_send(f"⚪ ORDER REJECTED\n{display_asset(asset)} {direction.upper()}\nNo trade was confirmed.\nBroker response: {detail}")
         return False
-    telegram_send(f"🟡 PRACTICE ORDER ACCEPTED\n{display_asset(asset)} — {direction.upper()}\nOrder ID: {order_id}\nStake: $1 | Expiry: 60 seconds\nThis bot does not record wins or losses.")
-    logging.info("Practice order accepted for %s (broker active %s); order id=%s", asset, order_asset, order_id)
+    telegram_send(f"🟡 PRACTICE ORDER ACCEPTED\n{display_asset(asset)} — {direction.upper()}\nOrder ID: {order_id}\nStake: $1 | Expiry: 1 minute\nThis bot does not record wins or losses.")
+    logging.info("Practice order accepted for %s; order id=%s", asset, order_id)
     return True
 
 
@@ -790,15 +540,14 @@ def status_message():
     except Exception:
         connected = practice = False
     age = f"{int(time.time()-LAST_SCAN_FINISHED)} seconds ago" if LAST_SCAN_FINISHED else "Not completed yet"
-    return (f"📊 ALMA + CHOP STATUS\nMarket: {current_market_mode()} FX (manual switch)\nConnection: {'CONNECTED' if connected else 'DISCONNECTED'}\n"
+    return (f"📊 MOMENTUM 10 STATUS\nConnection: {'CONNECTED' if connected else 'DISCONNECTED'}\n"
             f"Practice verification: {'OK' if practice else 'NOT VERIFIED'}\nBalance: {balance}\n"
-            f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nStake: $1 | Expiry: 60 seconds\n"
+            f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nStake: $1 | Expiry: 1 minute\n"
             f"Discovered assets: {LAST_ASSET_COUNT}\nLast scan: {age}\n"
             f"Last batch: {LAST_SCAN_SCANNED}/{LAST_SCAN_TOTAL}\nCandidates: {LAST_SCAN_CANDIDATES}\n"
             f"Scan in progress: {'YES' if SCAN_IN_PROGRESS else 'NO'}\n"
             f"Last timeout: {'YES' if LAST_SCAN_TIMED_OUT else 'NO'}\n"
             f"Last error: {LAST_SCAN_ERROR or 'None'}\n"
-            f"Asset discovery details: {LAST_DISCOVERY_DIAGNOSTICS}\n"
             f"Top rejection reasons: {'; '.join(f'{k}: {v}' for k,v in LAST_REJECTIONS.items()) or 'No scan data yet'}")
 
 
@@ -815,13 +564,7 @@ def process_telegram_update(update):
         return
     command = raw.upper()
     logging.info("Telegram command: %s", command)
-    if command in ("USE REGULAR FX", "/REGULAR", "REGULAR FX"):
-        set_market_mode("REGULAR")
-        telegram_send("🔁 MARKET SWITCHED: REGULAR FX\nNext scan uses normal currency pairs only. Strategy and filters unchanged.")
-    elif command in ("USE OTC FX", "/OTC", "OTC FX"):
-        set_market_mode("OTC")
-        telegram_send("🔁 MARKET SWITCHED: OTC FX\nNext scan uses OTC currency pairs only. Strategy and filters unchanged.")
-    elif command in ("/START", "START AUTO"):
+    if command in ("/START", "START AUTO"):
         if not AUTO_TRADING_ALLOWED:
             telegram_send("AUTO is disabled in this scanner.")
         elif not ensure_connection():
@@ -829,7 +572,7 @@ def process_telegram_update(update):
             telegram_send("AUTO refused: connection or PRACTICE verification failed. Check STATUS; AUTO remains OFF.")
         else:
             set_auto(True)
-            telegram_send(f"🟢 AUTO MODE ON\nSelected market: {current_market_mode()} FX (manual switch).\nPRACTICE verified. $1 stake / 60-second expiry.\nSCAN MARKET remains report-only.\nWins/losses and trade history are not recorded.")
+            telegram_send("🟢 AUTO MODE ON\nPRACTICE verified. $1 stake / 1-minute expiry.\nSCAN MARKET remains report-only.\nWins/losses and trade history are not recorded.")
     elif command in ("/STOP", "STOP AUTO"):
         set_auto(False, "Stopped manually")
         telegram_send("🔴 AUTO MODE OFF. No new automatic orders will be started.")
@@ -844,9 +587,9 @@ def process_telegram_update(update):
     elif command in ("STATUS", "/STATUS"):
         telegram_send(status_message())
     elif command in ("/HELP", "HELP"):
-        telegram_send("Commands:\nUSE REGULAR FX — normal currency pairs\nUSE OTC FX — OTC currency pairs\nSTART AUTO — enable $1 PRACTICE trades\nSTOP AUTO — stop new automatic trades\nSCAN MARKET — report-only signal scan\nSTATUS — connection and scan status\nNo win/loss tracker or trade-history recorder is included.")
+        telegram_send("Commands:\nSTART AUTO — enable $1 PRACTICE trades\nSTOP AUTO — stop new automatic trades\nSCAN MARKET — report-only signal scan\nSTATUS — connection and scan status\nNo win/loss tracker or trade-history recorder is included.")
     else:
-        telegram_send("Unknown command. Use USE REGULAR FX, USE OTC FX, START AUTO, STOP AUTO, SCAN MARKET, STATUS, or /HELP.")
+        telegram_send("Unknown command. Use START AUTO, STOP AUTO, SCAN MARKET, STATUS, or /HELP.")
 
 
 def telegram_listener():
@@ -892,7 +635,7 @@ def heartbeat():
     if time.time() - LAST_HEARTBEAT < HEARTBEAT_SECONDS:
         return
     LAST_HEARTBEAT = time.time()
-    telegram_send(f"💓 ALMA + CHOP HEARTBEAT\nMarket: {current_market_mode()} FX (manual switch)\nAccount: PRACTICE ONLY\n"
+    telegram_send(f"💓 MOMENTUM 10 HEARTBEAT\nAccount: PRACTICE ONLY\n"
                   f"Connection: {'OK' if practice_mode_verified() else 'NOT VERIFIED'}\n"
                   f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\n"
                   f"Discovered assets: {LAST_ASSET_COUNT}\nLast scan: {LAST_SCAN_SCANNED}/{LAST_SCAN_TOTAL}\n"
@@ -902,7 +645,7 @@ def heartbeat():
 
 def main():
     global RUNNING, MANUAL_SCAN_REQUESTED
-    telegram_send(f"🚀 ALMA + CHOP STARTING\nPRACTICE-only scanner is connecting.\nSelected market: {current_market_mode()} FX (manual switch).\nUse USE REGULAR FX or USE OTC FX to switch markets. Manual SCAN MARKET sends signals only and never places trades.\nNo win/loss tracking or trade-history recording.")
+    telegram_send("🚀 MOMENTUM 10 STARTING\nPRACTICE-only scanner is connecting.\nManual SCAN MARKET sends signals only and never places trades.\nNo win/loss tracking or trade-history recording.")
     threading.Thread(target=telegram_listener, daemon=True, name="telegram-listener").start()
     while RUNNING:
         try:
@@ -919,9 +662,7 @@ def main():
                 except queue.Empty:
                     break
                 if completed.get("auto_eligible") and AUTO_MODE and not completed.get("error"):
-                    if completed.get("market_mode") != current_market_mode():
-                        logging.info("Discarding scan results from the previous market session.")
-                    elif completed.get("timed_out"):
+                    if completed.get("timed_out"):
                         logging.warning("Skipping automatic entries because this scan timed out.")
                     else:
                         for signal in completed.get("results", []):
