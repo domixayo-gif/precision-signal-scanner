@@ -26,7 +26,7 @@ except Exception:
 
 IQ, RUNNING, AUTO_MODE = None, True, False
 MARKET_TIMEZONE = ZoneInfo("Africa/Lagos")
-REGULAR_FX_START_HOUR, OTC_START_HOUR = 6, 18
+MARKET_MODE_OVERRIDE = "REGULAR"  # Manual Telegram market selection; defaults to regular FX.
 ACTIVE_MARKET_MODE = ""
 TELEGRAM_OFFSET = None
 STATE_LOCK = threading.RLock()
@@ -81,7 +81,8 @@ def telegram_send(message, keyboard=True):
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": str(message)[:4000], "disable_web_page_preview": True}
     if keyboard:
         payload["reply_markup"] = {"keyboard": [[{"text":"START AUTO"},{"text":"STOP AUTO"}],
-            [{"text":"SCAN MARKET"},{"text":"STATUS"}]], "resize_keyboard": True}
+            [{"text":"SCAN MARKET"},{"text":"STATUS"}],
+            [{"text":"USE REGULAR FX"},{"text":"USE OTC FX"}]], "resize_keyboard": True}
     try:
         response = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
                                  json=payload, timeout=12)
@@ -231,9 +232,19 @@ def otc_fx_asset_name(asset):
 
 
 def current_market_mode():
-    """Regular FX from 06:00 to 17:59 WAT; OTC FX from 18:00 to 05:59 WAT."""
-    local = datetime.now(MARKET_TIMEZONE)
-    return "REGULAR" if REGULAR_FX_START_HOUR <= local.hour < OTC_START_HOUR else "OTC"
+    """Return the user-selected market; never switch automatically by time."""
+    return MARKET_MODE_OVERRIDE or "REGULAR"
+
+
+def set_market_mode(mode):
+    """Manually select regular FX or OTC FX for subsequent scans."""
+    global MARKET_MODE_OVERRIDE, ACTIVE_MARKET_MODE, ASSET_CURSOR
+    if mode not in ("REGULAR", "OTC"):
+        return False
+    MARKET_MODE_OVERRIDE = mode
+    ACTIVE_MARKET_MODE = mode
+    ASSET_CURSOR = 0
+    return True
 
 
 def market_asset_name(asset, mode=None):
@@ -763,7 +774,7 @@ def status_message():
     except Exception:
         connected = practice = False
     age = f"{int(time.time()-LAST_SCAN_FINISHED)} seconds ago" if LAST_SCAN_FINISHED else "Not completed yet"
-    return (f"📊 ALMA + CHOP STATUS\nMarket: {current_market_mode()} FX (Lagos: 6 AM regular / 6 PM OTC)\nConnection: {'CONNECTED' if connected else 'DISCONNECTED'}\n"
+    return (f"📊 ALMA + CHOP STATUS\nMarket: {current_market_mode()} FX (manual switch)\nConnection: {'CONNECTED' if connected else 'DISCONNECTED'}\n"
             f"Practice verification: {'OK' if practice else 'NOT VERIFIED'}\nBalance: {balance}\n"
             f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nStake: $1 | Expiry: 1 minute\n"
             f"Discovered assets: {LAST_ASSET_COUNT}\nLast scan: {age}\n"
@@ -788,7 +799,13 @@ def process_telegram_update(update):
         return
     command = raw.upper()
     logging.info("Telegram command: %s", command)
-    if command in ("/START", "START AUTO"):
+    if command in ("USE REGULAR FX", "/REGULAR", "REGULAR FX"):
+        set_market_mode("REGULAR")
+        telegram_send("🔁 MARKET SWITCHED: REGULAR FX\\nNext scan uses normal currency pairs only. Strategy and filters unchanged.")
+    elif command in ("USE OTC FX", "/OTC", "OTC FX"):
+        set_market_mode("OTC")
+        telegram_send("🔁 MARKET SWITCHED: OTC FX\\nNext scan uses OTC currency pairs only. Strategy and filters unchanged.")
+    elif command in ("/START", "START AUTO")
         if not AUTO_TRADING_ALLOWED:
             telegram_send("AUTO is disabled in this scanner.")
         elif not ensure_connection():
@@ -796,7 +813,7 @@ def process_telegram_update(update):
             telegram_send("AUTO refused: connection or PRACTICE verification failed. Check STATUS; AUTO remains OFF.")
         else:
             set_auto(True)
-            telegram_send(f"🟢 AUTO MODE ON\nMarket schedule: {current_market_mode()} FX (6 AM regular / 6 PM OTC, Lagos time).\nPRACTICE verified. $1 stake / 1-minute expiry.\nSCAN MARKET remains report-only.\nWins/losses and trade history are not recorded.")
+            telegram_send(f"🟢 AUTO MODE ON\nSelected market: {current_market_mode()} FX (manual switch).\nPRACTICE verified. $1 stake / 1-minute expiry.\nSCAN MARKET remains report-only.\nWins/losses and trade history are not recorded.")
     elif command in ("/STOP", "STOP AUTO"):
         set_auto(False, "Stopped manually")
         telegram_send("🔴 AUTO MODE OFF. No new automatic orders will be started.")
@@ -811,9 +828,9 @@ def process_telegram_update(update):
     elif command in ("STATUS", "/STATUS"):
         telegram_send(status_message())
     elif command in ("/HELP", "HELP"):
-        telegram_send("Commands:\nSTART AUTO — enable $1 PRACTICE trades\nSTOP AUTO — stop new automatic trades\nSCAN MARKET — report-only signal scan\nSTATUS — connection and scan status\nNo win/loss tracker or trade-history recorder is included.")
+        telegram_send("Commands:\nUSE REGULAR FX — normal currency pairs\nUSE OTC FX — OTC currency pairs\nSTART AUTO — enable $1 PRACTICE trades\nSTOP AUTO — stop new automatic trades\nSCAN MARKET — report-only signal scan\nSTATUS — connection and scan status\nNo win/loss tracker or trade-history recorder is included.")
     else:
-        telegram_send("Unknown command. Use START AUTO, STOP AUTO, SCAN MARKET, STATUS, or /HELP.")
+        telegram_send("Unknown command. Use USE REGULAR FX, USE OTC FX, START AUTO, STOP AUTO, SCAN MARKET, STATUS, or /HELP.")
 
 
 def telegram_listener():
@@ -859,7 +876,7 @@ def heartbeat():
     if time.time() - LAST_HEARTBEAT < HEARTBEAT_SECONDS:
         return
     LAST_HEARTBEAT = time.time()
-    telegram_send(f"💓 ALMA + CHOP HEARTBEAT\nMarket: {current_market_mode()} FX\nAccount: PRACTICE ONLY\n"
+    telegram_send(f"💓 ALMA + CHOP HEARTBEAT\nMarket: {current_market_mode()} FX (manual switch)\nAccount: PRACTICE ONLY\n"
                   f"Connection: {'OK' if practice_mode_verified() else 'NOT VERIFIED'}\n"
                   f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\n"
                   f"Discovered assets: {LAST_ASSET_COUNT}\nLast scan: {LAST_SCAN_SCANNED}/{LAST_SCAN_TOTAL}\n"
@@ -869,7 +886,7 @@ def heartbeat():
 
 def main():
     global RUNNING, MANUAL_SCAN_REQUESTED
-    telegram_send("🚀 ALMA + CHOP STARTING\nPRACTICE-only scanner is connecting.\nManual SCAN MARKET sends signals only and never places trades.\nNo win/loss tracking or trade-history recording.")
+    telegram_send("🚀 ALMA + CHOP STARTING\nPRACTICE-only scanner is connecting.\nSelected market: {current_market_mode()} FX (manual switch).\nUse USE REGULAR FX or USE OTC FX to switch markets. Manual SCAN MARKET sends signals only and never places trades.\nNo win/loss tracking or trade-history recording.")
     threading.Thread(target=telegram_listener, daemon=True, name="telegram-listener").start()
     while RUNNING:
         try:
