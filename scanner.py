@@ -1,6 +1,5 @@
 import os, time, math, logging, threading, traceback, requests, queue, re, json
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 from iqoptionapi.stable_api import IQ_Option
 import iqoptionapi.constants as OP_code
 
@@ -25,7 +24,6 @@ except Exception:
     logging.warning("Could not disable digital-open discovery.")
 
 IQ, RUNNING, AUTO_MODE = None, True, False
-MARKET_TIMEZONE = ZoneInfo("Africa/Lagos")
 MARKET_MODE_OVERRIDE = "REGULAR"  # Manual Telegram market selection; defaults to regular FX.
 ACTIVE_MARKET_MODE = ""
 TELEGRAM_OFFSET = None
@@ -255,10 +253,10 @@ def market_asset_name(asset, mode=None):
 def is_supported_binary_asset(asset):
     return bool(market_asset_name(asset))
 
-def get_asset_names():
-    """Discover only the FX market scheduled for the current Lagos-time session."""
+def get_asset_names(market_mode=None):
+    """Discover only the FX market manually selected by the user."""
     global IQ, LAST_DISCOVERY_DIAGNOSTICS, ORDER_ASSET_BY_BASE, ACTIVE_MARKET_MODE
-    market_mode = current_market_mode()
+    market_mode = market_mode or current_market_mode()
     ACTIVE_MARKET_MODE = market_mode
     client = IQ
     if client is None:
@@ -341,7 +339,7 @@ def get_asset_names():
         suspended_fx_seen = 0
         raw_fx_samples = []
         for table_path, entries in active_tables:
-            # OTC FX may appear in binary, turbo, or blitz depending on the session.
+            # Regular and OTC FX may appear in binary, turbo, or blitz market tables.
             # Search only these explicit market tables; no arbitrary instruments.
             market_path = table_path.lower()
             if not any(market in market_path for market in ("binary", "turbo", "blitz")):
@@ -369,7 +367,7 @@ def get_asset_names():
                 # Do not submit orders for assets the broker explicitly marks disabled or suspended.
                 if enabled_text in ("false", "0", "no") or suspended_text in ("true", "1", "yes"):
                     continue
-                # Accept only the scheduled FX market; candles use canonical symbols
+                # Accept only the manually selected FX market; candles use canonical symbols
                 # while orders retain the exact broker-provided active name.
                 normalized_name = market_asset_name(raw_name, market_mode)
                 if normalized_name:
@@ -423,7 +421,7 @@ def get_asset_names():
         )[:1200]
         logging.info("Asset discovery diagnostic: %s", LAST_DISCOVERY_DIAGNOSTICS)
         logging.info(
-            "Asset discovery: active_tables=%d binary/turbo/blitz entries=%d OTC_FX_candidates=%d",
+            "Asset discovery: active_tables=%d binary/turbo/blitz entries=%d FX_candidates=%d",
             len(active_tables), total_actives, len(supported)
         )
         return supported
@@ -588,6 +586,7 @@ def scan_market(manual=False, auto_eligible=False):
     global SCAN_IN_PROGRESS, ASSET_CURSOR, LAST_ASSET_COUNT, LAST_SCAN_FINISHED
     global LAST_SCAN_CANDIDATES, LAST_SCAN_SCANNED, LAST_SCAN_TOTAL, LAST_SCAN_TIMED_OUT
     global LAST_SCAN_ERROR, LAST_REJECTIONS
+    scan_market_mode = current_market_mode()
     results, rejected = [], {}
     scanned = attempted = total = 0
     timed_out, error_text = False, ""
@@ -597,14 +596,14 @@ def scan_market(manual=False, auto_eligible=False):
         if not ensure_connection():
             error_text = "IQ Option disconnected; reconnect failed."
             return
-        assets = get_asset_names()
+        assets = get_asset_names(scan_market_mode)
         total = len(assets)
         LAST_ASSET_COUNT = total
         if not assets:
             timed_out = IQ is None
             error_text = "Asset discovery timed out or IQ Option returned zero symbols."
             logging.error("Zero supported %s FX assets. %s", ACTIVE_MARKET_MODE, LAST_DISCOVERY_DIAGNOSTICS)
-            telegram_send(f"⚠️ {ACTIVE_MARKET_MODE} FX ASSET DISCOVERY DIAGNOSTIC\nNo available assets found for the scheduled market.\n{LAST_DISCOVERY_DIAGNOSTICS}\nNo trade placed.", keyboard=False)
+            telegram_send(f"⚠️ {ACTIVE_MARKET_MODE} FX ASSET DISCOVERY DIAGNOSTIC\nNo available assets found for the manually selected market.\n{LAST_DISCOVERY_DIAGNOSTICS}\nNo trade placed.", keyboard=False)
             return
         start = ASSET_CURSOR % total
         batch = [assets[(start+i) % total] for i in range(min(MAX_SYMBOLS_PER_SCAN, total))]
@@ -668,7 +667,7 @@ def scan_market(manual=False, auto_eligible=False):
             reasons = "; ".join(f"{name}: {count}" for name,count in top) or "No valid candles returned."
             suffix = "\nConnection timed out; scanner will reconnect." if timed_out else (f"\n{error_text}" if error_text else "")
             telegram_send(f"NO TRADE\nScanned: {scanned}/{total}\nTop rejection reasons: {reasons}{suffix}")
-        SCAN_RESULTS_QUEUE.put({"manual":manual, "auto_eligible":auto_eligible, "market_mode":ACTIVE_MARKET_MODE, "results":results,
+        SCAN_RESULTS_QUEUE.put({"manual":manual, "auto_eligible":auto_eligible, "market_mode":scan_market_mode, "results":results,
                                 "timed_out":timed_out, "error":error_text})
         with STATE_LOCK:
             SCAN_IN_PROGRESS = False
@@ -801,11 +800,11 @@ def process_telegram_update(update):
     logging.info("Telegram command: %s", command)
     if command in ("USE REGULAR FX", "/REGULAR", "REGULAR FX"):
         set_market_mode("REGULAR")
-        telegram_send("🔁 MARKET SWITCHED: REGULAR FX\\nNext scan uses normal currency pairs only. Strategy and filters unchanged.")
+        telegram_send("🔁 MARKET SWITCHED: REGULAR FX\nNext scan uses normal currency pairs only. Strategy and filters unchanged.")
     elif command in ("USE OTC FX", "/OTC", "OTC FX"):
         set_market_mode("OTC")
-        telegram_send("🔁 MARKET SWITCHED: OTC FX\\nNext scan uses OTC currency pairs only. Strategy and filters unchanged.")
-    elif command in ("/START", "START AUTO")
+        telegram_send("🔁 MARKET SWITCHED: OTC FX\nNext scan uses OTC currency pairs only. Strategy and filters unchanged.")
+    elif command in ("/START", "START AUTO"):
         if not AUTO_TRADING_ALLOWED:
             telegram_send("AUTO is disabled in this scanner.")
         elif not ensure_connection():
@@ -886,7 +885,7 @@ def heartbeat():
 
 def main():
     global RUNNING, MANUAL_SCAN_REQUESTED
-    telegram_send("🚀 ALMA + CHOP STARTING\nPRACTICE-only scanner is connecting.\nSelected market: {current_market_mode()} FX (manual switch).\nUse USE REGULAR FX or USE OTC FX to switch markets. Manual SCAN MARKET sends signals only and never places trades.\nNo win/loss tracking or trade-history recording.")
+    telegram_send(f"🚀 ALMA + CHOP STARTING\nPRACTICE-only scanner is connecting.\nSelected market: {current_market_mode()} FX (manual switch).\nUse USE REGULAR FX or USE OTC FX to switch markets. Manual SCAN MARKET sends signals only and never places trades.\nNo win/loss tracking or trade-history recording.")
     threading.Thread(target=telegram_listener, daemon=True, name="telegram-listener").start()
     while RUNNING:
         try:
