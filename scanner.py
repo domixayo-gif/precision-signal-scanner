@@ -636,7 +636,7 @@ def scan_market(manual=False, auto_eligible=False):
                     if LAST_SIGNAL_BY_ASSET.get(asset) != str(signal["candle_time"]):
                         signal["entry_time"] = int(signal.get("candle_time", time.time())) + CANDLE_SECONDS
                         seconds_to_entry = signal["entry_time"] - time.time()
-                        if -10 <= seconds_to_entry <= 5:
+                        if -55 <= seconds_to_entry <= 5:
                             results.append(signal)
                             if manual:
                                 LAST_SIGNAL_BY_ASSET[asset] = str(signal["candle_time"])
