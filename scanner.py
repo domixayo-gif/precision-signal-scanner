@@ -25,6 +25,9 @@ except Exception:
     logging.warning("Could not disable digital-open discovery.")
 
 IQ, RUNNING, AUTO_MODE = None, True, False
+MARKET_TIMEZONE = ZoneInfo("Africa/Lagos")
+REGULAR_FX_START_HOUR, OTC_START_HOUR = 6, 18
+ACTIVE_MARKET_MODE = ""
 TELEGRAM_OFFSET = None
 STATE_LOCK = threading.RLock()
 CLIENT_LOCKS_GUARD = threading.Lock()
@@ -227,13 +230,25 @@ def otc_fx_asset_name(asset):
     return base + "-OTC"
 
 
+def current_market_mode():
+    """Regular FX from 06:00 to 17:59 WAT; OTC FX from 18:00 to 05:59 WAT."""
+    local = datetime.now(MARKET_TIMEZONE)
+    return "REGULAR" if REGULAR_FX_START_HOUR <= local.hour < OTC_START_HOUR else "OTC"
+
+
+def market_asset_name(asset, mode=None):
+    selected = mode or current_market_mode()
+    return regular_fx_base_name(asset) if selected == "REGULAR" else otc_fx_asset_name(asset)
+
+
 def is_supported_binary_asset(asset):
-    """Only OTC FX pairs are enabled for this test; reject regular FX and non-FX OTC."""
-    return bool(otc_fx_asset_name(asset))
+    return bool(market_asset_name(asset))
 
 def get_asset_names():
-    """Discover available OTC FX pairs from IQ Option binary/turbo/blitz initialization feeds."""
-    global IQ, LAST_DISCOVERY_DIAGNOSTICS, ORDER_ASSET_BY_BASE
+    """Discover only the FX market scheduled for the current Lagos-time session."""
+    global IQ, LAST_DISCOVERY_DIAGNOSTICS, ORDER_ASSET_BY_BASE, ACTIVE_MARKET_MODE
+    market_mode = current_market_mode()
+    ACTIVE_MARKET_MODE = market_mode
     client = IQ
     if client is None:
         return []
@@ -310,10 +325,10 @@ def get_asset_names():
         order_asset_by_base = {}
         order_asset_priority = {}
         active_id_priority = {}
-        raw_otc_seen = 0
-        disabled_otc_seen = 0
-        suspended_otc_seen = 0
-        raw_otc_samples = []
+        raw_fx_seen = 0
+        disabled_fx_seen = 0
+        suspended_fx_seen = 0
+        raw_fx_samples = []
         for table_path, entries in active_tables:
             # OTC FX may appear in binary, turbo, or blitz depending on the session.
             # Search only these explicit market tables; no arbitrary instruments.
@@ -330,22 +345,22 @@ def get_asset_names():
                 enabled_text = str(enabled).strip().lower()
                 suspended_text = str(suspended).strip().lower()
                 raw_name = str(active.get("name", "")).strip()
-                # Count OTC FX names before availability flags for useful diagnostics.
-                raw_normalized_name = otc_fx_asset_name(raw_name)
+                # Count scheduled FX names before availability flags for diagnostics.
+                raw_normalized_name = market_asset_name(raw_name, market_mode)
                 if raw_normalized_name:
-                    raw_otc_seen += 1
+                    raw_fx_seen += 1
                     if enabled_text in ("false", "0", "no"):
-                        disabled_otc_seen += 1
+                        disabled_fx_seen += 1
                     if suspended_text in ("true", "1", "yes"):
-                        suspended_otc_seen += 1
-                    if len(raw_otc_samples) < 8:
-                        raw_otc_samples.append({"name": raw_name, "enabled": enabled, "suspended": suspended})
+                        suspended_fx_seen += 1
+                    if len(raw_fx_samples) < 8:
+                        raw_fx_samples.append({"name": raw_name, "enabled": enabled, "suspended": suspended})
                 # Do not submit orders for assets the broker explicitly marks disabled or suspended.
                 if enabled_text in ("false", "0", "no") or suspended_text in ("true", "1", "yes"):
                     continue
-                # Accept only enabled OTC FX symbols. Use the normalized OTC name for
-                # candle requests and preserve the exact broker-provided name for orders.
-                normalized_name = otc_fx_asset_name(raw_name)
+                # Accept only the scheduled FX market; candles use canonical symbols
+                # while orders retain the exact broker-provided active name.
+                normalized_name = market_asset_name(raw_name, market_mode)
                 if normalized_name:
                     candidates.add(normalized_name)
                     # stable_api.buy() resolves the exact active key in OP_code.ACTIVES.
@@ -391,9 +406,9 @@ def get_asset_names():
         LAST_DISCOVERY_DIAGNOSTICS = (
             f"payload={type(data).__name__}; root_keys={list(data.keys())[:15]}; "
             f"active_paths={table_paths}; market_entries={total_actives}; "
-            f"OTC_FX_candidates={len(supported)}; raw_OTC_FX_names={raw_otc_seen}; "
-            f"disabled_OTC_FX={disabled_otc_seen}; suspended_OTC_FX={suspended_otc_seen}; "
-            f"raw_OTC_FX_samples={raw_otc_samples}; sample={sample_names}"
+            f"market_mode={market_mode}; FX_candidates={len(supported)}; raw_FX_names={raw_fx_seen}; "
+            f"disabled_FX={disabled_fx_seen}; suspended_FX={suspended_fx_seen}; "
+            f"raw_FX_samples={raw_fx_samples}; sample={sample_names}"
         )[:1200]
         logging.info("Asset discovery diagnostic: %s", LAST_DISCOVERY_DIAGNOSTICS)
         logging.info(
@@ -577,12 +592,12 @@ def scan_market(manual=False, auto_eligible=False):
         if not assets:
             timed_out = IQ is None
             error_text = "Asset discovery timed out or IQ Option returned zero symbols."
-            logging.error("Zero supported assets. %s", LAST_DISCOVERY_DIAGNOSTICS)
-            telegram_send(f"⚠️ OTC ASSET DISCOVERY DIAGNOSTIC\nNo available OTC FX assets found.\n{LAST_DISCOVERY_DIAGNOSTICS}\nAUTO MODE remains OFF; no trade placed.", keyboard=False)
+            logging.error("Zero supported %s FX assets. %s", ACTIVE_MARKET_MODE, LAST_DISCOVERY_DIAGNOSTICS)
+            telegram_send(f"⚠️ {ACTIVE_MARKET_MODE} FX ASSET DISCOVERY DIAGNOSTIC\nNo available assets found for the scheduled market.\n{LAST_DISCOVERY_DIAGNOSTICS}\nNo trade placed.", keyboard=False)
             return
         start = ASSET_CURSOR % total
         batch = [assets[(start+i) % total] for i in range(min(MAX_SYMBOLS_PER_SCAN, total))]
-        logging.info("Scanning %d of %d discovered assets; manual=%s auto_eligible=%s", len(batch), total, manual, auto_eligible)
+        logging.info("Scanning %s FX: %d of %d discovered assets; manual=%s auto_eligible=%s", ACTIVE_MARKET_MODE, len(batch), total, manual, auto_eligible)
         for index, asset in enumerate(batch, 1):
             if not RUNNING:
                 break
@@ -642,7 +657,7 @@ def scan_market(manual=False, auto_eligible=False):
             reasons = "; ".join(f"{name}: {count}" for name,count in top) or "No valid candles returned."
             suffix = "\nConnection timed out; scanner will reconnect." if timed_out else (f"\n{error_text}" if error_text else "")
             telegram_send(f"NO TRADE\nScanned: {scanned}/{total}\nTop rejection reasons: {reasons}{suffix}")
-        SCAN_RESULTS_QUEUE.put({"manual":manual, "auto_eligible":auto_eligible, "results":results,
+        SCAN_RESULTS_QUEUE.put({"manual":manual, "auto_eligible":auto_eligible, "market_mode":ACTIVE_MARKET_MODE, "results":results,
                                 "timed_out":timed_out, "error":error_text})
         with STATE_LOCK:
             SCAN_IN_PROGRESS = False
@@ -663,6 +678,9 @@ def start_scan(manual=False):
 
 def execute_signal(signal):
     if not AUTO_TRADING_ALLOWED or not AUTO_MODE:
+        return False
+    if ACTIVE_MARKET_MODE and ACTIVE_MARKET_MODE != current_market_mode():
+        logging.info("Skipping signal because the Lagos market session changed.")
         return False
     if not practice_mode_verified():
         set_auto(False, "PRACTICE mode could not be verified")
@@ -745,7 +763,7 @@ def status_message():
     except Exception:
         connected = practice = False
     age = f"{int(time.time()-LAST_SCAN_FINISHED)} seconds ago" if LAST_SCAN_FINISHED else "Not completed yet"
-    return (f"📊 ALMA + CHOP STATUS\nConnection: {'CONNECTED' if connected else 'DISCONNECTED'}\n"
+    return (f"📊 ALMA + CHOP STATUS\nMarket: {current_market_mode()} FX (Lagos: 6 AM regular / 6 PM OTC)\nConnection: {'CONNECTED' if connected else 'DISCONNECTED'}\n"
             f"Practice verification: {'OK' if practice else 'NOT VERIFIED'}\nBalance: {balance}\n"
             f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nStake: $1 | Expiry: 1 minute\n"
             f"Discovered assets: {LAST_ASSET_COUNT}\nLast scan: {age}\n"
@@ -778,7 +796,7 @@ def process_telegram_update(update):
             telegram_send("AUTO refused: connection or PRACTICE verification failed. Check STATUS; AUTO remains OFF.")
         else:
             set_auto(True)
-            telegram_send("🟢 AUTO MODE ON\nPRACTICE verified. $1 stake / 1-minute expiry.\nSCAN MARKET remains report-only.\nWins/losses and trade history are not recorded.")
+            telegram_send(f"🟢 AUTO MODE ON\nMarket schedule: {current_market_mode()} FX (6 AM regular / 6 PM OTC, Lagos time).\nPRACTICE verified. $1 stake / 1-minute expiry.\nSCAN MARKET remains report-only.\nWins/losses and trade history are not recorded.")
     elif command in ("/STOP", "STOP AUTO"):
         set_auto(False, "Stopped manually")
         telegram_send("🔴 AUTO MODE OFF. No new automatic orders will be started.")
@@ -841,7 +859,7 @@ def heartbeat():
     if time.time() - LAST_HEARTBEAT < HEARTBEAT_SECONDS:
         return
     LAST_HEARTBEAT = time.time()
-    telegram_send(f"💓 ALMA + CHOP HEARTBEAT\nAccount: PRACTICE ONLY\n"
+    telegram_send(f"💓 ALMA + CHOP HEARTBEAT\nMarket: {current_market_mode()} FX\nAccount: PRACTICE ONLY\n"
                   f"Connection: {'OK' if practice_mode_verified() else 'NOT VERIFIED'}\n"
                   f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\n"
                   f"Discovered assets: {LAST_ASSET_COUNT}\nLast scan: {LAST_SCAN_SCANNED}/{LAST_SCAN_TOTAL}\n"
@@ -868,7 +886,9 @@ def main():
                 except queue.Empty:
                     break
                 if completed.get("auto_eligible") and AUTO_MODE and not completed.get("error"):
-                    if completed.get("timed_out"):
+                    if completed.get("market_mode") != current_market_mode():
+                        logging.info("Discarding scan results from the previous market session.")
+                    elif completed.get("timed_out"):
                         logging.warning("Skipping automatic entries because this scan timed out.")
                     else:
                         for signal in completed.get("results", []):
