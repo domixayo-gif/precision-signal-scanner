@@ -6,7 +6,7 @@ import iqoptionapi.constants as OP_code
 # ALMA + CHOP — PRACTICE ONLY. Manual scans never place trades.
 BOT_NAME = "ALMA + Choppiness IQ Option Scanner"
 AUTO_TRADING_ALLOWED = True
-STAKE, EXPIRY_MINUTES, CANDLE_SECONDS, LOOKBACK_CANDLES = 1.0, 1, 60, 50
+STAKE, EXPIRY_SECONDS, CANDLE_SECONDS, LOOKBACK_CANDLES = 1.0, 60, 60, 50
 # TradingView-style ALMA settings; standard offset/sigma used because the video did not specify them.
 ALMA_FAST, ALMA_SLOW, ALMA_OFFSET, ALMA_SIGMA = 7, 12, 0.85, 6.0
 CHOP_PERIOD, CHOP_MAX = 2, 59.8
@@ -141,7 +141,7 @@ def connect_iq(timeout=40):
     IQ = result[1]
     balance = result[2]
     logging.info("Connected in PRACTICE. Balance %s", money(balance))
-    telegram_send(f"🟢 ALMA + CHOP CONNECTED\nAccount: PRACTICE ONLY\nBalance: {money(balance)}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nExpiry: 1 minute | Stake: $1\nManual scans never place trades.")
+    telegram_send(f"🟢 ALMA + CHOP CONNECTED\nAccount: PRACTICE ONLY\nBalance: {money(balance)}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nExpiry: 60 seconds | Stake: $1\nManual scans never place trades.")
 
 def practice_mode_verified(timeout=15):
     client = IQ
@@ -575,7 +575,7 @@ def send_signal(signal, manual=False):
     sid = f"AC-{signal.get('asset','UNKNOWN')}-{signal['direction'].upper()}-{int(signal.get('candle_time',time.time()))}"
     telegram_send(
         f"📣 ALMA + CHOP SIGNAL\n{display_asset(signal.get('asset'))} — {direction}\n"
-        f"Signal ID: {sid}\nEntry: {lagos_time(entry)}\nExpiry: 1 minute | Stake: $1\n"
+        f"Signal ID: {sid}\nEntry: {lagos_time(entry)}\nExpiry: 60 seconds | Stake: $1\n"
         f"ALMA 7: {signal.get('alma_fast', 0):.6f} | ALMA 12: {signal.get('alma_slow', 0):.6f}\n"
         f"CHOP(2): {signal.get('chop', 0):.1f} | filter: below {CHOP_MAX:.1f}\n"
         f"Setup ranking: {signal.get('score', 0)}/100 (not win probability)\n"
@@ -721,7 +721,24 @@ def execute_signal(signal):
                 result_queue.put(("safety", "PRACTICE verification failed"))
                 return
             with client_api_lock(client):
-                response = client.buy(STAKE, order_asset, direction, EXPIRY_MINUTES)
+                # The regular buy() method rounds 1-minute trades to IQ Option's
+                # clock expiry window (which can add 15 seconds). Use the raw
+                # absolute expiry API so the requested expiry is server_now + 60s.
+                raw_buy = getattr(client, "buy_by_raw_expirations", None)
+                if not callable(raw_buy):
+                    raise RuntimeError("IQ Option API has no raw-expiry method; refusing a clock-rounded order.")
+                server_now = safe_float(
+                    getattr(getattr(getattr(client, "api", None), "timesync", None), "server_timestamp", 0),
+                    0.0,
+                )
+                if server_now <= 0:
+                    raise RuntimeError("IQ Option server time is unavailable; refusing an unverified expiry.")
+                expiry_timestamp = int(round(server_now + EXPIRY_SECONDS))
+                logging.info(
+                    "Submitting %s %s with raw 60-second expiry: server_now=%.3f expiry_epoch=%d",
+                    asset, direction.upper(), server_now, expiry_timestamp
+                )
+                response = raw_buy(STAKE, order_asset, direction, "turbo", expiry_timestamp)
             result_queue.put(("result", response))
         except Exception as exc:
             try:
@@ -749,7 +766,7 @@ def execute_signal(signal):
         detail = re.sub(r"[\\r\n]+", " ", detail)[:220]
         telegram_send(f"⚪ ORDER REJECTED\n{display_asset(asset)} {direction.upper()}\nNo trade was confirmed.\nBroker response: {detail}")
         return False
-    telegram_send(f"🟡 PRACTICE ORDER ACCEPTED\n{display_asset(asset)} — {direction.upper()}\nOrder ID: {order_id}\nStake: $1 | Expiry: 1 minute\nThis bot does not record wins or losses.")
+    telegram_send(f"🟡 PRACTICE ORDER ACCEPTED\n{display_asset(asset)} — {direction.upper()}\nOrder ID: {order_id}\nStake: $1 | Expiry: 60 seconds\nThis bot does not record wins or losses.")
     logging.info("Practice order accepted for %s (broker active %s); order id=%s", asset, order_asset, order_id)
     return True
 
@@ -775,7 +792,7 @@ def status_message():
     age = f"{int(time.time()-LAST_SCAN_FINISHED)} seconds ago" if LAST_SCAN_FINISHED else "Not completed yet"
     return (f"📊 ALMA + CHOP STATUS\nMarket: {current_market_mode()} FX (manual switch)\nConnection: {'CONNECTED' if connected else 'DISCONNECTED'}\n"
             f"Practice verification: {'OK' if practice else 'NOT VERIFIED'}\nBalance: {balance}\n"
-            f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nStake: $1 | Expiry: 1 minute\n"
+            f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nStake: $1 | Expiry: 60 seconds\n"
             f"Discovered assets: {LAST_ASSET_COUNT}\nLast scan: {age}\n"
             f"Last batch: {LAST_SCAN_SCANNED}/{LAST_SCAN_TOTAL}\nCandidates: {LAST_SCAN_CANDIDATES}\n"
             f"Scan in progress: {'YES' if SCAN_IN_PROGRESS else 'NO'}\n"
@@ -812,7 +829,7 @@ def process_telegram_update(update):
             telegram_send("AUTO refused: connection or PRACTICE verification failed. Check STATUS; AUTO remains OFF.")
         else:
             set_auto(True)
-            telegram_send(f"🟢 AUTO MODE ON\nSelected market: {current_market_mode()} FX (manual switch).\nPRACTICE verified. $1 stake / 1-minute expiry.\nSCAN MARKET remains report-only.\nWins/losses and trade history are not recorded.")
+            telegram_send(f"🟢 AUTO MODE ON\nSelected market: {current_market_mode()} FX (manual switch).\nPRACTICE verified. $1 stake / 60-second expiry.\nSCAN MARKET remains report-only.\nWins/losses and trade history are not recorded.")
     elif command in ("/STOP", "STOP AUTO"):
         set_auto(False, "Stopped manually")
         telegram_send("🔴 AUTO MODE OFF. No new automatic orders will be started.")
