@@ -6,7 +6,7 @@ from iqoptionapi.stable_api import IQ_Option
 # MOMENTUM 10 — PRACTICE ONLY. Manual scans never place trades.
 BOT_NAME = "Momentum 10 IQ Option Scanner"
 AUTO_TRADING_ALLOWED = True
-STAKE, EXPIRY_MINUTES, CANDLE_SECONDS, LOOKBACK_CANDLES = 1.0, 1, 60, 50
+STAKE, EXPIRY_MINUTES, CANDLE_SECONDS, LOOKBACK_CANDLES = 1.0, 2, 60, 50
 # Keep the existing strategy filters unchanged.
 MOMENTUM_PERIOD, EXTREME_PERCENTILE, MIN_TURN_DISTANCE = 10, 0.08, 0.06
 SCAN_INTERVAL_SECONDS, REQUEST_PAUSE_SECONDS, RECONNECT_SECONDS = 60, 0.12, 30
@@ -133,7 +133,7 @@ def connect_iq(timeout=40):
     IQ = result[1]
     balance = result[2]
     logging.info("Connected in PRACTICE. Balance %s", money(balance))
-    telegram_send(f"🟢 MOMENTUM 10 CONNECTED\nAccount: PRACTICE ONLY\nBalance: {money(balance)}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nExpiry: 1 minute | Stake: $1\nManual scans never place trades.")
+    telegram_send(f"🟢 MOMENTUM 10 CONNECTED\nAccount: PRACTICE ONLY\nBalance: {money(balance)}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nExpiry: 2 minutes | Stake: $1\nManual scans never place trades.")
 
 def practice_mode_verified(timeout=15):
     client = IQ
@@ -352,7 +352,7 @@ def send_signal(signal, manual=False):
     direction = "CALL 🟢" if signal["direction"] == "call" else "PUT 🔴"
     entry = int(signal.get("entry_time", signal.get("candle_time", time.time())))
     sid = f"M10-{signal.get('asset','UNKNOWN')}-{signal['direction'].upper()}-{int(signal.get('candle_time',time.time()))}"
-    telegram_send(f"📣 MOMENTUM 10 SIGNAL\n{display_asset(signal.get('asset'))} — {direction}\nSignal ID: {sid}\nEntry: {lagos_time(entry)}\nExpiry: 1 minute\nScore: {signal.get('score',0)}/100\n{'MANUAL SCAN — no trade placed.' if manual else 'AUTO MODE — order will be checked before placement.'}\nScore is not win probability.")
+    telegram_send(f"📣 MOMENTUM 10 SIGNAL\n{display_asset(signal.get('asset'))} — {direction}\nSignal ID: {sid}\nEntry: {lagos_time(entry)}\nExpiry: 2 minutes\nScore: {signal.get('score',0)}/100\n{'MANUAL SCAN — no trade placed.' if manual else 'AUTO MODE — order will be checked before placement.'}\nScore is not win probability.")
 
 
 def scan_market(manual=False, auto_eligible=False):
@@ -516,7 +516,7 @@ def execute_signal(signal):
         detail = re.sub(r"[\\r\\n]+", " ", detail)[:220]
         telegram_send(f"⚪ ORDER REJECTED\n{display_asset(asset)} {direction.upper()}\nNo trade was confirmed.\nBroker response: {detail}")
         return False
-    telegram_send(f"🟡 PRACTICE ORDER ACCEPTED\n{display_asset(asset)} — {direction.upper()}\nOrder ID: {order_id}\nStake: $1 | Expiry: 1 minute\nThis bot does not record wins or losses.")
+    telegram_send(f"🟡 PRACTICE ORDER ACCEPTED\n{display_asset(asset)} — {direction.upper()}\nOrder ID: {order_id}\nStake: $1 | Expiry: 2 minutes\nThis bot does not record wins or losses.")
     logging.info("Practice order accepted for %s; order id=%s", asset, order_id)
     return True
 
@@ -542,7 +542,7 @@ def status_message():
     age = f"{int(time.time()-LAST_SCAN_FINISHED)} seconds ago" if LAST_SCAN_FINISHED else "Not completed yet"
     return (f"📊 MOMENTUM 10 STATUS\nConnection: {'CONNECTED' if connected else 'DISCONNECTED'}\n"
             f"Practice verification: {'OK' if practice else 'NOT VERIFIED'}\nBalance: {balance}\n"
-            f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nStake: $1 | Expiry: 1 minute\n"
+            f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nStake: $1 | Expiry: 2 minutes\n"
             f"Discovered assets: {LAST_ASSET_COUNT}\nLast scan: {age}\n"
             f"Last batch: {LAST_SCAN_SCANNED}/{LAST_SCAN_TOTAL}\nCandidates: {LAST_SCAN_CANDIDATES}\n"
             f"Scan in progress: {'YES' if SCAN_IN_PROGRESS else 'NO'}\n"
@@ -572,7 +572,7 @@ def process_telegram_update(update):
             telegram_send("AUTO refused: connection or PRACTICE verification failed. Check STATUS; AUTO remains OFF.")
         else:
             set_auto(True)
-            telegram_send("🟢 AUTO MODE ON\nPRACTICE verified. $1 stake / 1-minute expiry.\nSCAN MARKET remains report-only.\nWins/losses and trade history are not recorded.")
+            telegram_send("🟢 AUTO MODE ON\nPRACTICE verified. $1 stake / 2-minute expiry.\nSCAN MARKET remains report-only.\nWins/losses and trade history are not recorded.")
     elif command in ("/STOP", "STOP AUTO"):
         set_auto(False, "Stopped manually")
         telegram_send("🔴 AUTO MODE OFF. No new automatic orders will be started.")
