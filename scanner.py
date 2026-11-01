@@ -427,7 +427,7 @@ def scan_market(manual=False, auto_eligible=False):
                         stamp = int(retest_candle.get("from") or time.time())
                         retest_direction = "call" if retest.direction == "up" else "put"
                         candidates_for_asset.append({
-                            "asset": asset, "direction": retest_direction, "score": 90,
+                            "asset": asset, "direction": retest_direction, "score": 100,
                             "candle_time": stamp, "price": retest_candle["close"],
                             "time": utc_now().strftime("%H:%M:%S UTC"),
                             "source": "Immediate breakout + first retest (no confirmation)"
@@ -731,8 +731,7 @@ def main():
                         for signal in completed.get("results", []):
                             if not AUTO_MODE:
                                 break
-                            if execute_signal(signal):
-                                break
+                            execute_signal(signal)
             if MANUAL_SCAN_REQUESTED and not SCAN_IN_PROGRESS:
                 MANUAL_SCAN_REQUESTED = False
                 if not start_scan(manual=True):
