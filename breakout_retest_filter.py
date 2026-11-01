@@ -10,8 +10,7 @@ from statistics import median
 
 class RetestState(Enum):
     NONE = "none"
-    PENDING = "pending"
-    CONFIRMED = "confirmed"
+    RETESTED = "retested"
     INVALIDATED = "invalidated"
 
 
@@ -22,6 +21,7 @@ class RetestResult:
     level: float | None = None
     zone: tuple[float, float] | None = None
     reasons: tuple[str, ...] = ()
+    retest_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -38,8 +38,6 @@ class FilterConfig:
     zone_atr: float = 0.25
     max_close_through_atr: float = 0.15
     max_retrace: float = 0.61
-    pullback_candles: int = 2
-    continuation_candles: int = 2
     max_pivot_range_atr: float = 3.0
 
 
@@ -105,12 +103,11 @@ def _level_for_breakout(pivots, breakout_index, atr, cfg):
 
 
 def evaluate(candles, cfg=DEFAULT_CONFIG):
-    """Return the latest valid two-candle retest state.
+    """Detect a valid breakout followed by its first retest.
 
-    A bullish breakout is followed by exactly two bearish pullback candles
-    that test old resistance (now support). The bearish case is mirrored.
-    Two continuation candles confirm the retest. Pending retests are also
-    reported so the caller can block an opposing Momentum 10 entry early.
+    Entry readiness is reached on the first closed candle that touches the
+    broken level and closes without decisively crossing back through it.
+    No second pullback candle or continuation/confirmation candle is required.
     """
     try:
         if not isinstance(candles, list) or len(candles) < max(28, cfg.min_level_age + 2 * cfg.pivot_n + 5):
@@ -131,6 +128,7 @@ def evaluate(candles, cfg=DEFAULT_CONFIG):
                 level = _level_for_breakout(pivots, b, atr, cfg)
                 if level is None:
                     continue
+
                 breakout = candles[b]
                 op, cl = _num(breakout, "open"), _num(breakout, "close")
                 hi, lo = _num(breakout, "high"), _num(breakout, "low")
@@ -139,8 +137,8 @@ def evaluate(candles, cfg=DEFAULT_CONFIG):
                                 for c in candles[max(0, b - 10):b]]
                 avg_body = sum(prior_bodies) / len(prior_bodies) if prior_bodies else 0.0
                 strong_body = body >= cfg.break_body_atr * atr or body >= cfg.break_body_avg * avg_body
-
                 impulse_window = candles[max(0, b - 10):b + 1]
+
                 if direction == "up":
                     valid_break = cl > level + cfg.break_close_atr * atr and cl > op
                     leg = hi - min(_num(c, "low") for c in impulse_window)
@@ -150,116 +148,57 @@ def evaluate(candles, cfg=DEFAULT_CONFIG):
                 if not valid_break or not strong_body or leg <= 0:
                     continue
 
-                p1, p2 = b + 1, b + 2
-                if p1 > latest:
+                # The very first candle after the breakout is the retest candle.
+                # It may be bullish, bearish, or a doji: the touch and close
+                # relative to the broken level determine whether the level held.
+                retest_index = b + 1
+                if retest_index > latest:
                     continue
-                if p2 > latest:
-                    first = candles[p1]
-                    first_open, first_close = _num(first, "open"), _num(first, "close")
-                    first_body = abs(first_close - first_open)
-                    if direction == "up":
-                        first_opposite = first_close < first_open
-                        first_extreme = _num(first, "low")
-                        first_touched = first_extreme <= level + cfg.zone_atr * atr
-                        first_through = first_close < level - cfg.max_close_through_atr * atr
-                        first_depth = (hi - first_extreme) / leg
-                    else:
-                        first_opposite = first_close > first_open
-                        first_extreme = _num(first, "high")
-                        first_touched = first_extreme >= level - cfg.zone_atr * atr
-                        first_through = first_close > level + cfg.max_close_through_atr * atr
-                        first_depth = (first_extreme - lo) / leg
-                    if first_opposite and first_touched and not first_through and first_depth <= cfg.max_retrace:
-                        zone = (level - cfg.zone_atr * atr, level + cfg.zone_atr * atr)
-                        candidates.append((b, RetestResult(
-                            RetestState.PENDING, direction, level, zone,
-                            ("first countertrend candle reached the retest zone; waiting for the second pullback candle",)
-                        )))
-                    continue
-                pullbacks = candles[p1:p2 + 1]
-                o1, c1 = _num(pullbacks[0], "open"), _num(pullbacks[0], "close")
-                o2, c2 = _num(pullbacks[1], "open"), _num(pullbacks[1], "close")
-                if direction == "up":
-                    opposite = c1 < o1 and c2 < o2
-                    extreme = min(_num(c, "low") for c in pullbacks)
-                    touched = extreme <= level + cfg.zone_atr * atr
-                    pullback_depth = (hi - extreme) / leg
-                else:
-                    opposite = c1 > o1 and c2 > o2
-                    extreme = max(_num(c, "high") for c in pullbacks)
-                    touched = extreme >= level - cfg.zone_atr * atr
-                    pullback_depth = (extreme - lo) / leg
-
-                body1, body2 = abs(c1 - o1), abs(c2 - o2)
-                expanding = body2 > max(body1 * 1.5, cfg.break_body_atr * atr)
-                if not opposite or not touched or pullback_depth > cfg.max_retrace or expanding:
-                    continue
-
+                retest = candles[retest_index]
+                retest_close = _num(retest, "close")
                 zone = (level - cfg.zone_atr * atr, level + cfg.zone_atr * atr)
-                # Once the two-candle retest holds, keep its direction protected
-                # until price closes decisively through the level or continuation confirms.
-                invalidation_at = None
-                invalidation_price = (level - cfg.max_close_through_atr * atr
-                                      if direction == "up"
-                                      else level + cfg.max_close_through_atr * atr)
-                for candle_index in range(p1, latest + 1):
-                    close = _num(candles[candle_index], "close")
-                    broken = (close < invalidation_price if direction == "up"
-                              else close > invalidation_price)
-                    if broken:
-                        invalidation_at = candle_index
-                        break
-                if invalidation_at is not None:
+
+                if direction == "up":
+                    extreme = _num(retest, "low")
+                    touched = extreme <= zone[1]
+                    held = retest_close >= level - cfg.max_close_through_atr * atr
+                    depth = (hi - extreme) / leg
+                else:
+                    extreme = _num(retest, "high")
+                    touched = extreme >= zone[0]
+                    held = retest_close <= level + cfg.max_close_through_atr * atr
+                    depth = (extreme - lo) / leg
+
+                if not touched:
+                    continue
+                if not held:
                     candidates.append((b, RetestResult(
                         RetestState.INVALIDATED, direction, level, zone,
-                        ("price closed decisively through the retested level",)
+                        ("the first retest candle closed decisively through the broken level",),
+                        retest_index
                     )))
                     continue
+                if depth < 0 or depth > cfg.max_retrace:
+                    continue
 
-                # Do not forget a valid retest just because the first candle(s)
-                # after it are weak or mixed. Search for two consecutive
-                # continuation candles anywhere inside the still-fresh setup.
-                state = RetestState.PENDING
-                reasons = ["two countertrend candles retested the broken level; level remains protected"]
-                continuation_start = b + 3
-                pullback_high = max(_num(c, "high") for c in pullbacks)
-                pullback_low = min(_num(c, "low") for c in pullbacks)
-                confirmed = False
-                for second_index in range(continuation_start + 1, latest + 1):
-                    first = candles[second_index - 1]
-                    second = candles[second_index]
-                    first_open, first_close = _num(first, "open"), _num(first, "close")
-                    second_open, second_close = _num(second, "open"), _num(second, "close")
-                    if direction == "up":
-                        pair_continues = first_close > first_open and second_close > second_open
-                        breaks_pullback = second_close > pullback_high
-                    else:
-                        pair_continues = first_close < first_open and second_close < second_open
-                        breaks_pullback = second_close < pullback_low
-                    if pair_continues and breaks_pullback:
-                        state = RetestState.CONFIRMED
-                        confirmed = True
-                        break
-                if confirmed:
-                    reasons.append("two consecutive continuation candles confirmed beyond the pullback")
-                else:
-                    reasons.append("waiting for two consecutive continuation candles; weak/mixed candles do not cancel the retest")
-
-                candidates.append((b, RetestResult(state, direction, level, zone, tuple(reasons))))
+                candidates.append((b, RetestResult(
+                    RetestState.RETESTED, direction, level, zone,
+                    ("valid breakout retest detected; entry does not wait for confirmation candles",),
+                    retest_index
+                )))
 
         if not candidates:
-            return RetestResult(RetestState.NONE, reasons=("no valid two-candle breakout retest",))
+            return RetestResult(RetestState.NONE, reasons=("no valid breakout followed by a retest",))
         return max(candidates, key=lambda item: item[0])[1]
     except (KeyError, TypeError, ValueError, IndexError, ZeroDivisionError) as exc:
         return RetestResult(RetestState.NONE, reasons=(f"filter safely skipped: {type(exc).__name__}",))
 
-
 def apply_filter(m10_direction, result, mode="enforce"):
-    """Only veto an opposing Momentum 10 signal; never creates a new signal."""
+    """Veto a Momentum 10 entry that opposes a detected breakout retest."""
     direction = (m10_direction or "").lower()
     opposing = ((result.direction == "up" and direction == "put") or
                 (result.direction == "down" and direction == "call"))
-    should_veto = result.state in (RetestState.PENDING, RetestState.CONFIRMED) and opposing
+    should_veto = result.state == RetestState.RETESTED and opposing
     note = "WOULD_VETO" if should_veto else "PASS"
     if mode == "enforce" and should_veto:
         return None, "VETO"
