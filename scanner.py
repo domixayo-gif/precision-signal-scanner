@@ -3,7 +3,6 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from iqoptionapi.stable_api import IQ_Option
 from breakout_retest_filter import evaluate as evaluate_breakout_retest, apply_filter as apply_breakout_retest
-from market_filters import evaluate_market_filters
 
 # MOMENTUM 10 — PRACTICE ONLY. Manual scans never place trades.
 BOT_NAME = "Momentum 10 IQ Option Scanner"
@@ -20,8 +19,6 @@ MAX_SIGNAL_AGE_SECONDS, ORDER_REQUEST_TIMEOUT = 180, 12
 # It blocks only opposing Momentum 10 signals and never creates CALL/PUT signals.
 RETEST_FILTER_MODE = "enforce"
 MARKET_MODE = "BOTH"
-TREND_CANDLE_SECONDS = 300
-TREND_CANDLE_COUNT = 60
 IQ_EMAIL, IQ_PASSWORD = os.getenv("IQ_EMAIL", ""), os.getenv("IQ_PASSWORD", "")
 TELEGRAM_TOKEN, TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_TOKEN", ""), os.getenv("TELEGRAM_CHAT_ID", "")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -258,7 +255,7 @@ def get_asset_names():
         return []
 
 
-def fetch_candles(asset, timeframe=CANDLE_SECONDS, count=LOOKBACK_CANDLES):
+def fetch_candles(asset):
     global IQ
     client = IQ
     if client is None:
@@ -267,7 +264,7 @@ def fetch_candles(asset, timeframe=CANDLE_SECONDS, count=LOOKBACK_CANDLES):
     def worker():
         try:
             with client_api_lock(client):
-                candles = client.get_candles(asset, timeframe, count, int(time.time()))
+                candles = client.get_candles(asset, CANDLE_SECONDS, LOOKBACK_CANDLES, int(time.time()))
             result_queue.put(("ok", candles))
         except Exception as exc:
             result_queue.put(("error", str(exc)))
@@ -414,56 +411,49 @@ def scan_market(manual=False, auto_eligible=False):
             if len(candles) < MOMENTUM_PERIOD + 4:
                 rejected["no candles/unavailable"] = rejected.get("no candles/unavailable", 0) + 1
             else:
-                # Use closed candles for every strategy and filter.
+                # Evaluate the existing Momentum 10 and breakout/retest logic.
                 closed = candles[:-1]
-                trend_candles = fetch_candles(asset, TREND_CANDLE_SECONDS, TREND_CANDLE_COUNT)
-                if trend_candles is None or len(trend_candles) < 52:
-                    rejected["5-minute trend data unavailable"] = rejected.get("5-minute trend data unavailable", 0) + 1
-                    continue
-                market = evaluate_market_filters(closed, trend_candles[:-1])
-                if not market["ready"]:
-                    rejected[market["reason"]] = rejected.get(market["reason"], 0) + 1
-                    continue
-                if market["consolidating"]:
-                    rejected["sideways/consolidation market"] = rejected.get("sideways/consolidation market", 0) + 1
-                    continue
-                trend = market["trend"]
-                if trend not in ("up", "down"):
-                    rejected["5-minute trend unclear"] = rejected.get("5-minute trend unclear", 0) + 1
-                    continue
-
                 candidates_for_asset = []
                 m10_signal, m10_reason = calculate_signal(asset, closed)
                 retest = evaluate_breakout_retest(closed) if RETEST_FILTER_MODE != "off" else None
+
                 if m10_signal:
-                    aligned = (trend == "up" and m10_signal["direction"] == "call") or (trend == "down" and m10_signal["direction"] == "put")
-                    if not aligned:
-                        rejected["Momentum 10 disagrees with 5-minute trend"] = rejected.get("Momentum 10 disagrees with 5-minute trend", 0) + 1
+                    _, verdict = apply_breakout_retest(
+                        m10_signal["direction"], retest, mode=RETEST_FILTER_MODE
+                    ) if retest else (m10_signal["direction"], "PASS")
+                    if verdict == "VETO":
+                        rejected["breakout retest protected against countertrend entry"] = (
+                            rejected.get("breakout retest protected against countertrend entry", 0) + 1
+                        )
+                        level_text = f"{retest.level:.6f}" if retest and retest.level is not None else "unknown"
+                        if retest:
+                            logging.warning(
+                                "BREAKOUT RETEST VETO %s %s: %s breakout, level=%s, state=%s, reasons=%s",
+                                asset, m10_signal["direction"].upper(), retest.direction, level_text,
+                                retest.state.value, "; ".join(retest.reasons)
+                            )
+                            telegram_send(
+                                f"🛡️ BREAKOUT RETEST FILTER\n{display_asset(asset)} — {m10_signal['direction'].upper()} blocked\n"
+                                f"Breakout: {retest.direction.upper()}\nHorizontal level: {level_text}\n"
+                                f"Reason: {'; '.join(retest.reasons)}"
+                            )
                     else:
-                        _, verdict = apply_breakout_retest(m10_signal["direction"], retest, mode=RETEST_FILTER_MODE) if retest else (m10_signal["direction"], "PASS")
-                        if verdict == "VETO":
-                            rejected["breakout retest protected against countertrend entry"] = rejected.get("breakout retest protected against countertrend entry", 0) + 1
-                        else:
-                            m10_signal["source"] = "Momentum 10 + 5m trend"
-                            candidates_for_asset.append(m10_signal)
+                        m10_signal["source"] = "Momentum 10"
+                        candidates_for_asset.append(m10_signal)
                 else:
                     rejected[m10_reason] = rejected.get(m10_reason, 0) + 1
 
-                # Fully confirmed breakout/retest can create its own signal.
+                # A fully confirmed breakout/retest remains an independent signal.
                 if retest and retest.state.value == "confirmed":
                     retest_direction = "call" if retest.direction == "up" else "put"
-                    aligned = (trend == "up" and retest_direction == "call") or (trend == "down" and retest_direction == "put")
-                    if aligned:
-                        stamp = int(closed[-1].get("from") or time.time())
-                        if not any(item["direction"] == retest_direction for item in candidates_for_asset):
-                            candidates_for_asset.append({
-                                "asset": asset, "direction": retest_direction, "score": 85,
-                                "candle_time": stamp, "price": closed[-1]["close"],
-                                "time": utc_now().strftime("%H:%M:%S UTC"),
-                                "source": "Confirmed breakout + 2-candle retest"
-                            })
-                    else:
-                        rejected["breakout/retest disagrees with 5-minute trend"] = rejected.get("breakout/retest disagrees with 5-minute trend", 0) + 1
+                    stamp = int(closed[-1].get("from") or time.time())
+                    if not any(item["direction"] == retest_direction for item in candidates_for_asset):
+                        candidates_for_asset.append({
+                            "asset": asset, "direction": retest_direction, "score": 85,
+                            "candle_time": stamp, "price": closed[-1]["close"],
+                            "time": utc_now().strftime("%H:%M:%S UTC"),
+                            "source": "Confirmed breakout + 2-candle retest"
+                        })
 
                 for candidate in candidates_for_asset:
                     if manual:
@@ -598,7 +588,7 @@ def status_message():
     return (f"📊 MOMENTUM 10 STATUS\nConnection: {'CONNECTED' if connected else 'DISCONNECTED'}\n"
             f"Practice verification: {'OK' if practice else 'NOT VERIFIED'}\nBalance: {balance}\n"
             f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nStake: $1 | Expiry: 2 minutes\n"
-            f"Market selection: {MARKET_MODE}\n5-minute trend: ON | Consolidation protection: ON\nBreakout/retest independent signals: ON\n"
+            f"Market selection: {MARKET_MODE}\nBreakout/retest independent signals: ON\n"
             f"Discovered assets: {LAST_ASSET_COUNT}\nLast scan: {age}\n"
             f"Last batch: {LAST_SCAN_SCANNED}/{LAST_SCAN_TOTAL}\nCandidates: {LAST_SCAN_CANDIDATES}\n"
             f"Scan in progress: {'YES' if SCAN_IN_PROGRESS else 'NO'}\n"
@@ -652,7 +642,7 @@ def process_telegram_update(update):
     elif command in ("STATUS", "/STATUS"):
         telegram_send(status_message())
     elif command in ("/HELP", "HELP"):
-        telegram_send("Commands:\nSTART AUTO — enable $1 PRACTICE trades\nSTOP AUTO — stop new automatic trades\nSCAN MARKET — report-only signal scan\nREGULAR PAIRS / OTC PAIRS / BOTH MARKETS — choose market\nSTATUS — connection and scan status\nFilters: 5m trend, anti-consolidation, confirmed breakout/retest.\nNo win/loss tracker or trade-history recorder is included.")
+        telegram_send("Commands:\nSTART AUTO — enable $1 PRACTICE trades\nSTOP AUTO — stop new automatic trades\nSCAN MARKET — report-only signal scan\nREGULAR PAIRS / OTC PAIRS / BOTH MARKETS — choose market\nSTATUS — connection and scan status\nFilters: Momentum 10 and confirmed breakout/retest protection.\nNo win/loss tracker or trade-history recorder is included.")
     else:
         telegram_send("Unknown command. Use START AUTO, STOP AUTO, SCAN MARKET, REGULAR PAIRS, OTC PAIRS, BOTH MARKETS, STATUS, or /HELP.")
 
