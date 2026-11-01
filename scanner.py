@@ -244,7 +244,7 @@ def get_asset_names():
                 if "." in raw_name:
                     raw_name = raw_name.split(".", 1)[1].strip()
                 if raw_name and is_supported_binary_asset(raw_name):
-                    is_otc = bool(re.search(r"(?:[-_\\s]?OTC)$", raw_name, re.IGNORECASE))
+                    is_otc = bool(re.search(r"(?:[-_ ]?OTC)$", raw_name, re.IGNORECASE))
                     if MARKET_MODE == "REGULAR" and is_otc:
                         continue
                     if MARKET_MODE == "OTC" and not is_otc:
