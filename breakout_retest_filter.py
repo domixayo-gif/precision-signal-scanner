@@ -122,7 +122,7 @@ def evaluate(candles, cfg=DEFAULT_CONFIG):
         candidates = []
 
         first_break = max(cfg.min_level_age + 2 * cfg.pivot_n, latest - cfg.max_setup_age)
-        last_break = latest - cfg.pullback_candles
+        last_break = latest - 1
         for direction, pivots in (("up", up_pivots), ("down", down_pivots)):
             for b in range(first_break, last_break + 1):
                 atr = _atr(candles, b, cfg.atr_period)
@@ -140,17 +140,43 @@ def evaluate(candles, cfg=DEFAULT_CONFIG):
                 avg_body = sum(prior_bodies) / len(prior_bodies) if prior_bodies else 0.0
                 strong_body = body >= cfg.break_body_atr * atr or body >= cfg.break_body_avg * avg_body
 
+                impulse_window = candles[max(0, b - 10):b + 1]
                 if direction == "up":
                     valid_break = cl > level + cfg.break_close_atr * atr and cl > op
-                    leg = hi - level
+                    leg = hi - min(_num(c, "low") for c in impulse_window)
                 else:
                     valid_break = cl < level - cfg.break_close_atr * atr and cl < op
-                    leg = level - lo
+                    leg = max(_num(c, "high") for c in impulse_window) - lo
                 if not valid_break or not strong_body or leg <= 0:
                     continue
 
                 p1, p2 = b + 1, b + 2
+                if p1 > latest:
+                    continue
                 if p2 > latest:
+                    first = candles[p1]
+                    first_open, first_close = _num(first, "open"), _num(first, "close")
+                    first_body = abs(first_close - first_open)
+                    if direction == "up":
+                        first_opposite = first_close < first_open
+                        first_extreme = _num(first, "low")
+                        first_touched = (first_extreme <= level + cfg.zone_atr * atr
+                                         and first_extreme >= level - cfg.zone_atr * atr)
+                        first_through = first_close < level - cfg.max_close_through_atr * atr
+                        first_depth = (hi - first_extreme) / leg
+                    else:
+                        first_opposite = first_close > first_open
+                        first_extreme = _num(first, "high")
+                        first_touched = (first_extreme >= level - cfg.zone_atr * atr
+                                         and first_extreme <= level + cfg.zone_atr * atr)
+                        first_through = first_close > level + cfg.max_close_through_atr * atr
+                        first_depth = (first_extreme - lo) / leg
+                    if first_opposite and first_touched and not first_through and first_depth <= cfg.max_retrace:
+                        zone = (level - cfg.zone_atr * atr, level + cfg.zone_atr * atr)
+                        candidates.append((b, RetestResult(
+                            RetestState.PENDING, direction, level, zone,
+                            ("first countertrend candle reached the retest zone; waiting for the second pullback candle",)
+                        )))
                     continue
                 pullbacks = candles[p1:p2 + 1]
                 o1, c1 = _num(pullbacks[0], "open"), _num(pullbacks[0], "close")
