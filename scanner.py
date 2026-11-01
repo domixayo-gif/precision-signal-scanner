@@ -14,8 +14,9 @@ SCAN_INTERVAL_SECONDS, REQUEST_PAUSE_SECONDS, RECONNECT_SECONDS = 60, 0.12, 30
 HEARTBEAT_SECONDS, REQUEST_TIMEOUT = 300, 15
 MAX_SYMBOLS_PER_SCAN, TOP_SIGNALS, PROGRESS_EVERY = 40, 3, 10
 MAX_SIGNAL_AGE_SECONDS, ORDER_REQUEST_TIMEOUT = 180, 12
-# Active veto-only protection: blocks only Momentum 10 signals against a valid
-# two-candle breakout retest. It never creates CALL/PUT signals.
+# Active veto-only protection: recognises one early retest candle, then exactly
+# two countertrend pullback candles, followed by two continuation candles.
+# It blocks only opposing Momentum 10 signals and never creates CALL/PUT signals.
 RETEST_FILTER_MODE = "enforce"
 IQ_EMAIL, IQ_PASSWORD = os.getenv("IQ_EMAIL", ""), os.getenv("IQ_PASSWORD", "")
 TELEGRAM_TOKEN, TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_TOKEN", ""), os.getenv("TELEGRAM_CHAT_ID", "")
