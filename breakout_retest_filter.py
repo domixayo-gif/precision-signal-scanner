@@ -179,7 +179,7 @@ def evaluate(candles, cfg=DEFAULT_CONFIG):
                 continuation_start = b + 3
                 available_continuations = min(cfg.continuation_candles,
                                                latest - continuation_start + 1)
-                continuation_ok = available_continuations > 0
+                continuation_ok = True
                 for offset in range(available_continuations):
                     candle = candles[continuation_start + offset]
                     co, cc = _num(candle, "open"), _num(candle, "close")
