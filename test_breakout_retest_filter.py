@@ -17,7 +17,7 @@ def build_bullish_breakout(extra_candles):
         99.1, 99.2, 99.3, 99.4, 99.5, 99.6, 99.7, 99.8, 99.9,
     ]
     candles = [
-        {"open": 99.0, "close": 99.1, "high": baseline_highs[i], "low": 98.5, "from": i * 60}
+        {"open": 99.0, "close": 99.1, "high": baseline_highs[i] if i < len(baseline_highs) else 99.8, "low": 98.5, "from": i * 60}
         for i in range(33 + len(extra_candles))
     ]
     for index in (5, 15):
