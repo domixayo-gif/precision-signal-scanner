@@ -2,6 +2,7 @@ import os, time, math, logging, threading, traceback, requests, queue, re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from iqoptionapi.stable_api import IQ_Option
+from breakout_retest_filter import evaluate as evaluate_breakout_retest, apply_filter as apply_breakout_retest
 
 # MOMENTUM 10 — PRACTICE ONLY. Manual scans never place trades.
 BOT_NAME = "Momentum 10 IQ Option Scanner"
@@ -13,6 +14,9 @@ SCAN_INTERVAL_SECONDS, REQUEST_PAUSE_SECONDS, RECONNECT_SECONDS = 60, 0.12, 30
 HEARTBEAT_SECONDS, REQUEST_TIMEOUT = 300, 15
 MAX_SYMBOLS_PER_SCAN, TOP_SIGNALS, PROGRESS_EVERY = 40, 3, 10
 MAX_SIGNAL_AGE_SECONDS, ORDER_REQUEST_TIMEOUT = 180, 12
+# Active veto-only protection: blocks only Momentum 10 signals against a valid
+# two-candle breakout retest. It never creates CALL/PUT signals.
+RETEST_FILTER_MODE = "enforce"
 IQ_EMAIL, IQ_PASSWORD = os.getenv("IQ_EMAIL", ""), os.getenv("IQ_PASSWORD", "")
 TELEGRAM_TOKEN, TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_TOKEN", ""), os.getenv("TELEGRAM_CHAT_ID", "")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -415,10 +419,37 @@ def scan_market(manual=False, auto_eligible=False):
                 else:
                     rejected[reason] = rejected.get(reason, 0) + 1
             else:
-                # Automatic entries use only fully closed candles.
-                signal, reason = calculate_signal(asset, candles[:-1])
+                # Automatic entries use the same closed-candle slice as Momentum 10.
+                closed = candles[:-1]
+                signal, reason = calculate_signal(asset, closed)
                 if signal:
-                    if LAST_SIGNAL_BY_ASSET.get(asset) != str(signal["candle_time"]):
+                    if RETEST_FILTER_MODE != "off":
+                        retest = evaluate_breakout_retest(closed)
+                        filtered_signal, verdict = apply_breakout_retest(
+                            signal["direction"], retest, mode=RETEST_FILTER_MODE
+                        )
+                        if verdict == "VETO":
+                            level_text = f"{retest.level:.6f}" if retest.level is not None else "unknown"
+                            logging.warning(
+                                "BREAKOUT RETEST VETO %s %s: %s breakout, level=%s, state=%s, reasons=%s",
+                                asset, signal["direction"].upper(), retest.direction, level_text,
+                                retest.state.value, "; ".join(retest.reasons)
+                            )
+                            rejected["breakout retest protected against countertrend entry"] = (
+                                rejected.get("breakout retest protected against countertrend entry", 0) + 1
+                            )
+                            telegram_send(
+                                f"🛡️ BREAKOUT RETEST FILTER\n{display_asset(asset)} — {signal['direction'].upper()} blocked\n"
+                                f"Breakout: {retest.direction.upper()}\nHorizontal level: {level_text}\n"
+                                f"Reason: {'; '.join(retest.reasons)}"
+                            )
+                            signal = None
+                        elif verdict == "WOULD_VETO":
+                            logging.info(
+                                "BREAKOUT RETEST REPORT %s %s level=%s state=%s",
+                                asset, signal["direction"].upper(), retest.level, retest.state.value
+                            )
+                    if signal and LAST_SIGNAL_BY_ASSET.get(asset) != str(signal["candle_time"]):
                         results.append(signal)
                 else:
                     rejected[reason] = rejected.get(reason, 0) + 1
