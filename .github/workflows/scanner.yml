@@ -42,7 +42,7 @@ jobs:
 
       - name: Check scanner
         run: |
-          python -m py_compile scanner.py
+          python -m py_compile scanner.py breakout_retest_filter.py
 
       - name: Run Momentum 10 scanner
         env:
