@@ -12,7 +12,6 @@ class RetestState(Enum):
     NONE = "none"
     RETESTED = "retested"
     INVALIDATED = "invalidated"
-    INVALIDATED = "invalidated"
 
 
 @dataclass(frozen=True)
