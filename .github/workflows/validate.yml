@@ -4,6 +4,10 @@ on:
   push:
     paths:
       - "scanner.py"
+      - "market_filters.py"
+      - "breakout_retest_filter.py"
+      - "test_market_filters.py"
+      - "test_breakout_retest_filter.py"
       - "requirements.txt"
       - ".github/workflows/scanner.yml"
       - ".github/workflows/validate.yml"
@@ -26,5 +30,7 @@ jobs:
           python-version: "3.12"
       - name: Install scanner requirements
         run: python -m pip install -r requirements.txt
-      - name: Compile scanner
-        run: python -m py_compile scanner.py
+      - name: Compile scanner modules
+        run: python -m py_compile scanner.py breakout_retest_filter.py market_filters.py
+      - name: Run market and breakout/retest regression tests
+        run: python -m unittest test_market_filters test_breakout_retest_filter -v

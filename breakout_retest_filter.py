@@ -160,15 +160,13 @@ def evaluate(candles, cfg=DEFAULT_CONFIG):
                     if direction == "up":
                         first_opposite = first_close < first_open
                         first_extreme = _num(first, "low")
-                        first_touched = (first_extreme <= level + cfg.zone_atr * atr
-                                         and first_extreme >= level - cfg.zone_atr * atr)
+                        first_touched = first_extreme <= level + cfg.zone_atr * atr
                         first_through = first_close < level - cfg.max_close_through_atr * atr
                         first_depth = (hi - first_extreme) / leg
                     else:
                         first_opposite = first_close > first_open
                         first_extreme = _num(first, "high")
-                        first_touched = (first_extreme >= level - cfg.zone_atr * atr
-                                         and first_extreme <= level + cfg.zone_atr * atr)
+                        first_touched = first_extreme >= level - cfg.zone_atr * atr
                         first_through = first_close > level + cfg.max_close_through_atr * atr
                         first_depth = (first_extreme - lo) / leg
                     if first_opposite and first_touched and not first_through and first_depth <= cfg.max_retrace:
@@ -184,54 +182,69 @@ def evaluate(candles, cfg=DEFAULT_CONFIG):
                 if direction == "up":
                     opposite = c1 < o1 and c2 < o2
                     extreme = min(_num(c, "low") for c in pullbacks)
-                    through = min(c1, c2) < level - cfg.max_close_through_atr * atr
-                    touched = extreme <= level + cfg.zone_atr * atr and extreme >= level - cfg.zone_atr * atr
+                    touched = extreme <= level + cfg.zone_atr * atr
                     pullback_depth = (hi - extreme) / leg
                 else:
                     opposite = c1 > o1 and c2 > o2
                     extreme = max(_num(c, "high") for c in pullbacks)
-                    through = max(c1, c2) > level + cfg.max_close_through_atr * atr
-                    touched = extreme >= level - cfg.zone_atr * atr and extreme <= level + cfg.zone_atr * atr
+                    touched = extreme >= level - cfg.zone_atr * atr
                     pullback_depth = (extreme - lo) / leg
 
                 body1, body2 = abs(c1 - o1), abs(c2 - o2)
                 expanding = body2 > max(body1 * 1.5, cfg.break_body_atr * atr)
-                if not opposite or through or not touched or pullback_depth > cfg.max_retrace or expanding:
+                if not opposite or not touched or pullback_depth > cfg.max_retrace or expanding:
                     continue
-
-                # The two-candle retest is valid and pending until continuation confirms.
-                state = RetestState.PENDING
-                reasons = ["two countertrend candles retested the broken level"]
-                continuation_start = b + 3
-                available_continuations = min(cfg.continuation_candles,
-                                               latest - continuation_start + 1)
-                continuation_ok = True
-                for offset in range(available_continuations):
-                    candle = candles[continuation_start + offset]
-                    co, cc = _num(candle, "open"), _num(candle, "close")
-                    if direction == "up":
-                        continuation_ok = continuation_ok and cc > co
-                    else:
-                        continuation_ok = continuation_ok and cc < co
-                if not continuation_ok:
-                    continue
-                if available_continuations >= cfg.continuation_candles:
-                    final = candles[continuation_start + cfg.continuation_candles - 1]
-                    final_close = _num(final, "close")
-                    pullback_high = max(_num(c, "high") for c in pullbacks)
-                    pullback_low = min(_num(c, "low") for c in pullbacks)
-                    if direction == "up" and final_close > pullback_high:
-                        state = RetestState.CONFIRMED
-                        reasons.append("two continuation candles confirmed above the pullback")
-                    elif direction == "down" and final_close < pullback_low:
-                        state = RetestState.CONFIRMED
-                        reasons.append("two continuation candles confirmed below the pullback")
-                    else:
-                        continue
-                else:
-                    reasons.append("waiting for two continuation candles")
 
                 zone = (level - cfg.zone_atr * atr, level + cfg.zone_atr * atr)
+                # Once the two-candle retest holds, keep its direction protected
+                # until price closes decisively through the level or continuation confirms.
+                invalidation_at = None
+                invalidation_price = (level - cfg.max_close_through_atr * atr
+                                      if direction == "up"
+                                      else level + cfg.max_close_through_atr * atr)
+                for candle_index in range(p1, latest + 1):
+                    close = _num(candles[candle_index], "close")
+                    broken = (close < invalidation_price if direction == "up"
+                              else close > invalidation_price)
+                    if broken:
+                        invalidation_at = candle_index
+                        break
+                if invalidation_at is not None:
+                    candidates.append((b, RetestResult(
+                        RetestState.INVALIDATED, direction, level, zone,
+                        ("price closed decisively through the retested level",)
+                    )))
+                    continue
+
+                # Do not forget a valid retest just because the first candle(s)
+                # after it are weak or mixed. Search for two consecutive
+                # continuation candles anywhere inside the still-fresh setup.
+                state = RetestState.PENDING
+                reasons = ["two countertrend candles retested the broken level; level remains protected"]
+                continuation_start = b + 3
+                pullback_high = max(_num(c, "high") for c in pullbacks)
+                pullback_low = min(_num(c, "low") for c in pullbacks)
+                confirmed = False
+                for second_index in range(continuation_start + 1, latest + 1):
+                    first = candles[second_index - 1]
+                    second = candles[second_index]
+                    first_open, first_close = _num(first, "open"), _num(first, "close")
+                    second_open, second_close = _num(second, "open"), _num(second, "close")
+                    if direction == "up":
+                        pair_continues = first_close > first_open and second_close > second_open
+                        breaks_pullback = second_close > pullback_high
+                    else:
+                        pair_continues = first_close < first_open and second_close < second_open
+                        breaks_pullback = second_close < pullback_low
+                    if pair_continues and breaks_pullback:
+                        state = RetestState.CONFIRMED
+                        confirmed = True
+                        break
+                if confirmed:
+                    reasons.append("two consecutive continuation candles confirmed beyond the pullback")
+                else:
+                    reasons.append("waiting for two consecutive continuation candles; weak/mixed candles do not cancel the retest")
+
                 candidates.append((b, RetestResult(state, direction, level, zone, tuple(reasons))))
 
         if not candidates:

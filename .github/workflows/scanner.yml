@@ -3,6 +3,7 @@ name: Momentum 10 IQ Option Scanner
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     paths:
       - "scanner.py"
       - "market_filters.py"
@@ -46,7 +47,7 @@ jobs:
       - name: Check scanner
         run: |
           python -m py_compile scanner.py breakout_retest_filter.py market_filters.py
-          python -m unittest test_market_filters -v
+          python -m unittest test_market_filters test_breakout_retest_filter -v
 
       - name: Run Momentum 10 scanner
         env:
