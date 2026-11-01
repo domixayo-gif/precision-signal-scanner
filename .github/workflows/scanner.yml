@@ -5,7 +5,9 @@ on:
   push:
     paths:
       - "scanner.py"
+      - "market_filters.py"
       - "breakout_retest_filter.py"
+      - "test_market_filters.py"
       - "requirements.txt"
       - ".github/workflows/scanner.yml"
   schedule:
@@ -43,7 +45,8 @@ jobs:
 
       - name: Check scanner
         run: |
-          python -m py_compile scanner.py breakout_retest_filter.py
+          python -m py_compile scanner.py breakout_retest_filter.py market_filters.py
+          python -m unittest test_market_filters -v
 
       - name: Run Momentum 10 scanner
         env:
