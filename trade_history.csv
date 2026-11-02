@@ -11,3 +11,4 @@ accepted_at_utc,order_id,asset,direction,stake,expiry_minutes,signal_source,outc
 2026-11-02T09:19:23.489104+00:00,14411743430,USDZAR-OTC,put,1.00,2,Momentum 10 + 5m trend,PENDING,,,
 2026-11-02T09:23:32.264328+00:00,14411749459,USDINR-OTC,put,1.00,2,Momentum 10 + 5m trend,PENDING,,,
 2026-11-02T09:27:39.739022+00:00,14411754924,USDINR-OTC,put,1.00,2,Momentum 10 + 5m trend,PENDING,,,
+2026-11-02T09:31:37.185818+00:00,14411760238,USDHKD-OTC,call,1.00,2,Immediate breakout + first retest (no confirmation),PENDING,,,
