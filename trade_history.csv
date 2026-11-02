@@ -30,3 +30,4 @@ accepted_at_utc,order_id,asset,direction,stake,expiry_minutes,signal_source,outc
 2026-11-02T20:42:12.269889+00:00,14413470042,USDCHF-OTC,put,1.00,2,Pure breakout + first valid retest,UNVERIFIED,,2026-11-02T20:49:42.374679+00:00,Broker closed-option history did not contain this order before timeout
 2026-11-02T20:42:16.917654+00:00,14413470262,EURGBP-OTC,call,1.00,2,Pure breakout + first valid retest,UNVERIFIED,,2026-11-02T20:49:57.215836+00:00,Broker closed-option history did not contain this order before timeout
 2026-11-02T20:42:19.690539+00:00,14413470384,GBPUSD-OTC,call,1.00,2,Pure breakout + first valid retest,UNVERIFIED,,2026-11-02T20:50:10.091581+00:00,Broker closed-option history did not contain this order before timeout
+2026-11-02T20:53:16.894827+00:00,14413498555,USDCHF-OTC,put,1.00,2,Pure breakout + first valid retest,PENDING,,,
