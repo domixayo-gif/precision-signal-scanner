@@ -78,15 +78,13 @@ class ImmediateBreakoutRetestTests(unittest.TestCase):
         ])
         candles[31]["low"] = 100.6
         candles[32]["low"] = 100.5
+        candles = candles[:34]
         result = evaluate(candles)
         self.assertEqual(result.state, RetestState.RETESTED)
         self.assertEqual(result.retest_index, 33)
 
     def test_decisive_close_before_later_touch_invalidates_setup(self):
-        candles = build_bullish_breakout([
-            {"open": 99.8, "close": 100.4, "high": 100.6, "low": 99.7},
-            {"open": 100.4, "close": 100.3, "high": 100.6, "low": 99.9},
-        ])
+        candles = build_bullish_breakout([])[:32]
         candles[31] = {
             "open": 100.3, "close": 99.7, "high": 100.4, "low": 99.5,
             "from": 31 * 60,
