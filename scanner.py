@@ -535,12 +535,47 @@ def current_open_trade_count():
 
 
 def load_trade_history():
-    """Load the persistent CSV ledger; old rows are historical, not open trades."""
-    global TRADE_HISTORY_ROWS
+    """Load the CSV ledger and restore any still-open or unresolved practice orders."""
+    global TRADE_HISTORY_ROWS, TRADE_TOTAL_WINS, TRADE_TOTAL_LOSSES
+    global TRADE_TOTAL_DRAWS, TRADE_TOTAL_PNL
     try:
         with open(TRADE_HISTORY_FILE, newline="", encoding="utf-8") as handle:
             TRADE_HISTORY_ROWS = list(csv.DictReader(handle))
-        logging.info("Loaded %d historical trade-result rows.", len(TRADE_HISTORY_ROWS))
+        now = time.time()
+        restored_open = 0
+        for row in TRADE_HISTORY_ROWS:
+            outcome = str(row.get("outcome", "")).upper()
+            pnl = safe_float(row.get("net_profit"), 0.0)
+            if outcome == "WIN":
+                TRADE_TOTAL_WINS += 1
+                TRADE_TOTAL_PNL += pnl
+            elif outcome == "LOSS":
+                TRADE_TOTAL_LOSSES += 1
+                TRADE_TOTAL_PNL += pnl
+            elif outcome == "DRAW":
+                TRADE_TOTAL_DRAWS += 1
+            order_id = str(row.get("order_id", "")).strip()
+            if not order_id or outcome != "PENDING" or order_id in TRADE_RECORDS:
+                continue
+            try:
+                accepted_at = datetime.fromisoformat(row["accepted_at_utc"]).timestamp()
+                expiry_minutes = int(row.get("expiry_minutes") or EXPIRY_MINUTES)
+                expires_at = accepted_at + expiry_minutes * 60 + 10
+                record = dict(row)
+                record.update({
+                    "expires_at": expires_at, "outcome_attempts": 0,
+                    "next_outcome_check": 0, "outcome_thread": None,
+                    "recovered": True,
+                })
+                TRADE_RECORDS[order_id] = record
+                if expires_at > now:
+                    TRADE_EXPOSURE.register(order_id, row.get("asset", ""),
+                                             row.get("direction", ""), accepted_at)
+                    restored_open += 1
+            except Exception as exc:
+                logging.warning("Could not restore pending order %s: %s", order_id, exc)
+        logging.info("Loaded %d trade-history rows; restored %d still-open orders.",
+                     len(TRADE_HISTORY_ROWS), restored_open)
     except FileNotFoundError:
         TRADE_HISTORY_ROWS = []
     except Exception:
@@ -586,13 +621,19 @@ def persist_trade_history(force=False):
         logging.exception("Trade history persistence failed: %s", exc)
 
 
-def _outcome_worker(order_id, client):
+def _outcome_worker(order_id, client, recovered=False):
     try:
-        # check_win_v3 returns broker-reported net P/L (profit_amount - stake).
-        # It waits for the binary option's closed event, so run it off the scan loop.
-        if not hasattr(client, "check_win_v3"):
-            raise RuntimeError("IQ Option API has no check_win_v3 outcome method")
-        pnl = client.check_win_v3(int(order_id))
+        # Fresh orders use check_win_v3 (broker's closed-option event). Orders
+        # recovered after a workflow restart use historical realized P/L because
+        # the library's asynchronous close cache is process-local.
+        if recovered and hasattr(client, "raw_check_win"):
+            pnl = client.raw_check_win(int(order_id))
+            if pnl is None:
+                raise RuntimeError("closed order not present in broker history yet")
+        else:
+            if not hasattr(client, "check_win_v3"):
+                raise RuntimeError("IQ Option API has no check_win_v3 outcome method")
+            pnl = client.check_win_v3(int(order_id))
         OUTCOME_RESULTS.put((str(order_id), "ok", float(pnl)))
     except Exception as exc:
         OUTCOME_RESULTS.put((str(order_id), "error", str(exc)))
@@ -673,7 +714,8 @@ def process_trade_outcomes():
             record["next_outcome_check"] = now + 20
             continue
         record["outcome_attempts"] = int(record.get("outcome_attempts", 0)) + 1
-        worker = threading.Thread(target=_outcome_worker, args=(order_id, IQ),
+        worker = threading.Thread(target=_outcome_worker,
+                                  args=(order_id, IQ, bool(record.get("recovered", False))),
                                   daemon=True, name=f"trade-result-{order_id}")
         record["outcome_thread"] = worker
         worker.start()
