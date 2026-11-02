@@ -202,3 +202,35 @@ def evaluate(candles, cfg=DEFAULT_CONFIG):
     except (KeyError, TypeError, ValueError, IndexError, ZeroDivisionError) as exc:
         return RetestResult(RetestState.NONE, reasons=(f"filter safely skipped: {type(exc).__name__}",))
 
+def build_entry_signal(asset, candles, candle_seconds=60, cfg=DEFAULT_CONFIG):
+    """Build an executable signal only when the first retest is the latest closed bar.
+
+    The signal timestamp is the retest candle's CLOSE time, not its open time,
+    so stale retests cannot be mistaken for fresh entries by the scanner.
+    """
+    result = evaluate(candles, cfg)
+    if result.state != RetestState.RETESTED:
+        return None, result
+    if result.retest_index != len(candles) - 1:
+        return None, result
+    try:
+        candle = candles[result.retest_index]
+        candle_open_time = int(candle["from"])
+        candle_close_time = candle_open_time + int(candle_seconds)
+        signal = {
+            "asset": str(asset),
+            "direction": "call" if result.direction == "up" else "put",
+            "score": 100,
+            "candle_time": candle_close_time,
+            "entry_time": candle_close_time,
+            "price": _num(candle, "close"),
+            "level": result.level,
+            "zone": result.zone,
+            "source": "Pure breakout + first valid retest",
+        }
+        return signal, result
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None, RetestResult(
+            RetestState.NONE,
+            reasons=("retest candle timestamp or price is invalid",),
+        )
