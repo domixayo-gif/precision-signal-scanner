@@ -72,12 +72,12 @@ class ImmediateBreakoutRetestTests(unittest.TestCase):
 
     def test_first_retest_can_happen_several_candles_after_breakout(self):
         candles = build_bullish_breakout([
-            {"open": 100.8, "close": 100.7, "high": 101.0, "low": 100.4},
-            {"open": 100.7, "close": 100.5, "high": 100.9, "low": 100.3},
+            {"open": 100.9, "close": 100.8, "high": 101.1, "low": 100.6},
+            {"open": 100.8, "close": 100.7, "high": 101.0, "low": 100.5},
             {"open": 100.5, "close": 100.3, "high": 100.7, "low": 99.95},
         ])
-        candles[31]["low"] = 100.4
-        candles[32]["low"] = 100.3
+        candles[31]["low"] = 100.6
+        candles[32]["low"] = 100.5
         result = evaluate(candles)
         self.assertEqual(result.state, RetestState.RETESTED)
         self.assertEqual(result.retest_index, 33)
