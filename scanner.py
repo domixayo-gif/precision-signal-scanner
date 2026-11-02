@@ -630,7 +630,8 @@ def process_trade_outcomes():
         # One result lookup at a time: the community API has one shared bet-info response object.
         if any(r.get("outcome_thread") is not None and r["outcome_thread"].is_alive()
                for r in TRADE_RECORDS.values()):
-            break\n        record["outcome_attempts"] = int(record.get("outcome_attempts", 0)) + 1
+            break
+        record["outcome_attempts"] = int(record.get("outcome_attempts", 0)) + 1
         worker = threading.Thread(target=_outcome_worker,
                                   args=(order_id, IQ, bool(record.get("recovered", False))),
                                   daemon=True, name=f"trade-result-{order_id}")
