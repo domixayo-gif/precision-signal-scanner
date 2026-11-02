@@ -423,22 +423,22 @@ def scan_market(manual=False, auto_eligible=False):
                         if age > MAX_SIGNAL_AGE_SECONDS or age < -5:
                             rejected["first retest signal stale"] = rejected.get("first retest signal stale", 0) + 1
                         elif manual:
-                        candidate["entry_time"] = max(int(time.time()), stamp)
-                        if MANUAL_SIGNAL_SENT_BY_ASSET.get(asset) != str(stamp):
+                            candidate["entry_time"] = max(int(time.time()), stamp)
+                            if MANUAL_SIGNAL_SENT_BY_ASSET.get(asset) != str(stamp):
+                                results.append(candidate)
+                                MANUAL_SIGNAL_SENT_BY_ASSET[asset] = str(stamp)
+                                if len(results) <= TOP_SIGNALS:
+                                    send_signal(candidate, manual=True)
+                            else:
+                                rejected["setup already reported"] = rejected.get("setup already reported", 0) + 1
+                        elif LAST_SIGNAL_BY_ASSET.get(asset) != str(stamp):
                             results.append(candidate)
-                            MANUAL_SIGNAL_SENT_BY_ASSET[asset] = str(stamp)
-                            if len(results) <= TOP_SIGNALS:
-                                send_signal(candidate, manual=True)
-                        else:
-                            rejected["setup already reported"] = rejected.get("setup already reported", 0) + 1
-                    elif LAST_SIGNAL_BY_ASSET.get(asset) != str(stamp):
-                        results.append(candidate)
-                        if auto_eligible and AUTO_MODE:
-                            # Submit fresh setups through the main loop immediately,
-                            # without waiting for the remaining symbols in this batch.
-                            EXECUTION_QUEUE.put(candidate)
-                            logging.info("Fresh first-retest setup queued for immediate execution: %s %s (5m trend=%s)",
-                                         asset, candidate["direction"].upper(), trend)
+                            if auto_eligible and AUTO_MODE:
+                                # Submit fresh setups through the main loop immediately,
+                                # without waiting for the remaining symbols in this batch.
+                                EXECUTION_QUEUE.put(candidate)
+                                logging.info("Fresh first-retest setup queued for immediate execution: %s %s (5m trend=%s)",
+                                             asset, candidate["direction"].upper(), trend)
             if index % PROGRESS_EVERY == 0:
                 logging.info("Scan progress %d/%d; valid first retests=%d", index, len(batch), len(results))
             time.sleep(REQUEST_PAUSE_SECONDS)
