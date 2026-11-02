@@ -1,4 +1,4 @@
-name: Momentum 10 IQ Option Scanner
+name: Breakout & Retest IQ Option Scanner
 
 on:
   workflow_dispatch:
@@ -12,6 +12,8 @@ on:
       - "test_market_filters.py"
       - "test_breakout_retest_filter.py"
       - "test_execution_guard.py"
+      - "broker_results.py"
+      - "test_broker_results.py"
       - "requirements.txt"
       - ".github/workflows/scanner.yml"
   push:
@@ -61,10 +63,10 @@ jobs:
 
       - name: Check scanner
         run: |
-          python -m py_compile scanner.py breakout_retest_filter.py market_filters.py execution_guard.py
-          python -m unittest test_market_filters test_breakout_retest_filter test_execution_guard -v
+          python -m py_compile scanner.py breakout_retest_filter.py execution_guard.py broker_results.py
+          python -m unittest test_breakout_retest_filter test_execution_guard test_broker_results -v
 
-      - name: Run Momentum 10 scanner
+      - name: Run Breakout & Retest scanner
         if: github.event_name != 'pull_request'
         env:
           IQ_EMAIL: ${{ secrets.IQ_EMAIL }}
