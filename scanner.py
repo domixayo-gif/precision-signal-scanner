@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from iqoptionapi.stable_api import IQ_Option
 from breakout_retest_filter import build_entry_signal
+from trend_filter import classify_trend
 from broker_results import get_binary_option_net_profit
 from execution_guard import TradeExposureGuard, classify_profit
 
@@ -334,6 +335,7 @@ def send_signal(signal, manual=False):
         f"📣 BREAKOUT & RETEST SIGNAL\\n{display_asset(signal.get('asset'))} — {direction}\\n"
         f"Signal ID: {sid}\\nConfirmed breakout level: {signal.get('level', 0):.6f}\\n"
         f"Retest zone: {zone[0]:.6f} – {zone[1]:.6f}\\n"
+        f"5-minute trend: {str(signal.get('trend_5m', 'not recorded')).upper()}\\n"
         f"Entry: first retest candle close ({lagos_time(stamp)}); no extra confirmation candle\\n"
         f"Expiry: {EXPIRY_MINUTES} minutes\\n"
         f"{'MANUAL SCAN — no trade placed.' if manual else 'AUTO MODE — PRACTICE order only.'}"
@@ -397,12 +399,30 @@ def scan_market(manual=False, auto_eligible=False):
                         reason = "; ".join(retest.reasons) if retest.reasons else retest.state.value
                         rejected[reason] = rejected.get(reason, 0) + 1
                 else:
-                    # candle_time is the retest candle CLOSE time, not its open.
-                    stamp = int(candidate["candle_time"])
-                    age = time.time() - stamp
-                    if age > MAX_SIGNAL_AGE_SECONDS or age < -5:
-                        rejected["first retest signal stale"] = rejected.get("first retest signal stale", 0) + 1
-                    elif manual:
+                    # A valid 1-minute retest is executable only when the latest
+                    # CLOSED 5-minute candles confirm the same directional trend.
+                    trend_candles = fetch_candles(asset, timeframe=300, count=60)
+                    if trend_candles is None:
+                        rejected["5-minute trend data unavailable"] = rejected.get("5-minute trend data unavailable", 0) + 1
+                        trend_candles = []
+                    now = int(time.time())
+                    closed_trend = [c for c in trend_candles
+                                    if int(c.get("from") or 0) + 300 <= now]
+                    trend = classify_trend(closed_trend)
+                    required_trend = "up" if candidate["direction"] == "call" else "down"
+                    if trend != required_trend:
+                        reason = "5-minute trend unclear/sideways" if trend == "sideways" else "1-minute setup disagrees with 5-minute trend"
+                        rejected[reason] = rejected.get(reason, 0) + 1
+                        logging.info("Trend filter blocked %s %s: 5m trend=%s required=%s",
+                                     asset, candidate["direction"].upper(), trend, required_trend)
+                    else:
+                        candidate["trend_5m"] = trend
+                        # candle_time is the retest candle CLOSE time, not its open.
+                        stamp = int(candidate["candle_time"])
+                        age = time.time() - stamp
+                        if age > MAX_SIGNAL_AGE_SECONDS or age < -5:
+                            rejected["first retest signal stale"] = rejected.get("first retest signal stale", 0) + 1
+                        elif manual:
                         candidate["entry_time"] = max(int(time.time()), stamp)
                         if MANUAL_SIGNAL_SENT_BY_ASSET.get(asset) != str(stamp):
                             results.append(candidate)
@@ -417,8 +437,8 @@ def scan_market(manual=False, auto_eligible=False):
                             # Submit fresh setups through the main loop immediately,
                             # without waiting for the remaining symbols in this batch.
                             EXECUTION_QUEUE.put(candidate)
-                            logging.info("Fresh first-retest setup queued for immediate execution: %s %s",
-                                         asset, candidate["direction"].upper())
+                            logging.info("Fresh first-retest setup queued for immediate execution: %s %s (5m trend=%s)",
+                                         asset, candidate["direction"].upper(), trend)
             if index % PROGRESS_EVERY == 0:
                 logging.info("Scan progress %d/%d; valid first retests=%d", index, len(batch), len(results))
             time.sleep(REQUEST_PAUSE_SECONDS)
