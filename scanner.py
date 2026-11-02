@@ -756,7 +756,7 @@ def status_message():
     return (f"📊 BREAKOUT & RETEST STATUS\nConnection: {'CONNECTED' if connected else 'DISCONNECTED'}\n"
             f"Practice verification: {'OK' if practice else 'NOT VERIFIED'}\nBalance: {balance}\n"
             f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nStake: $1 | Expiry: 2 minutes\n"
-            f"Market selection: {MARKET_MODE}\n5-minute trend: ON | Consolidation protection: ON\nBreakout/retest: first valid retest within setup window (no confirmation)\n"
+            f"Market selection: {MARKET_MODE}\nStrategy: PURE BREAKOUT & RETEST ONLY\nMomentum: OFF | 5-minute trend filter: OFF\nEntry: first valid closed retest candle; no extra confirmation\n"
             f"Open trades: {TRADE_EXPOSURE.count(time.time())}/{MAX_CONCURRENT_TRADES}\n"
             f"Verified results this run: W{TRADE_TOTAL_WINS}/L{TRADE_TOTAL_LOSSES}/D{TRADE_TOTAL_DRAWS} | Net P/L: {money(TRADE_TOTAL_PNL)}\n"
             f"Discovered assets: {LAST_ASSET_COUNT}\nLast scan: {age}\n"
