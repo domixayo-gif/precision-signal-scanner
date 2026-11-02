@@ -6,3 +6,4 @@ accepted_at_utc,order_id,asset,direction,stake,expiry_minutes,signal_source,outc
 2026-11-02T09:09:16.767959+00:00,14411728499,USDZAR-OTC,put,1.00,2,Momentum 10 + 5m trend,PENDING,,,
 2026-11-02T09:10:16.924189+00:00,14411730444,USDSGD-OTC,put,1.00,2,Momentum 10 + 5m trend,PENDING,,,
 2026-11-02T09:14:18.568012+00:00,14411736416,USDSGD-OTC,put,1.00,2,Momentum 10 + 5m trend,PENDING,,,
+2026-11-02T09:15:19.249282+00:00,14411737925,USDZAR-OTC,put,1.00,2,Momentum 10 + 5m trend,PENDING,,,
