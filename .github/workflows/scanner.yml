@@ -35,8 +35,9 @@ permissions:
   actions: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'pull_request' }}
+  # Stable name: a workflow rename must not create a second live Telegram poller.
+  group: iq-option-practice-scanner-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   scan:
@@ -64,6 +65,56 @@ jobs:
           python -m py_compile scanner.py breakout_retest_filter.py execution_guard.py broker_results.py
           python -m unittest test_breakout_retest_filter test_execution_guard test_broker_results -v
 
+      - name: Cancel older scanner workflow instances
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_REF: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os
+          import requests
+
+          repo = os.environ["GH_REPOSITORY"]
+          current_run = int(os.environ["GH_RUN_ID"])
+          branch = os.environ["GH_REF"]
+          token = os.environ["GH_TOKEN"]
+          api = "https://api.github.com"
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {token}",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+          response = requests.get(
+              f"{api}/repos/{repo}/actions/runs",
+              headers=headers,
+              params={"branch": branch, "per_page": 100},
+              timeout=20,
+          )
+          response.raise_for_status()
+          runs = response.json().get("workflow_runs", [])
+          cancelled = 0
+          for run in runs:
+              if int(run.get("id", 0)) == current_run:
+                  continue
+              if run.get("path") != ".github/workflows/scanner.yml":
+                  continue
+              if run.get("status") not in ("queued", "in_progress"):
+                  continue
+              run_id = int(run["id"])
+              print(f"Cancelling duplicate scanner run {run_id}: {run.get('name')} ({run.get('status')})")
+              result = requests.post(
+                  f"{api}/repos/{repo}/actions/runs/{run_id}/cancel",
+                  headers=headers,
+                  timeout=20,
+              )
+              if result.status_code not in (202, 409, 422):
+                  result.raise_for_status()
+              cancelled += 1
+          print(f"Duplicate scanner cleanup complete; cancellation requests sent: {cancelled}")
+          PY
       - name: Run Breakout & Retest scanner
         if: github.event_name != 'pull_request'
         env:
