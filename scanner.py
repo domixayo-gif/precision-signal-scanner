@@ -627,7 +627,10 @@ def process_trade_outcomes():
         if IQ is None or not practice_mode_verified():
             record["next_outcome_check"] = now + OUTCOME_RETRY_SECONDS
             continue
-        # One result lookup at a time: the community API has one shared bet-info response object.\n        if any(r.get("outcome_thread") is not None and r["outcome_thread"].is_alive()\n               for r in TRADE_RECORDS.values()):\n            break\n        record["outcome_attempts"] = int(record.get("outcome_attempts", 0)) + 1
+        # One result lookup at a time: the community API has one shared bet-info response object.
+        if any(r.get("outcome_thread") is not None and r["outcome_thread"].is_alive()
+               for r in TRADE_RECORDS.values()):
+            break\n        record["outcome_attempts"] = int(record.get("outcome_attempts", 0)) + 1
         worker = threading.Thread(target=_outcome_worker,
                                   args=(order_id, IQ, bool(record.get("recovered", False))),
                                   daemon=True, name=f"trade-result-{order_id}")
