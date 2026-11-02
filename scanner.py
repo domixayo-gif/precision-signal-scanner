@@ -6,7 +6,7 @@ from breakout_retest_filter import evaluate as evaluate_breakout_retest
 from broker_results import get_binary_option_net_profit
 from execution_guard import TradeExposureGuard, classify_profit
 
-# PURE BREAKOUT & RETEST — PRACTICE ONLY. Momentum and 5-minute trend filters are disabled.
+# PURE BREAKOUT & RETEST — PRACTICE ONLY.
 BOT_NAME = "Breakout & Retest IQ Option Scanner"
 AUTO_TRADING_ALLOWED = True
 STAKE, EXPIRY_MINUTES, CANDLE_SECONDS, LOOKBACK_CANDLES = 1.0, 2, 60, 60
@@ -627,7 +627,7 @@ def process_trade_outcomes():
         if IQ is None or not practice_mode_verified():
             record["next_outcome_check"] = now + OUTCOME_RETRY_SECONDS
             continue
-        record["outcome_attempts"] = int(record.get("outcome_attempts", 0)) + 1
+        # One result lookup at a time: the community API has one shared bet-info response object.\n        if any(r.get("outcome_thread") is not None and r["outcome_thread"].is_alive()\n               for r in TRADE_RECORDS.values()):\n            break\n        record["outcome_attempts"] = int(record.get("outcome_attempts", 0)) + 1
         worker = threading.Thread(target=_outcome_worker,
                                   args=(order_id, IQ, bool(record.get("recovered", False))),
                                   daemon=True, name=f"trade-result-{order_id}")
@@ -867,7 +867,7 @@ def heartbeat():
                   f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\n"
                   f"Discovered assets: {LAST_ASSET_COUNT}\nLast scan: {LAST_SCAN_SCANNED}/{LAST_SCAN_TOTAL}\n"
                   f"Candidates: {LAST_SCAN_CANDIDATES}\nScan in progress: {'YES' if SCAN_IN_PROGRESS else 'NO'}\n"
-                  f"No qualifying setup means NO TRADE.")
+                  f"No valid first retest means NO TRADE.")
 
 
 def main():
