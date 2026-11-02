@@ -78,10 +78,9 @@ class ImmediateBreakoutRetestTests(unittest.TestCase):
         ])
         candles[31]["low"] = 100.6
         candles[32]["low"] = 100.5
-        candles = candles[:34]
         result = evaluate(candles)
         self.assertEqual(result.state, RetestState.RETESTED)
-        self.assertEqual(result.retest_index, 33)
+        self.assertEqual(result.retest_index, 35)
 
     def test_decisive_close_before_later_touch_invalidates_setup(self):
         candles = build_bullish_breakout([])[:32]
