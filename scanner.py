@@ -53,6 +53,8 @@ TRADE_HISTORY_DIRTY = 0
 LAST_TRADE_HISTORY_FLUSH = 0
 TRADE_TOTAL_WINS = TRADE_TOTAL_LOSSES = TRADE_TOTAL_DRAWS = 0
 TRADE_TOTAL_PNL = 0.0
+ORDER_ATTEMPTS = ORDER_ACCEPTED = ORDER_REJECTED = 0
+LAST_ORDER_STATUS = "No order attempt yet"
 
 
 def utc_now():
@@ -635,7 +637,7 @@ def process_trade_outcomes():
 
 
 def execute_signal(signal):
-    global TRADE_HISTORY_DIRTY
+    global TRADE_HISTORY_DIRTY, ORDER_ATTEMPTS, ORDER_ACCEPTED, ORDER_REJECTED, LAST_ORDER_STATUS
     if not AUTO_TRADING_ALLOWED or not AUTO_MODE:
         return False
     if not practice_mode_verified():
@@ -675,26 +677,39 @@ def execute_signal(signal):
                 result_queue.put(("error", str(exc)))
             except queue.Full:
                 pass
+    ORDER_ATTEMPTS += 1
+    LAST_ORDER_STATUS = f"REQUEST SENT: {display_asset(asset)} {direction.upper()}; awaiting broker confirmation"
+    logging.info("ORDER REQUEST attempt=%d asset=%s direction=%s stake=%s expiry=%sm",
+                 ORDER_ATTEMPTS, asset, direction.upper(), money(STAKE), EXPIRY_MINUTES)
     threading.Thread(target=worker, daemon=True, name="place-practice-order").start()
     try:
         status, response = result_queue.get(timeout=ORDER_REQUEST_TIMEOUT)
     except queue.Empty:
+        ORDER_REJECTED += 1
+        LAST_ORDER_STATUS = f"TIMEOUT: {display_asset(asset)} {direction.upper()}; broker acceptance unknown"
         set_auto(False, "Order request timed out; no retry made")
         telegram_send(f"⚠️ AUTO STOPPED — ORDER RESPONSE TIMED OUT\n{display_asset(asset)} {direction.upper()}\nNo retry was made for this candle. Check the practice account before restarting.")
         return False
     if status == "safety":
+        ORDER_REJECTED += 1
+        LAST_ORDER_STATUS = f"BLOCKED: {display_asset(asset)} {direction.upper()} — PRACTICE verification failed"
         set_auto(False, response)
         telegram_send("🛑 AUTO STOPPED: " + response)
         return False
-    if status != "result" or not isinstance(response, tuple) or len(response) < 2:
+    if status != "result" or not isinstance(response, (tuple, list)) or len(response) < 2:
         detail = str(response)
+        ORDER_REJECTED += 1
+        LAST_ORDER_STATUS = f"REQUEST ERROR: {display_asset(asset)} {direction.upper()} — {detail[:140]}"
         logging.warning("Order request failed for %s: %r", asset, response)
+        telegram_send(f"⚠️ ORDER NOT CONFIRMED\n{display_asset(asset)} {direction.upper()}\nNo trade was confirmed.\nExecution error: {detail[:220]}")
         if "insufficient funds" in detail.lower():
             set_auto(False, "Broker rejected order: insufficient funds")
             telegram_send("🛑 AUTO MODE OFF — IQ Option reported insufficient funds. No more orders will be attempted. Check the PRACTICE balance before manually restarting.")
         return False
     success, order_id = bool(response[0]), response[1]
     if not success or order_id is None or str(order_id) == "":
+        ORDER_REJECTED += 1
+        LAST_ORDER_STATUS = f"BROKER REJECTED: {display_asset(asset)} {direction.upper()} — {str(order_id)[:120]}"
         logging.info("Practice order rejected for %s: %r", asset, response)
         detail = str(response[1] if len(response) > 1 else "broker returned no order ID")
         detail = re.sub(r"[\\r\\n]+", " ", detail)[:220]
@@ -704,6 +719,8 @@ def execute_signal(signal):
             telegram_send("🛑 AUTO MODE OFF — insufficient PRACTICE funds. Resolve the balance issue, then restart AUTO manually.")
         return False
     accepted_at = time.time()
+    ORDER_ACCEPTED += 1
+    LAST_ORDER_STATUS = f"ACCEPTED: {display_asset(asset)} {direction.upper()} — order {order_id}"
     expires_at = accepted_at + EXPIRY_MINUTES * 60 + 10
     with STATE_LOCK:
         TRADE_EXPOSURE.register(order_id, asset, direction, accepted_at)
@@ -756,6 +773,8 @@ def status_message():
             f"Practice verification: {'OK' if practice else 'NOT VERIFIED'}\nBalance: {balance}\n"
             f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nStake: $1 | Expiry: 2 minutes\n"
             f"Market selection: {MARKET_MODE}\nStrategy: PURE BREAKOUT & RETEST ONLY\nMomentum: OFF | 5-minute trend filter: OFF\nEntry: first valid closed retest candle; no extra confirmation\n"
+            f"Order requests: {ORDER_ATTEMPTS} | Accepted: {ORDER_ACCEPTED} | Rejected/timeouts: {ORDER_REJECTED}\n"
+            f"Last order: {LAST_ORDER_STATUS}\n"
             f"Open trades: {TRADE_EXPOSURE.count(time.time())}/{MAX_CONCURRENT_TRADES}\n"
             f"Verified results this run: W{TRADE_TOTAL_WINS}/L{TRADE_TOTAL_LOSSES}/D{TRADE_TOTAL_DRAWS} | Net P/L: {money(TRADE_TOTAL_PNL)}\n"
             f"Discovered assets: {LAST_ASSET_COUNT}\nLast scan: {age}\n"
@@ -872,7 +891,7 @@ def heartbeat():
 def main():
     global RUNNING, MANUAL_SCAN_REQUESTED
     load_trade_history()
-    telegram_send("🚀 BREAKOUT & RETEST STARTING\nPRACTICE-only scanner is connecting.\nManual SCAN MARKET sends signals only and never places trades.\nMax open exposure: 3 trades total, 1 per pair. Broker results are checked and saved to trade_history.csv.")
+    telegram_send("🚀 BREAKOUT & RETEST STARTING\nPRACTICE-only scanner is connecting. AUTO MODE starts OFF after every GitHub Actions restart; send START AUTO after startup to enable PRACTICE execution.\nManual SCAN MARKET sends signals only and never places trades.\nMax open exposure: 3 trades total, 1 per pair. Broker results are checked and saved to trade_history.csv.")
     threading.Thread(target=telegram_listener, daemon=True, name="telegram-listener").start()
     while RUNNING:
         try:
@@ -889,11 +908,20 @@ def main():
                     completed = SCAN_RESULTS_QUEUE.get_nowait()
                 except queue.Empty:
                     break
-                if completed.get("auto_eligible") and AUTO_MODE and not completed.get("error"):
-                    if completed.get("timed_out"):
-                        logging.warning("Skipping automatic entries because this scan timed out.")
+                completed_results = completed.get("results", [])
+                if completed_results and not completed.get("manual") and not completed.get("auto_eligible"):
+                    logging.warning("%d valid setup(s) found but AUTO_MODE was OFF when this scan started; no order submitted.",
+                                    len(completed_results))
+                    telegram_send(f"🔔 {len(completed_results)} VALID BREAKOUT/RETEST SETUP(S) FOUND\nAUTO MODE is OFF, so no order was submitted.\nSend START AUTO to enable PRACTICE execution.")
+                elif completed.get("auto_eligible") and completed_results:
+                    if not AUTO_MODE:
+                        logging.info("Valid setup(s) skipped because AUTO MODE was turned off before execution.")
+                        telegram_send("⚪ VALID SETUP FOUND, BUT AUTO MODE WAS TURNED OFF BEFORE ORDER SUBMISSION. No trade was placed.")
+                    elif completed.get("error") or completed.get("timed_out"):
+                        logging.warning("Skipping automatic entries because the scan ended with an error or timeout.")
+                        telegram_send("⚠️ A breakout/retest scan ended with an error or timeout. Automatic orders were skipped for safety; check STATUS.")
                     else:
-                        for signal in completed.get("results", []):
+                        for signal in completed_results:
                             if not AUTO_MODE:
                                 break
                             if TRADE_EXPOSURE.count(time.time()) >= MAX_CONCURRENT_TRADES:
