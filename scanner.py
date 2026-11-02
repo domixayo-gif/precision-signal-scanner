@@ -23,6 +23,8 @@ OUTCOME_CHECK_DELAY_SECONDS = 10
 OUTCOME_RETRY_SECONDS, OUTCOME_MAX_ATTEMPTS = 30, 8
 TRADE_HISTORY_BATCH_SIZE, TRADE_HISTORY_FLUSH_SECONDS = 5, 60
 MARKET_MODE = "BOTH"
+# Enabled: executable 1-minute setups must agree with the closed 5-minute trend.
+FIVE_MINUTE_TREND_FILTER_ENABLED = True
 IQ_EMAIL, IQ_PASSWORD = os.getenv("IQ_EMAIL", ""), os.getenv("IQ_PASSWORD", "")
 TELEGRAM_TOKEN, TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_TOKEN", ""), os.getenv("TELEGRAM_CHAT_ID", "")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -810,7 +812,7 @@ def status_message():
     return (f"📊 BREAKOUT & RETEST STATUS\nConnection: {'CONNECTED' if connected else 'DISCONNECTED'}\n"
             f"Practice verification: {'OK' if practice else 'NOT VERIFIED'}\nBalance: {balance}\n"
             f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nStake: $1 | Expiry: 2 minutes\n"
-            f"Market selection: {MARKET_MODE}\nStrategy: PURE BREAKOUT & RETEST ONLY\nMomentum: OFF | 5-minute trend filter: OFF\nEntry: first valid closed retest candle; no extra confirmation\n"
+            f"Market selection: {MARKET_MODE}\nStrategy: PURE BREAKOUT & RETEST ONLY\nMomentum: OFF | 5-minute trend filter: {'ON' if FIVE_MINUTE_TREND_FILTER_ENABLED else 'OFF'}\nEntry: first valid closed retest candle; no extra confirmation\n"
             f"Order requests: {ORDER_ATTEMPTS} | Accepted: {ORDER_ACCEPTED} | Rejected/timeouts: {ORDER_REJECTED}\n"
             f"Last order: {LAST_ORDER_STATUS}\n"
             f"Open trades: {TRADE_EXPOSURE.count(time.time())}/{MAX_CONCURRENT_TRADES}\n"
