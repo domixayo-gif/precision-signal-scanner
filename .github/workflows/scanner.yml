@@ -2,13 +2,28 @@ name: Momentum 10 IQ Option Scanner
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "scanner.py"
+      - "market_filters.py"
+      - "breakout_retest_filter.py"
+      - "execution_guard.py"
+      - "test_market_filters.py"
+      - "test_breakout_retest_filter.py"
+      - "test_execution_guard.py"
+      - "requirements.txt"
+      - ".github/workflows/scanner.yml"
   push:
     branches: [main]
     paths:
       - "scanner.py"
       - "market_filters.py"
       - "breakout_retest_filter.py"
+      - "execution_guard.py"
       - "test_market_filters.py"
+      - "test_breakout_retest_filter.py"
+      - "test_execution_guard.py"
       - "requirements.txt"
       - ".github/workflows/scanner.yml"
   schedule:
@@ -20,8 +35,8 @@ permissions:
   actions: write
 
 concurrency:
-  group: momentum-10-iq-option-scanner
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
 
 jobs:
   scan:
@@ -46,10 +61,11 @@ jobs:
 
       - name: Check scanner
         run: |
-          python -m py_compile scanner.py breakout_retest_filter.py market_filters.py
-          python -m unittest test_market_filters test_breakout_retest_filter -v
+          python -m py_compile scanner.py breakout_retest_filter.py market_filters.py execution_guard.py
+          python -m unittest test_market_filters test_breakout_retest_filter test_execution_guard -v
 
       - name: Run Momentum 10 scanner
+        if: github.event_name != 'pull_request'
         env:
           IQ_EMAIL: ${{ secrets.IQ_EMAIL }}
           IQ_PASSWORD: ${{ secrets.IQ_PASSWORD }}

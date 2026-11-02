@@ -70,6 +70,28 @@ class ImmediateBreakoutRetestTests(unittest.TestCase):
         self.assertEqual(signal, "put")
         self.assertEqual(verdict, "PASS")
 
+    def test_first_retest_can_happen_several_candles_after_breakout(self):
+        candles = build_bullish_breakout([
+            {"open": 100.9, "close": 100.8, "high": 101.1, "low": 100.6},
+            {"open": 100.8, "close": 100.7, "high": 101.0, "low": 100.5},
+            {"open": 100.5, "close": 100.3, "high": 100.7, "low": 99.95},
+        ])
+        candles[31]["low"] = 100.6
+        candles[32]["low"] = 100.5
+        result = evaluate(candles)
+        self.assertEqual(result.state, RetestState.RETESTED)
+        self.assertEqual(result.retest_index, 35)
+
+    def test_decisive_close_before_later_touch_invalidates_setup(self):
+        candles = build_bullish_breakout([])[:32]
+        candles[31] = {
+            "open": 100.3, "close": 99.7, "high": 100.4, "low": 99.5,
+            "from": 31 * 60,
+        }
+        result = evaluate(candles)
+        self.assertEqual(result.state, RetestState.INVALIDATED)
+        self.assertEqual(result.retest_index, 31)
+
     def test_valid_bullish_retest_vetoes_opposing_put(self):
         result = evaluate(build_bullish_breakout([]))
         signal, verdict = apply_filter("put", result, mode="enforce")
