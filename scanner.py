@@ -2,7 +2,7 @@ import os, time, math, logging, threading, traceback, requests, queue, re, csv, 
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from iqoptionapi.stable_api import IQ_Option
-from breakout_retest_filter import evaluate as evaluate_breakout_retest
+from breakout_retest_filter import build_entry_signal
 from broker_results import get_binary_option_net_profit
 from execution_guard import TradeExposureGuard, classify_profit
 
@@ -11,16 +11,15 @@ BOT_NAME = "Breakout & Retest IQ Option Scanner"
 AUTO_TRADING_ALLOWED = True
 STAKE, EXPIRY_MINUTES, CANDLE_SECONDS, LOOKBACK_CANDLES = 1.0, 2, 60, 60
 MIN_CLOSED_CANDLES = 28
-SCAN_INTERVAL_SECONDS, REQUEST_PAUSE_SECONDS, RECONNECT_SECONDS = 60, 0.12, 30
+SCAN_INTERVAL_SECONDS, REQUEST_PAUSE_SECONDS, RECONNECT_SECONDS = 30, 0.12, 30
 HEARTBEAT_SECONDS, REQUEST_TIMEOUT = 300, 15
 MAX_SYMBOLS_PER_SCAN, TOP_SIGNALS, PROGRESS_EVERY = 40, 3, 10
-MAX_SIGNAL_AGE_SECONDS, ORDER_REQUEST_TIMEOUT = 180, 12
+MAX_SIGNAL_AGE_SECONDS, ORDER_REQUEST_TIMEOUT = 90, 12
 MAX_CONCURRENT_TRADES = 3
 TRADE_HISTORY_FILE = "trade_history.csv"
 OUTCOME_CHECK_DELAY_SECONDS = 10
 OUTCOME_RETRY_SECONDS, OUTCOME_MAX_ATTEMPTS = 30, 8
 TRADE_HISTORY_BATCH_SIZE, TRADE_HISTORY_FLUSH_SECONDS = 5, 60
-RETEST_FILTER_MODE = "enforce"
 MARKET_MODE = "BOTH"
 IQ_EMAIL, IQ_PASSWORD = os.getenv("IQ_EMAIL", ""), os.getenv("IQ_PASSWORD", "")
 TELEGRAM_TOKEN, TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_TOKEN", ""), os.getenv("TELEGRAM_CHAT_ID", "")
@@ -325,10 +324,13 @@ def send_signal(signal, manual=False):
     direction = "CALL 🟢" if signal["direction"] == "call" else "PUT 🔴"
     stamp = int(signal.get("candle_time", time.time()))
     sid = f"BR-{signal.get('asset','UNKNOWN')}-{signal['direction'].upper()}-{stamp}"
+    zone = signal.get("zone") or (0.0, 0.0)
     telegram_send(
         f"📣 BREAKOUT & RETEST SIGNAL\\n{display_asset(signal.get('asset'))} — {direction}\\n"
-        f"Signal ID: {sid}\\nSetup: confirmed level breakout + first valid retest\\n"
-        f"Entry: first retest close; no extra confirmation candle\\nExpiry: {EXPIRY_MINUTES} minutes\\n"
+        f"Signal ID: {sid}\\nConfirmed breakout level: {signal.get('level', 0):.6f}\\n"
+        f"Retest zone: {zone[0]:.6f} – {zone[1]:.6f}\\n"
+        f"Entry: first retest candle close ({lagos_time(stamp)}); no extra confirmation candle\\n"
+        f"Expiry: {EXPIRY_MINUTES} minutes\\n"
         f"{'MANUAL SCAN — no trade placed.' if manual else 'AUTO MODE — PRACTICE order only.'}"
     )
 
@@ -374,36 +376,29 @@ def scan_market(manual=False, auto_eligible=False):
                 continue
             timeouts = 0
             scanned += 1
-            # Exclude the forming candle. A setup must be confirmed by closed bars.
-            closed = candles[:-1]
+            # Determine closed bars from their timestamps, rather than blindly
+            # dropping the final item (some broker responses omit the forming bar).
+            now = int(time.time())
+            closed = [c for c in candles
+                      if int(c.get("from") or 0) + CANDLE_SECONDS <= now]
             if len(closed) < MIN_CLOSED_CANDLES:
                 rejected["insufficient closed candles"] = rejected.get("insufficient closed candles", 0) + 1
             else:
-                retest = evaluate_breakout_retest(closed)
-                if retest.state.value != "retested":
-                    reason = "; ".join(retest.reasons) if retest.reasons else retest.state.value
-                    rejected[reason] = rejected.get(reason, 0) + 1
-                elif retest.retest_index != len(closed) - 1:
-                    # Never chase a retest after its first completed candle.
-                    rejected["first retest candle already passed"] = rejected.get("first retest candle already passed", 0) + 1
+                candidate, retest = build_entry_signal(asset, closed, CANDLE_SECONDS)
+                if candidate is None:
+                    if retest.state.value == "retested":
+                        rejected["first retest candle already passed"] = rejected.get("first retest candle already passed", 0) + 1
+                    else:
+                        reason = "; ".join(retest.reasons) if retest.reasons else retest.state.value
+                        rejected[reason] = rejected.get(reason, 0) + 1
                 else:
-                    retest_candle = closed[retest.retest_index]
-                    stamp = int(retest_candle.get("from") or time.time())
-                    candidate = {
-                        "asset": asset,
-                        "direction": "call" if retest.direction == "up" else "put",
-                        "score": 100,
-                        "candle_time": stamp,
-                        "price": retest_candle["close"],
-                        "time": utc_now().strftime("%H:%M:%S UTC"),
-                        "source": "Pure breakout + first valid retest",
-                        "level": retest.level,
-                    }
+                    # candle_time is the retest candle CLOSE time, not its open.
+                    stamp = int(candidate["candle_time"])
                     age = time.time() - stamp
                     if age > MAX_SIGNAL_AGE_SECONDS or age < -5:
                         rejected["first retest signal stale"] = rejected.get("first retest signal stale", 0) + 1
                     elif manual:
-                        candidate["entry_time"] = max(int(time.time()), stamp + CANDLE_SECONDS)
+                        candidate["entry_time"] = max(int(time.time()), stamp)
                         if MANUAL_SIGNAL_SENT_BY_ASSET.get(asset) != str(stamp):
                             results.append(candidate)
                             MANUAL_SIGNAL_SENT_BY_ASSET[asset] = str(stamp)
