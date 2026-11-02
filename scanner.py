@@ -16,6 +16,7 @@ HEARTBEAT_SECONDS, REQUEST_TIMEOUT = 300, 15
 MAX_SYMBOLS_PER_SCAN, TOP_SIGNALS, PROGRESS_EVERY = 40, 3, 10
 MAX_SIGNAL_AGE_SECONDS, ORDER_REQUEST_TIMEOUT = 90, 12
 MAX_CONCURRENT_TRADES = 3
+MAX_TRADES_PER_AUTO_SESSION = 20
 TRADE_HISTORY_FILE = "trade_history.csv"
 OUTCOME_CHECK_DELAY_SECONDS = 10
 OUTCOME_RETRY_SECONDS, OUTCOME_MAX_ATTEMPTS = 30, 8
@@ -38,6 +39,7 @@ RECONNECT_LOCK = threading.RLock()
 SCAN_IN_PROGRESS = False
 MANUAL_SCAN_REQUESTED = False
 SCAN_RESULTS_QUEUE = queue.Queue()
+EXECUTION_QUEUE = queue.Queue()
 LAST_SIGNAL_BY_ASSET = {}
 MANUAL_SIGNAL_SENT_BY_ASSET = {}
 LAST_HEARTBEAT = LAST_SCAN_STARTED = LAST_SCAN_FINISHED = 0
@@ -54,6 +56,7 @@ LAST_TRADE_HISTORY_FLUSH = 0
 TRADE_TOTAL_WINS = TRADE_TOTAL_LOSSES = TRADE_TOTAL_DRAWS = 0
 TRADE_TOTAL_PNL = 0.0
 ORDER_ATTEMPTS = ORDER_ACCEPTED = ORDER_REJECTED = 0
+AUTO_SESSION_ACCEPTED = 0
 LAST_ORDER_STATUS = "No order attempt yet"
 
 
@@ -410,6 +413,12 @@ def scan_market(manual=False, auto_eligible=False):
                             rejected["setup already reported"] = rejected.get("setup already reported", 0) + 1
                     elif LAST_SIGNAL_BY_ASSET.get(asset) != str(stamp):
                         results.append(candidate)
+                        if auto_eligible and AUTO_MODE:
+                            # Submit fresh setups through the main loop immediately,
+                            # without waiting for the remaining symbols in this batch.
+                            EXECUTION_QUEUE.put(candidate)
+                            logging.info("Fresh first-retest setup queued for immediate execution: %s %s",
+                                         asset, candidate["direction"].upper())
             if index % PROGRESS_EVERY == 0:
                 logging.info("Scan progress %d/%d; valid first retests=%d", index, len(batch), len(results))
             time.sleep(REQUEST_PAUSE_SECONDS)
@@ -637,8 +646,12 @@ def process_trade_outcomes():
 
 
 def execute_signal(signal):
-    global TRADE_HISTORY_DIRTY, ORDER_ATTEMPTS, ORDER_ACCEPTED, ORDER_REJECTED, LAST_ORDER_STATUS
+    global TRADE_HISTORY_DIRTY, ORDER_ATTEMPTS, ORDER_ACCEPTED, ORDER_REJECTED, LAST_ORDER_STATUS, AUTO_SESSION_ACCEPTED
     if not AUTO_TRADING_ALLOWED or not AUTO_MODE:
+        return False
+    if AUTO_SESSION_ACCEPTED >= MAX_TRADES_PER_AUTO_SESSION:
+        set_auto(False, "20 accepted trades reached for this START AUTO session")
+        telegram_send("🛑 AUTO MODE OFF — session limit reached: 20 accepted PRACTICE trades. Send START AUTO to begin a new session.")
         return False
     if not practice_mode_verified():
         set_auto(False, "PRACTICE mode could not be verified")
@@ -720,6 +733,7 @@ def execute_signal(signal):
         return False
     accepted_at = time.time()
     ORDER_ACCEPTED += 1
+    AUTO_SESSION_ACCEPTED += 1
     LAST_ORDER_STATUS = f"ACCEPTED: {display_asset(asset)} {direction.upper()} — order {order_id}"
     expires_at = accepted_at + EXPIRY_MINUTES * 60 + 10
     with STATE_LOCK:
@@ -744,7 +758,11 @@ def execute_signal(signal):
     telegram_send(f"🟡 PRACTICE ORDER ACCEPTED\n{display_asset(asset)} — {direction.upper()}\nOrder ID: {order_id}\n"
                   f"Stake: {money(STAKE)} | Expiry: {EXPIRY_MINUTES} minutes\n"
                   f"Open exposure: {TRADE_EXPOSURE.count(time.time())}/{MAX_CONCURRENT_TRADES}\n"
+                  f"Session trades: {AUTO_SESSION_ACCEPTED}/{MAX_TRADES_PER_AUTO_SESSION}\n"
                   f"Broker result will be checked after expiry.")
+    if AUTO_SESSION_ACCEPTED >= MAX_TRADES_PER_AUTO_SESSION:
+        set_auto(False, "20 accepted trades reached for this START AUTO session")
+        telegram_send("🛑 AUTO MODE OFF — 20 accepted PRACTICE trades completed in this session.")
     logging.info("Practice order accepted for %s; order id=%s; exposure=%d/%d",
                  asset, order_id, TRADE_EXPOSURE.count(time.time()), MAX_CONCURRENT_TRADES)
     return True
@@ -776,6 +794,7 @@ def status_message():
             f"Order requests: {ORDER_ATTEMPTS} | Accepted: {ORDER_ACCEPTED} | Rejected/timeouts: {ORDER_REJECTED}\n"
             f"Last order: {LAST_ORDER_STATUS}\n"
             f"Open trades: {TRADE_EXPOSURE.count(time.time())}/{MAX_CONCURRENT_TRADES}\n"
+            f"Trades this AUTO session: {AUTO_SESSION_ACCEPTED}/{MAX_TRADES_PER_AUTO_SESSION}\n"
             f"Verified results this run: W{TRADE_TOTAL_WINS}/L{TRADE_TOTAL_LOSSES}/D{TRADE_TOTAL_DRAWS} | Net P/L: {money(TRADE_TOTAL_PNL)}\n"
             f"Discovered assets: {LAST_ASSET_COUNT}\nLast scan: {age}\n"
             f"Last batch: {LAST_SCAN_SCANNED}/{LAST_SCAN_TOTAL}\nCandidates: {LAST_SCAN_CANDIDATES}\n"
@@ -786,7 +805,7 @@ def status_message():
 
 
 def process_telegram_update(update):
-    global MANUAL_SCAN_REQUESTED, MARKET_MODE
+    global MANUAL_SCAN_REQUESTED, MARKET_MODE, AUTO_SESSION_ACCEPTED
     message = update.get("message") or update.get("callback_query", {}).get("message")
     if not message:
         return
@@ -805,8 +824,10 @@ def process_telegram_update(update):
             set_auto(False, "Connection or PRACTICE verification failed")
             telegram_send("AUTO refused: connection or PRACTICE verification failed. Check STATUS; AUTO remains OFF.")
         else:
+            if not AUTO_MODE:
+                AUTO_SESSION_ACCEPTED = 0
             set_auto(True)
-            telegram_send(f"🟢 AUTO MODE ON\nPRACTICE verified. {money(STAKE)} stake / {EXPIRY_MINUTES}-minute expiry.\nMax concurrent trades: {MAX_CONCURRENT_TRADES}; one open trade per asset.\nBroker outcomes are checked and saved to trade_history.csv.")
+            telegram_send(f"🟢 AUTO MODE ON\nPRACTICE verified. {money(STAKE)} stake / {EXPIRY_MINUTES}-minute expiry.\nSession limit: {MAX_TRADES_PER_AUTO_SESSION} accepted trades. Max concurrent open trades: {MAX_CONCURRENT_TRADES}; one open trade per asset.\nOrders are submitted as soon as a valid first retest is detected. Broker outcomes are checked and saved to trade_history.csv.")
     elif command in ("/STOP", "STOP AUTO"):
         set_auto(False, "Stopped manually")
         telegram_send("🔴 AUTO MODE OFF. No new automatic orders will be started.")
@@ -905,6 +926,13 @@ def main():
                 continue
             while True:
                 try:
+                    fresh_signal = EXECUTION_QUEUE.get_nowait()
+                except queue.Empty:
+                    break
+                if AUTO_MODE:
+                    execute_signal(fresh_signal)
+            while True:
+                try:
                     completed = SCAN_RESULTS_QUEUE.get_nowait()
                 except queue.Empty:
                     break
@@ -914,20 +942,8 @@ def main():
                                     len(completed_results))
                     telegram_send(f"🔔 {len(completed_results)} VALID BREAKOUT/RETEST SETUP(S) FOUND\nAUTO MODE is OFF, so no order was submitted.\nSend START AUTO to enable PRACTICE execution.")
                 elif completed.get("auto_eligible") and completed_results:
-                    if not AUTO_MODE:
-                        logging.info("Valid setup(s) skipped because AUTO MODE was turned off before execution.")
-                        telegram_send("⚪ VALID SETUP FOUND, BUT AUTO MODE WAS TURNED OFF BEFORE ORDER SUBMISSION. No trade was placed.")
-                    elif completed.get("error") or completed.get("timed_out"):
-                        logging.warning("Skipping automatic entries because the scan ended with an error or timeout.")
-                        telegram_send("⚠️ A breakout/retest scan ended with an error or timeout. Automatic orders were skipped for safety; check STATUS.")
-                    else:
-                        for signal in completed_results:
-                            if not AUTO_MODE:
-                                break
-                            if TRADE_EXPOSURE.count(time.time()) >= MAX_CONCURRENT_TRADES:
-                                logging.info("Global exposure cap reached; remaining candidates skipped for this scan.")
-                                break
-                            execute_signal(signal)
+                    logging.info("%d fresh retest setup(s) were handed to the execution queue during scanning; no end-of-batch delay.",
+                                 len(completed_results))
             if MANUAL_SCAN_REQUESTED and not SCAN_IN_PROGRESS:
                 MANUAL_SCAN_REQUESTED = False
                 if not start_scan(manual=True):
