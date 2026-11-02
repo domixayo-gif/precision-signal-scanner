@@ -6,10 +6,8 @@ on:
     branches: [main]
     paths:
       - "scanner.py"
-      - "market_filters.py"
       - "breakout_retest_filter.py"
       - "execution_guard.py"
-      - "test_market_filters.py"
       - "test_breakout_retest_filter.py"
       - "test_execution_guard.py"
       - "broker_results.py"
@@ -20,12 +18,12 @@ on:
     branches: [main]
     paths:
       - "scanner.py"
-      - "market_filters.py"
       - "breakout_retest_filter.py"
       - "execution_guard.py"
-      - "test_market_filters.py"
       - "test_breakout_retest_filter.py"
       - "test_execution_guard.py"
+      - "broker_results.py"
+      - "test_broker_results.py"
       - "requirements.txt"
       - ".github/workflows/scanner.yml"
   schedule:
