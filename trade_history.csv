@@ -4,9 +4,9 @@ accepted_at_utc,order_id,asset,direction,stake,expiry_minutes,signal_source,outc
 2026-11-02T09:07:05.887306+00:00,14411725025,USDSGD-OTC,put,1.00,2,Momentum 10 + 5m trend,UNVERIFIED,,2026-11-02T17:12:07.107404+00:00,Broker closed-option history did not contain this order before timeout
 2026-11-02T09:09:13.596292+00:00,14411728410,USDINR-OTC,call,1.00,2,Immediate breakout + first retest (no confirmation),UNVERIFIED,,2026-11-02T17:12:19.853286+00:00,Broker closed-option history did not contain this order before timeout
 2026-11-02T09:09:16.767959+00:00,14411728499,USDZAR-OTC,put,1.00,2,Momentum 10 + 5m trend,UNVERIFIED,,2026-11-02T17:18:22.515693+00:00,Broker closed-option history did not contain this order before timeout
-2026-11-02T09:10:16.924189+00:00,14411730444,USDSGD-OTC,put,1.00,2,Momentum 10 + 5m trend,PENDING,,,
-2026-11-02T09:14:18.568012+00:00,14411736416,USDSGD-OTC,put,1.00,2,Momentum 10 + 5m trend,PENDING,,,
-2026-11-02T09:15:19.249282+00:00,14411737925,USDZAR-OTC,put,1.00,2,Momentum 10 + 5m trend,PENDING,,,
+2026-11-02T09:10:16.924189+00:00,14411730444,USDSGD-OTC,put,1.00,2,Momentum 10 + 5m trend,UNVERIFIED,,2026-11-02T17:18:37.182684+00:00,Broker closed-option history did not contain this order before timeout
+2026-11-02T09:14:18.568012+00:00,14411736416,USDSGD-OTC,put,1.00,2,Momentum 10 + 5m trend,UNVERIFIED,,2026-11-02T17:18:50.080416+00:00,Broker closed-option history did not contain this order before timeout
+2026-11-02T09:15:19.249282+00:00,14411737925,USDZAR-OTC,put,1.00,2,Momentum 10 + 5m trend,UNVERIFIED,,2026-11-02T17:19:02.772556+00:00,Broker closed-option history did not contain this order before timeout
 2026-11-02T09:18:26.533276+00:00,14411742232,USDSGD-OTC,put,1.00,2,Momentum 10 + 5m trend,PENDING,,,
 2026-11-02T09:19:23.489104+00:00,14411743430,USDZAR-OTC,put,1.00,2,Momentum 10 + 5m trend,PENDING,,,
 2026-11-02T09:23:32.264328+00:00,14411749459,USDINR-OTC,put,1.00,2,Momentum 10 + 5m trend,PENDING,,,
