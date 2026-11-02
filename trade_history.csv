@@ -19,4 +19,4 @@ accepted_at_utc,order_id,asset,direction,stake,expiry_minutes,signal_source,outc
 2026-11-02T10:54:29.306165+00:00,14411886649,USDINR-OTC,put,1.00,2,Immediate breakout + first retest (no confirmation),UNVERIFIED,,2026-11-02T17:45:16.938219+00:00,Broker closed-option history did not contain this order before timeout
 2026-11-02T11:07:27.077335+00:00,14411909506,USDZAR-OTC,put,1.00,2,Momentum 10 + 5m trend,UNVERIFIED,,2026-11-02T17:45:29.949704+00:00,Broker closed-option history did not contain this order before timeout
 2026-11-02T18:11:22.134272+00:00,14413071821,USDINR-OTC,put,1.00,2,Pure breakout + first valid retest,UNVERIFIED,,2026-11-02T18:18:53.001086+00:00,Broker closed-option history did not contain this order before timeout
-2026-11-02T18:17:23.250341+00:00,14413087016,USDSGD-OTC,call,1.00,2,Pure breakout + first valid retest,PENDING,,,
+2026-11-02T18:17:23.250341+00:00,14413087016,USDSGD-OTC,call,1.00,2,Pure breakout + first valid retest,UNVERIFIED,,2026-11-02T18:24:54.582822+00:00,Broker closed-option history did not contain this order before timeout
