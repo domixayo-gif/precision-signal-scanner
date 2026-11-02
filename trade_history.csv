@@ -24,3 +24,4 @@ accepted_at_utc,order_id,asset,direction,stake,expiry_minutes,signal_source,outc
 2026-11-02T19:39:22.637352+00:00,14413303495,AUDCAD-OTC,call,1.00,2,Pure breakout + first valid retest,UNVERIFIED,,2026-11-02T19:46:53.677409+00:00,Broker closed-option history did not contain this order before timeout
 2026-11-02T19:47:29.109400+00:00,14413323118,AUDCAD-OTC,call,1.00,2,Pure breakout + first valid retest,UNVERIFIED,,2026-11-02T19:54:59.435684+00:00,Broker closed-option history did not contain this order before timeout
 2026-11-02T19:58:04.839698+00:00,14413352977,GBPUSD-OTC,call,1.00,2,Pure breakout + first valid retest,PENDING,,,
+2026-11-02T20:01:02.552063+00:00,14413361007,GBPUSD-OTC,call,1.00,2,Pure breakout + first valid retest,PENDING,,,
