@@ -1,6 +1,6 @@
 import unittest
 
-from breakout_retest_filter import RetestState, evaluate
+from breakout_retest_filter import RetestState, build_entry_signal, evaluate
 
 
 def build_bullish_breakout(extra_candles):
@@ -86,6 +86,22 @@ class PureBreakoutRetestTests(unittest.TestCase):
         result = evaluate(candles)
         self.assertEqual(result.state, RetestState.RETESTED)
         self.assertEqual(result.direction, "up")
+
+    def test_entry_signal_uses_close_time_and_only_latest_retest(self):
+        candles = build_bullish_breakout([])[:32]
+        signal, result = build_entry_signal("EURUSD-OTC", candles, candle_seconds=60)
+        self.assertEqual(result.state, RetestState.RETESTED)
+        self.assertEqual(signal["direction"], "call")
+        self.assertEqual(signal["candle_time"], candles[-1]["from"] + 60)
+        self.assertEqual(signal["level"], result.level)
+        self.assertEqual(signal["zone"], result.zone)
+
+    def test_does_not_chase_a_retest_from_an_older_candle(self):
+        candles = build_bullish_breakout([])
+        signal, result = build_entry_signal("EURUSD-OTC", candles, candle_seconds=60)
+        self.assertEqual(result.state, RetestState.RETESTED)
+        self.assertEqual(result.retest_index, 31)
+        self.assertIsNone(signal)
 
     def test_bearish_breakout_retest_maps_to_put(self):
         candles = build_bullish_breakout([])
