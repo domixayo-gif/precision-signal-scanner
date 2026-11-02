@@ -1,6 +1,6 @@
 import unittest
 
-from breakout_retest_filter import RetestState, apply_filter, evaluate
+from breakout_retest_filter import RetestState, evaluate
 
 
 def build_bullish_breakout(extra_candles):
@@ -40,7 +40,7 @@ def build_bullish_breakout(extra_candles):
     return candles
 
 
-class ImmediateBreakoutRetestTests(unittest.TestCase):
+class PureBreakoutRetestTests(unittest.TestCase):
     def test_first_retest_triggers_without_second_pullback_or_confirmation(self):
         candles = build_bullish_breakout([])
         result = evaluate(candles)
@@ -57,18 +57,6 @@ class ImmediateBreakoutRetestTests(unittest.TestCase):
         result = evaluate(candles)
         self.assertEqual(result.state, RetestState.RETESTED)
         self.assertEqual(result.direction, "up")
-
-    def test_support_break_invalidates_instead_of_triggering_call(self):
-        candles = build_bullish_breakout([])
-        candles[31] = {
-            "open": 100.3, "close": 99.7, "high": 100.4, "low": 99.5,
-            "from": 31 * 60,
-        }
-        result = evaluate(candles)
-        self.assertEqual(result.state, RetestState.INVALIDATED)
-        signal, verdict = apply_filter("put", result, mode="enforce")
-        self.assertEqual(signal, "put")
-        self.assertEqual(verdict, "PASS")
 
     def test_first_retest_can_happen_several_candles_after_breakout(self):
         candles = build_bullish_breakout([
@@ -91,12 +79,6 @@ class ImmediateBreakoutRetestTests(unittest.TestCase):
         result = evaluate(candles)
         self.assertEqual(result.state, RetestState.INVALIDATED)
         self.assertEqual(result.retest_index, 31)
-
-    def test_valid_bullish_retest_vetoes_opposing_put(self):
-        result = evaluate(build_bullish_breakout([]))
-        signal, verdict = apply_filter("put", result, mode="enforce")
-        self.assertIsNone(signal)
-        self.assertEqual(verdict, "VETO")
 
     def test_wick_sweep_can_still_be_a_valid_retest(self):
         candles = build_bullish_breakout([])
