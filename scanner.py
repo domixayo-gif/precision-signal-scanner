@@ -675,6 +675,7 @@ def process_trade_outcomes():
 
 
 def execute_signal(signal):
+    global TRADE_HISTORY_DIRTY
     if not AUTO_TRADING_ALLOWED or not AUTO_MODE:
         return False
     if not practice_mode_verified():
