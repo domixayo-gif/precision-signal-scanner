@@ -148,44 +148,53 @@ def evaluate(candles, cfg=DEFAULT_CONFIG):
                 if not valid_break or not strong_body or leg <= 0:
                     continue
 
-                # The very first candle after the breakout is the retest candle.
-                # It may be bullish, bearish, or a doji: the touch and close
-                # relative to the broken level determine whether the level held.
-                retest_index = b + 1
-                if retest_index > latest:
-                    continue
-                retest = candles[retest_index]
-                retest_close = _num(retest, "close")
+                # Search forward for the FIRST retest, not only the candle
+                # immediately after breakout. The setup remains valid for at
+                # most max_setup_age closed candles after the breakout.
                 zone = (level - cfg.zone_atr * atr, level + cfg.zone_atr * atr)
+                search_end = min(latest, b + cfg.max_setup_age)
+                for retest_index in range(b + 1, search_end + 1):
+                    retest = candles[retest_index]
+                    retest_close = _num(retest, "close")
 
-                if direction == "up":
-                    extreme = _num(retest, "low")
-                    touched = extreme <= zone[1]
-                    held = retest_close >= level - cfg.max_close_through_atr * atr
-                    depth = (hi - extreme) / leg
-                else:
-                    extreme = _num(retest, "high")
-                    touched = extreme >= zone[0]
-                    held = retest_close <= level + cfg.max_close_through_atr * atr
-                    depth = (extreme - lo) / leg
+                    if direction == "up":
+                        extreme = _num(retest, "low")
+                        touched = extreme <= zone[1]
+                        held = retest_close >= level - cfg.max_close_through_atr * atr
+                        depth = (hi - extreme) / leg
+                        decisively_broken = retest_close < level - cfg.max_close_through_atr * atr
+                    else:
+                        extreme = _num(retest, "high")
+                        touched = extreme >= zone[0]
+                        held = retest_close <= level + cfg.max_close_through_atr * atr
+                        depth = (extreme - lo) / leg
+                        decisively_broken = retest_close > level + cfg.max_close_through_atr * atr
 
-                if not touched:
-                    continue
-                if not held:
+                    # A decisive close through the level invalidates the setup,
+                    # even if the candle did not enter the touch zone.
+                    if decisively_broken:
+                        candidates.append((b, RetestResult(
+                            RetestState.INVALIDATED, direction, level, zone,
+                            ("price closed decisively through the broken level before a valid retest",),
+                            retest_index
+                        )))
+                        break
+                    if not touched:
+                        continue
+                    if not held or depth < 0 or depth > cfg.max_retrace:
+                        candidates.append((b, RetestResult(
+                            RetestState.INVALIDATED, direction, level, zone,
+                            ("the first retest exceeded the allowed hold or retracement depth",),
+                            retest_index
+                        )))
+                        break
+
                     candidates.append((b, RetestResult(
-                        RetestState.INVALIDATED, direction, level, zone,
-                        ("the first retest candle closed decisively through the broken level",),
+                        RetestState.RETESTED, direction, level, zone,
+                        ("first valid breakout retest detected; entry does not wait for confirmation candles",),
                         retest_index
                     )))
-                    continue
-                if depth < 0 or depth > cfg.max_retrace:
-                    continue
-
-                candidates.append((b, RetestResult(
-                    RetestState.RETESTED, direction, level, zone,
-                    ("valid breakout retest detected; entry does not wait for confirmation candles",),
-                    retest_index
-                )))
+                    break
 
         if not candidates:
             return RetestResult(RetestState.NONE, reasons=("no valid breakout followed by a retest",))
