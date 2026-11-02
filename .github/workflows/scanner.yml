@@ -75,6 +75,7 @@ jobs:
         run: |
           python - <<'PY'
           import os
+          import time
           import requests
 
           repo = os.environ["GH_REPOSITORY"]
@@ -87,6 +88,7 @@ jobs:
               "Authorization": f"Bearer {token}",
               "X-GitHub-Api-Version": "2022-11-28",
           }
+          active_states = {"queued", "pending", "in_progress", "waiting", "requested"}
           response = requests.get(
               f"{api}/repos/{repo}/actions/runs",
               headers=headers,
@@ -97,23 +99,48 @@ jobs:
           runs = response.json().get("workflow_runs", [])
           cancelled = 0
           for run in runs:
-              if int(run.get("id", 0)) == current_run:
+              run_id = int(run.get("id", 0))
+              if run_id == current_run:
                   continue
               if run.get("path") != ".github/workflows/scanner.yml":
                   continue
-              if run.get("status") not in ("queued", "in_progress"):
+              if run.get("status") not in active_states:
                   continue
-              run_id = int(run["id"])
-              print(f"Cancelling duplicate scanner run {run_id}: {run.get('name')} ({run.get('status')})")
-              result = requests.post(
-                  f"{api}/repos/{repo}/actions/runs/{run_id}/cancel",
-                  headers=headers,
-                  timeout=20,
-              )
-              if result.status_code not in (202, 409, 422):
-                  result.raise_for_status()
+              print(f"Cancelling old scanner run {run_id}: {run.get('name')} ({run.get('status')})")
+              cancel_url = f"{api}/repos/{repo}/actions/runs/{run_id}/cancel"
+              cancel_response = requests.post(cancel_url, headers=headers, timeout=20)
+              if cancel_response.status_code == 202:
+                  time.sleep(3)
+                  status_response = requests.get(
+                      f"{api}/repos/{repo}/actions/runs/{run_id}",
+                      headers=headers,
+                      timeout=20,
+                  )
+                  status_response.raise_for_status()
+                  state = status_response.json().get("status")
+                  if state in active_states:
+                      print(f"Run {run_id} did not stop after cancel (status={state}); force-cancelling")
+                      force_response = requests.post(
+                          f"{api}/repos/{repo}/actions/runs/{run_id}/force-cancel",
+                          headers=headers,
+                          timeout=20,
+                      )
+                      if force_response.status_code not in (202, 409):
+                          force_response.raise_for_status()
+                  else:
+                      print(f"Run {run_id} stopped: {state}")
+              elif cancel_response.status_code == 409:
+                  force_response = requests.post(
+                      f"{api}/repos/{repo}/actions/runs/{run_id}/force-cancel",
+                      headers=headers,
+                      timeout=20,
+                  )
+                  if force_response.status_code not in (202, 409):
+                      force_response.raise_for_status()
+              else:
+                  cancel_response.raise_for_status()
               cancelled += 1
-          print(f"Duplicate scanner cleanup complete; cancellation requests sent: {cancelled}")
+          print(f"Old scanner cleanup complete; cancellation requests sent: {cancelled}")
           PY
       - name: Run Breakout & Retest scanner
         if: github.event_name != 'pull_request'
