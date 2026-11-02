@@ -1,4 +1,4 @@
-"""Two-candle breakout/retest detector for Momentum 10.
+"""Confirmed support/resistance breakout followed by the first valid retest.
 
 Pure Python: no broker, network, order, or account access.
 Input candles must be closed and ordered oldest -> newest.
@@ -202,13 +202,3 @@ def evaluate(candles, cfg=DEFAULT_CONFIG):
     except (KeyError, TypeError, ValueError, IndexError, ZeroDivisionError) as exc:
         return RetestResult(RetestState.NONE, reasons=(f"filter safely skipped: {type(exc).__name__}",))
 
-def apply_filter(m10_direction, result, mode="enforce"):
-    """Veto a Momentum 10 entry that opposes a detected breakout retest."""
-    direction = (m10_direction or "").lower()
-    opposing = ((result.direction == "up" and direction == "put") or
-                (result.direction == "down" and direction == "call"))
-    should_veto = result.state == RetestState.RETESTED and opposing
-    note = "WOULD_VETO" if should_veto else "PASS"
-    if mode == "enforce" and should_veto:
-        return None, "VETO"
-    return m10_direction, note

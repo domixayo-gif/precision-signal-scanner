@@ -1,13 +1,15 @@
-name: Validate Momentum 10 Scanner
+name: Validate Breakout & Retest Scanner
 
 on:
   push:
     paths:
       - "scanner.py"
-      - "market_filters.py"
       - "breakout_retest_filter.py"
-      - "test_market_filters.py"
       - "test_breakout_retest_filter.py"
+      - "execution_guard.py"
+      - "test_execution_guard.py"
+      - "broker_results.py"
+      - "test_broker_results.py"
       - "requirements.txt"
       - ".github/workflows/scanner.yml"
       - ".github/workflows/validate.yml"
@@ -31,6 +33,6 @@ jobs:
       - name: Install scanner requirements
         run: python -m pip install -r requirements.txt
       - name: Compile scanner modules
-        run: python -m py_compile scanner.py breakout_retest_filter.py market_filters.py
-      - name: Run market and breakout/retest regression tests
-        run: python -m unittest test_market_filters test_breakout_retest_filter -v
+        run: python -m py_compile scanner.py breakout_retest_filter.py execution_guard.py broker_results.py
+      - name: Run breakout/retest, exposure, and broker-result regression tests
+        run: python -m unittest test_breakout_retest_filter test_execution_guard test_broker_results -v

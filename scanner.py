@@ -2,16 +2,15 @@ import os, time, math, logging, threading, traceback, requests, queue, re, csv, 
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from iqoptionapi.stable_api import IQ_Option
-from breakout_retest_filter import evaluate as evaluate_breakout_retest, apply_filter as apply_breakout_retest
-from market_filters import evaluate_market_filters
+from breakout_retest_filter import evaluate as evaluate_breakout_retest
+from broker_results import get_binary_option_net_profit
 from execution_guard import TradeExposureGuard, classify_profit
 
-# MOMENTUM 10 — PRACTICE ONLY. Manual scans never place trades.
-BOT_NAME = "Momentum 10 IQ Option Scanner"
+# PURE BREAKOUT & RETEST — PRACTICE ONLY.
+BOT_NAME = "Breakout & Retest IQ Option Scanner"
 AUTO_TRADING_ALLOWED = True
-STAKE, EXPIRY_MINUTES, CANDLE_SECONDS, LOOKBACK_CANDLES = 1.0, 2, 60, 50
-# Keep the existing strategy filters unchanged.
-MOMENTUM_PERIOD, EXTREME_PERCENTILE, MIN_TURN_DISTANCE = 10, 0.08, 0.06
+STAKE, EXPIRY_MINUTES, CANDLE_SECONDS, LOOKBACK_CANDLES = 1.0, 2, 60, 60
+MIN_CLOSED_CANDLES = 28
 SCAN_INTERVAL_SECONDS, REQUEST_PAUSE_SECONDS, RECONNECT_SECONDS = 60, 0.12, 30
 HEARTBEAT_SECONDS, REQUEST_TIMEOUT = 300, 15
 MAX_SYMBOLS_PER_SCAN, TOP_SIGNALS, PROGRESS_EVERY = 40, 3, 10
@@ -19,13 +18,10 @@ MAX_SIGNAL_AGE_SECONDS, ORDER_REQUEST_TIMEOUT = 180, 12
 MAX_CONCURRENT_TRADES = 3
 TRADE_HISTORY_FILE = "trade_history.csv"
 OUTCOME_CHECK_DELAY_SECONDS = 10
+OUTCOME_RETRY_SECONDS, OUTCOME_MAX_ATTEMPTS = 30, 8
 TRADE_HISTORY_BATCH_SIZE, TRADE_HISTORY_FLUSH_SECONDS = 5, 60
-# Direct breakout/retest entries: the first valid retest candle triggers entry.
-# No second pullback candle or continuation confirmation is required.
 RETEST_FILTER_MODE = "enforce"
 MARKET_MODE = "BOTH"
-TREND_CANDLE_SECONDS = 300
-TREND_CANDLE_COUNT = 60
 IQ_EMAIL, IQ_PASSWORD = os.getenv("IQ_EMAIL", ""), os.getenv("IQ_PASSWORD", "")
 TELEGRAM_TOKEN, TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_TOKEN", ""), os.getenv("TELEGRAM_CHAT_ID", "")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -156,7 +152,7 @@ def connect_iq(timeout=40):
     IQ = result[1]
     balance = result[2]
     logging.info("Connected in PRACTICE. Balance %s", money(balance))
-    telegram_send(f"🟢 MOMENTUM 10 CONNECTED\nAccount: PRACTICE ONLY\nBalance: {money(balance)}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nExpiry: 2 minutes | Stake: $1\nManual scans never place trades.")
+    telegram_send(f"🟢 BREAKOUT & RETEST CONNECTED\nAccount: PRACTICE ONLY\nBalance: {money(balance)}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nExpiry: 2 minutes | Stake: $1\nManual scans never place trades.")
 
 def practice_mode_verified(timeout=15):
     client = IQ
@@ -306,57 +302,6 @@ def fetch_candles(asset, timeframe=CANDLE_SECONDS, count=LOOKBACK_CANDLES):
     return cleaned
 
 
-def calculate_signal(asset, candles):
-    if len(candles) < MOMENTUM_PERIOD + 3:
-        return None, "insufficient candles"
-    closes = [c["close"] for c in candles]
-    opens = [c["open"] for c in candles]
-    highs = [c["high"] for c in candles]
-    lows = [c["low"] for c in candles]
-    current, previous, old = closes[-1], closes[-2], closes[-1-MOMENTUM_PERIOD]
-    if old <= 0:
-        return None, "invalid reference price"
-    momentum = (current - old) / old
-    ranges = [highs[i] - lows[i] for i in range(max(0, len(candles)-14), len(candles))]
-    average_range = sum(ranges) / len(ranges) if ranges else 0.0
-    if average_range <= 0:
-        return None, "no usable candle range"
-    candle_range = highs[-1] - lows[-1]
-    if candle_range <= 0:
-        return None, "flat latest candle"
-    body = abs(current - opens[-1]) / candle_range
-    upper = (highs[-1] - current) / candle_range
-    lower = (current - lows[-1]) / candle_range
-    if momentum < 0:
-        if current <= opens[-1]:
-            return None, "no bullish reversal after downward momentum"
-        turn, direction = lower, "call"
-    elif momentum > 0:
-        if current >= opens[-1]:
-            return None, "no bearish reversal after upward momentum"
-        turn, direction = upper, "put"
-    else:
-        return None, "zero momentum"
-    if turn < MIN_TURN_DISTANCE:
-        return None, "reversal distance too small"
-    normalized = abs(current - old) / average_range
-    if normalized < EXTREME_PERCENTILE:
-        return None, "momentum not extreme enough"
-    if direction == "call" and current <= previous:
-        return None, "bullish reversal lacks close confirmation"
-    if direction == "put" and current >= previous:
-        return None, "bearish reversal lacks close confirmation"
-    score = 50 + (10 if normalized >= 0.5 else 0) + (10 if normalized >= 1.0 else 0) + (10 if body >= 0.4 else 0) + (10 if body >= 0.65 else 0) + (5 if turn >= 0.3 else 0) + (5 if turn >= 0.5 else 0)
-    try:
-        candle_time = int(candles[-1].get("from") or time.time())
-    except Exception:
-        candle_time = int(time.time())
-    return {"asset":asset, "direction":direction, "score":min(score,100),
-            "momentum":momentum, "normalized_momentum":normalized, "body_ratio":body,
-            "turn_distance":turn, "price":current, "candle_time":candle_time,
-            "time":utc_now().strftime("%H:%M:%S UTC")}, ""
-
-
 def lagos_time(timestamp):
     try:
         value = datetime.fromtimestamp(float(timestamp), ZoneInfo("Africa/Lagos")).strftime("%I:%M:%S %p")
@@ -378,10 +323,14 @@ def display_asset(asset):
 
 def send_signal(signal, manual=False):
     direction = "CALL 🟢" if signal["direction"] == "call" else "PUT 🔴"
-    entry = int(signal.get("entry_time", signal.get("candle_time", time.time())))
-    sid = f"M10-{signal.get('asset','UNKNOWN')}-{signal['direction'].upper()}-{int(signal.get('candle_time',time.time()))}"
-    telegram_send(f"📣 MOMENTUM 10 SIGNAL\n{display_asset(signal.get('asset'))} — {direction}\nSignal ID: {sid}\nEntry: {lagos_time(entry)}\nExpiry: 2 minutes\nScore: {signal.get('score',0)}/100\nSetup: {signal.get('source','Momentum 10')}\n{'MANUAL SCAN — no trade placed.' if manual else 'AUTO MODE — order will be checked before placement.'}\nScore is not win probability.")
-
+    stamp = int(signal.get("candle_time", time.time()))
+    sid = f"BR-{signal.get('asset','UNKNOWN')}-{signal['direction'].upper()}-{stamp}"
+    telegram_send(
+        f"📣 BREAKOUT & RETEST SIGNAL\\n{display_asset(signal.get('asset'))} — {direction}\\n"
+        f"Signal ID: {sid}\\nSetup: confirmed level breakout + first valid retest\\n"
+        f"Entry: first retest close; no extra confirmation candle\\nExpiry: {EXPIRY_MINUTES} minutes\\n"
+        f"{'MANUAL SCAN — no trade placed.' if manual else 'AUTO MODE — PRACTICE order only.'}"
+    )
 
 def scan_market(manual=False, auto_eligible=False):
     global SCAN_IN_PROGRESS, ASSET_CURSOR, LAST_ASSET_COUNT, LAST_SCAN_FINISHED
@@ -405,7 +354,8 @@ def scan_market(manual=False, auto_eligible=False):
             return
         start = ASSET_CURSOR % total
         batch = [assets[(start+i) % total] for i in range(min(MAX_SYMBOLS_PER_SCAN, total))]
-        logging.info("Scanning %d of %d discovered assets; manual=%s auto_eligible=%s", len(batch), total, manual, auto_eligible)
+        logging.info("Breakout/retest scan: %d of %d assets; manual=%s auto_eligible=%s",
+                     len(batch), total, manual, auto_eligible)
         for index, asset in enumerate(batch, 1):
             if not RUNNING:
                 break
@@ -424,97 +374,70 @@ def scan_market(manual=False, auto_eligible=False):
                 continue
             timeouts = 0
             scanned += 1
-            if len(candles) < MOMENTUM_PERIOD + 4:
-                rejected["no candles/unavailable"] = rejected.get("no candles/unavailable", 0) + 1
+            # Exclude the forming candle. A setup must be confirmed by closed bars.
+            closed = candles[:-1]
+            if len(closed) < MIN_CLOSED_CANDLES:
+                rejected["insufficient closed candles"] = rejected.get("insufficient closed candles", 0) + 1
             else:
-                # Use closed candles. A valid breakout retest creates its own
-                # immediate directional signal and does not wait for 5m trend,
-                # Momentum 10, or continuation-candle confirmation.
-                closed = candles[:-1]
-                candidates_for_asset = []
-                retest = evaluate_breakout_retest(closed) if RETEST_FILTER_MODE != "off" else None
-
-                if retest and retest.state.value == "retested":
-                    retest_index = retest.retest_index
-                    if retest_index is not None and 0 <= retest_index < len(closed):
-                        retest_candle = closed[retest_index]
-                        stamp = int(retest_candle.get("from") or time.time())
-                        retest_direction = "call" if retest.direction == "up" else "put"
-                        candidates_for_asset.append({
-                            "asset": asset, "direction": retest_direction, "score": 100,
-                            "candle_time": stamp, "price": retest_candle["close"],
-                            "time": utc_now().strftime("%H:%M:%S UTC"),
-                            "source": "Immediate breakout + first retest (no confirmation)"
-                        })
-
-                # Keep the existing Momentum 10 path and its 5m trend /
-                # consolidation requirements unchanged.
-                trend_candles = fetch_candles(asset, TREND_CANDLE_SECONDS, TREND_CANDLE_COUNT)
-                if trend_candles is None or len(trend_candles) < 52:
-                    rejected["5-minute trend data unavailable"] = rejected.get("5-minute trend data unavailable", 0) + 1
+                retest = evaluate_breakout_retest(closed)
+                if retest.state.value != "retested":
+                    reason = "; ".join(retest.reasons) if retest.reasons else retest.state.value
+                    rejected[reason] = rejected.get(reason, 0) + 1
+                elif retest.retest_index != len(closed) - 1:
+                    # Never chase a retest after its first completed candle.
+                    rejected["first retest candle already passed"] = rejected.get("first retest candle already passed", 0) + 1
                 else:
-                    market = evaluate_market_filters(closed, trend_candles[:-1])
-                    if not market["ready"]:
-                        rejected[market["reason"]] = rejected.get(market["reason"], 0) + 1
-                    elif market["consolidating"]:
-                        rejected["sideways/consolidation market"] = rejected.get("sideways/consolidation market", 0) + 1
-                    elif market["trend"] not in ("up", "down"):
-                        rejected["5-minute trend unclear"] = rejected.get("5-minute trend unclear", 0) + 1
-                    else:
-                        trend = market["trend"]
-                        m10_signal, m10_reason = calculate_signal(asset, closed)
-                        if m10_signal:
-                            aligned = (trend == "up" and m10_signal["direction"] == "call") or (trend == "down" and m10_signal["direction"] == "put")
-                            if not aligned:
-                                rejected["Momentum 10 disagrees with 5-minute trend"] = rejected.get("Momentum 10 disagrees with 5-minute trend", 0) + 1
-                            else:
-                                _, verdict = apply_breakout_retest(m10_signal["direction"], retest, mode=RETEST_FILTER_MODE) if retest else (m10_signal["direction"], "PASS")
-                                if verdict == "VETO":
-                                    rejected["breakout retest protected against countertrend entry"] = rejected.get("breakout retest protected against countertrend entry", 0) + 1
-                                elif not any(item["direction"] == m10_signal["direction"] for item in candidates_for_asset):
-                                    m10_signal["source"] = "Momentum 10 + 5m trend"
-                                    candidates_for_asset.append(m10_signal)
-                        else:
-                            rejected[m10_reason] = rejected.get(m10_reason, 0) + 1
-
-                for candidate in candidates_for_asset:
-                    if manual:
-                        candidate["entry_time"] = int(candidate.get("candle_time", time.time())) + CANDLE_SECONDS
-                        if candidate["entry_time"] - time.time() >= 8 and MANUAL_SIGNAL_SENT_BY_ASSET.get(asset) != str(candidate["candle_time"]):
+                    retest_candle = closed[retest.retest_index]
+                    stamp = int(retest_candle.get("from") or time.time())
+                    candidate = {
+                        "asset": asset,
+                        "direction": "call" if retest.direction == "up" else "put",
+                        "score": 100,
+                        "candle_time": stamp,
+                        "price": retest_candle["close"],
+                        "time": utc_now().strftime("%H:%M:%S UTC"),
+                        "source": "Pure breakout + first valid retest",
+                        "level": retest.level,
+                    }
+                    age = time.time() - stamp
+                    if age > MAX_SIGNAL_AGE_SECONDS or age < -5:
+                        rejected["first retest signal stale"] = rejected.get("first retest signal stale", 0) + 1
+                    elif manual:
+                        candidate["entry_time"] = max(int(time.time()), stamp + CANDLE_SECONDS)
+                        if MANUAL_SIGNAL_SENT_BY_ASSET.get(asset) != str(stamp):
                             results.append(candidate)
-                            MANUAL_SIGNAL_SENT_BY_ASSET[asset] = str(candidate["candle_time"])
+                            MANUAL_SIGNAL_SENT_BY_ASSET[asset] = str(stamp)
                             if len(results) <= TOP_SIGNALS:
                                 send_signal(candidate, manual=True)
                         else:
-                            rejected["setup too close/already reported"] = rejected.get("setup too close/already reported", 0) + 1
-                    elif LAST_SIGNAL_BY_ASSET.get(asset) != str(candidate["candle_time"]):
+                            rejected["setup already reported"] = rejected.get("setup already reported", 0) + 1
+                    elif LAST_SIGNAL_BY_ASSET.get(asset) != str(stamp):
                         results.append(candidate)
             if index % PROGRESS_EVERY == 0:
-                logging.info("Scan progress %d/%d; candidates=%d", index, len(batch), len(results))
+                logging.info("Scan progress %d/%d; valid first retests=%d", index, len(batch), len(results))
             time.sleep(REQUEST_PAUSE_SECONDS)
     except Exception as exc:
         error_text = str(exc)
-        logging.exception("Market scan failed")
+        logging.exception("Breakout/retest market scan failed")
     finally:
         if total:
             ASSET_CURSOR = (start + max(attempted, 1)) % total
-        results.sort(key=lambda item: item["score"], reverse=True)
         LAST_SCAN_FINISHED = time.time()
         LAST_SCAN_CANDIDATES = len(results)
         LAST_SCAN_SCANNED, LAST_SCAN_TOTAL = scanned, total
         LAST_SCAN_TIMED_OUT, LAST_SCAN_ERROR = timed_out, error_text
-        LAST_REJECTIONS = dict(sorted(rejected.items(), key=lambda item:item[1], reverse=True)[:8])
-        logging.info("Scan finished: scanned=%d/%d candidates=%d timeout=%s error=%s", scanned, total, len(results), timed_out, error_text or "none")
+        LAST_REJECTIONS = dict(sorted(rejected.items(), key=lambda item: item[1], reverse=True)[:8])
+        logging.info("Breakout/retest scan finished: scanned=%d/%d valid_retests=%d timeout=%s error=%s",
+                     scanned, total, len(results), timed_out, error_text or "none")
         if manual and not results:
-            top = sorted(rejected.items(), key=lambda item:item[1], reverse=True)[:3]
-            reasons = "; ".join(f"{name}: {count}" for name,count in top) or "No valid candles returned."
-            suffix = "\nConnection timed out; scanner will reconnect." if timed_out else (f"\n{error_text}" if error_text else "")
-            telegram_send(f"NO TRADE\nScanned: {scanned}/{total}\nTop rejection reasons: {reasons}{suffix}")
-        SCAN_RESULTS_QUEUE.put({"manual":manual, "auto_eligible":auto_eligible, "results":results,
-                                "timed_out":timed_out, "error":error_text})
+            top = sorted(rejected.items(), key=lambda item: item[1], reverse=True)[:3]
+            reasons = "; ".join(f"{name}: {count}" for name, count in top) or "No valid closed candles returned."
+            suffix = "\\nConnection timed out; scanner will reconnect." if timed_out else (f"\\n{error_text}" if error_text else "")
+            telegram_send(f"NO TRADE — NO VALID FIRST RETEST\\nScanned: {scanned}/{total}\\nTop rejection reasons: {reasons}{suffix}")
+        SCAN_RESULTS_QUEUE.put({"manual": manual, "auto_eligible": auto_eligible, "results": results,
+                                "timed_out": timed_out, "error": error_text})
         with STATE_LOCK:
             SCAN_IN_PROGRESS = False
-
 
 def start_scan(manual=False):
     global SCAN_IN_PROGRESS, LAST_SCAN_STARTED
@@ -623,21 +546,12 @@ def persist_trade_history(force=False):
 
 def _outcome_worker(order_id, client, recovered=False):
     try:
-        # Fresh orders use check_win_v3 (broker's closed-option event). Orders
-        # recovered after a workflow restart use historical realized P/L because
-        # the library's asynchronous close cache is process-local.
-        if recovered and hasattr(client, "raw_check_win"):
-            pnl = client.raw_check_win(int(order_id))
-            if pnl is None:
-                raise RuntimeError("closed order not present in broker history yet")
-        else:
-            if not hasattr(client, "check_win_v3"):
-                raise RuntimeError("IQ Option API has no check_win_v3 outcome method")
-            pnl = client.check_win_v3(int(order_id))
+        pnl = get_binary_option_net_profit(
+            client, order_id, lock=client_api_lock(client), timeout=12
+        )
         OUTCOME_RESULTS.put((str(order_id), "ok", float(pnl)))
     except Exception as exc:
         OUTCOME_RESULTS.put((str(order_id), "error", str(exc)))
-
 
 def process_trade_outcomes():
     """Start background broker-result checks and apply completed results."""
@@ -681,10 +595,10 @@ def process_trade_outcomes():
             persist_trade_history()
         else:
             record["result_error"] = str(value)[:180]
-            record["next_outcome_check"] = now + 20
+            record["next_outcome_check"] = now + OUTCOME_RETRY_SECONDS
             logging.warning("Outcome check failed for order %s (attempt %s): %s",
                             order_id, record["outcome_attempts"], value)
-            if int(record.get("outcome_attempts", 0)) >= 3:
+            if int(record.get("outcome_attempts", 0))  >= OUTCOME_MAX_ATTEMPTS:
                 record["outcome"] = "UNVERIFIED"
                 record["result_checked_at_utc"] = utc_now().isoformat()
                 fields = ("accepted_at_utc", "order_id", "asset", "direction", "stake",
@@ -694,7 +608,7 @@ def process_trade_outcomes():
                     if str(row.get("order_id")) == order_id:
                         row.update({key: record.get(key, "") for key in fields})
                         break
-                telegram_send(f"⚠️ RESULT UNVERIFIED\nOrder ID: {order_id}\nBroker result unavailable after 3 checks. Check IQ Option history.")
+                telegram_send(f"⚠️ RESULT UNVERIFIED\nOrder ID: {order_id}\nBroker result unavailable after 8 bounded checks. Check IQ Option history.")
                 TRADE_HISTORY_DIRTY += 1
                 persist_trade_history()
 
@@ -708,11 +622,15 @@ def process_trade_outcomes():
             continue
         if now < float(record.get("next_outcome_check", 0)):
             continue
-        if int(record.get("outcome_attempts", 0)) >= 3:
+        if int(record.get("outcome_attempts", 0))  >= OUTCOME_MAX_ATTEMPTS:
             continue
         if IQ is None or not practice_mode_verified():
-            record["next_outcome_check"] = now + 20
+            record["next_outcome_check"] = now + OUTCOME_RETRY_SECONDS
             continue
+        # One result lookup at a time: the community API has one shared bet-info response object.
+        if any(r.get("outcome_thread") is not None and r["outcome_thread"].is_alive()
+               for r in TRADE_RECORDS.values()):
+            break
         record["outcome_attempts"] = int(record.get("outcome_attempts", 0)) + 1
         worker = threading.Thread(target=_outcome_worker,
                                   args=(order_id, IQ, bool(record.get("recovered", False))),
@@ -839,10 +757,10 @@ def status_message():
     except Exception:
         connected = practice = False
     age = f"{int(time.time()-LAST_SCAN_FINISHED)} seconds ago" if LAST_SCAN_FINISHED else "Not completed yet"
-    return (f"📊 MOMENTUM 10 STATUS\nConnection: {'CONNECTED' if connected else 'DISCONNECTED'}\n"
+    return (f"📊 BREAKOUT & RETEST STATUS\nConnection: {'CONNECTED' if connected else 'DISCONNECTED'}\n"
             f"Practice verification: {'OK' if practice else 'NOT VERIFIED'}\nBalance: {balance}\n"
             f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nStake: $1 | Expiry: 2 minutes\n"
-            f"Market selection: {MARKET_MODE}\n5-minute trend: ON | Consolidation protection: ON\nBreakout/retest: first valid retest within setup window (no confirmation)\n"
+            f"Market selection: {MARKET_MODE}\nStrategy: PURE BREAKOUT & RETEST ONLY\nMomentum: OFF | 5-minute trend filter: OFF\nEntry: first valid closed retest candle; no extra confirmation\n"
             f"Open trades: {TRADE_EXPOSURE.count(time.time())}/{MAX_CONCURRENT_TRADES}\n"
             f"Verified results this run: W{TRADE_TOTAL_WINS}/L{TRADE_TOTAL_LOSSES}/D{TRADE_TOTAL_DRAWS} | Net P/L: {money(TRADE_TOTAL_PNL)}\n"
             f"Discovered assets: {LAST_ASSET_COUNT}\nLast scan: {age}\n"
@@ -948,18 +866,18 @@ def heartbeat():
     LAST_HEARTBEAT = time.time()
     process_trade_outcomes()
     persist_trade_history()
-    telegram_send(f"💓 MOMENTUM 10 HEARTBEAT\nAccount: PRACTICE ONLY\n"
+    telegram_send(f"💓 BREAKOUT & RETEST HEARTBEAT\nAccount: PRACTICE ONLY\n"
                   f"Connection: {'OK' if practice_mode_verified() else 'NOT VERIFIED'}\n"
                   f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\n"
                   f"Discovered assets: {LAST_ASSET_COUNT}\nLast scan: {LAST_SCAN_SCANNED}/{LAST_SCAN_TOTAL}\n"
                   f"Candidates: {LAST_SCAN_CANDIDATES}\nScan in progress: {'YES' if SCAN_IN_PROGRESS else 'NO'}\n"
-                  f"No qualifying setup means NO TRADE.")
+                  f"No valid first retest means NO TRADE.")
 
 
 def main():
     global RUNNING, MANUAL_SCAN_REQUESTED
     load_trade_history()
-    telegram_send("🚀 MOMENTUM 10 STARTING\nPRACTICE-only scanner is connecting.\nManual SCAN MARKET sends signals only and never places trades.\nMax open exposure: 3 trades total, 1 per pair. Broker results are checked and saved to trade_history.csv.")
+    telegram_send("🚀 BREAKOUT & RETEST STARTING\nPRACTICE-only scanner is connecting.\nManual SCAN MARKET sends signals only and never places trades.\nMax open exposure: 3 trades total, 1 per pair. Broker results are checked and saved to trade_history.csv.")
     threading.Thread(target=telegram_listener, daemon=True, name="telegram-listener").start()
     while RUNNING:
         try:
