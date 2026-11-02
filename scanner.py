@@ -529,6 +529,11 @@ def start_scan(manual=False):
     return True
 
 
+def current_open_trade_count():
+    with STATE_LOCK:
+        return TRADE_EXPOSURE.count(time.time())
+
+
 def load_trade_history():
     """Load the persistent CSV ledger; old rows are historical, not open trades."""
     global TRADE_HISTORY_ROWS
