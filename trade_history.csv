@@ -34,5 +34,5 @@ accepted_at_utc,order_id,asset,direction,stake,expiry_minutes,signal_source,outc
 2026-11-02T21:01:24.326585+00:00,14413519246,GBPUSD-OTC,call,1.00,2,Pure breakout + first valid retest,UNVERIFIED,,2026-11-02T21:08:54.920256+00:00,Broker closed-option history did not contain this order before timeout
 2026-11-02T22:27:21.496771+00:00,14413738445,USDINR-OTC,call,1.00,2,Pure breakout + first valid retest,UNVERIFIED,,2026-11-02T22:34:52.367074+00:00,Broker closed-option history did not contain this order before timeout
 2026-11-02T22:29:55.199873+00:00,14413744698,USDINR-OTC,call,1.00,2,Pure breakout + first valid retest,UNVERIFIED,,2026-11-02T22:37:25.848018+00:00,Broker closed-option history did not contain this order before timeout
-2026-11-02T22:35:26.965921+00:00,14413760229,USDINR-OTC,call,1.00,2,Pure breakout + first valid retest,PENDING,,,
+2026-11-02T22:35:26.965921+00:00,14413760229,USDINR-OTC,call,1.00,2,Pure breakout + first valid retest,UNVERIFIED,,2026-11-02T22:42:57.520295+00:00,Broker closed-option history did not contain this order before timeout
 2026-11-02T22:42:30.202454+00:00,14413780450,NZDUSD-OTC,call,1.00,2,Pure breakout + first valid retest,PENDING,,,
