@@ -58,6 +58,7 @@ LAST_ASSET_COUNT = LAST_SCAN_SCANNED = LAST_SCAN_TOTAL = LAST_SCAN_CANDIDATES = 
 LAST_SCAN_TIMED_OUT, LAST_SCAN_ERROR = False, ""
 LAST_REJECTIONS = {}
 LAST_ASSET_DIAGNOSTIC = "Asset discovery has not run yet."
+LAST_ASSET_DISCOVERY_MODE = "NOT RUN"
 TRADE_EXPOSURE = TradeExposureGuard(max_open_trades=MAX_CONCURRENT_TRADES,
                                      expiry_seconds=EXPIRY_MINUTES * 60, expiry_grace_seconds=10)
 ORDER_ATTEMPTS = ORDER_ACCEPTED = ORDER_REJECTED = 0
@@ -203,26 +204,43 @@ def ensure_connection():
             return False
 
 
-def is_supported_binary_asset(asset):
-    # Restrict AUTO orders to recognizable FX pairs (including OTC). IQ Option's
-    # active list also contains stocks and other instruments that binary buy()
-    # rejects, such as FIS:US, Ferrari, GS, MMM:US, and MA:US.
-    name = str(asset or "").strip().upper().replace("/", "").replace(" ", "")
-    name = re.sub(r"[-_]?OTC$", "", name)
+def binary_fx_asset_info(asset):
+    """Return (canonical FX symbol, is_otc) for supported IQ Option asset names."""
+    raw = str(asset or "").strip().upper().replace("/", "").replace(" ", "")
+    if "." in raw:
+        raw = raw.rsplit(".", 1)[1].strip()
+    if not raw or "HC" in raw:
+        return "", False
+    is_otc = bool(re.search(r"(?:[-_ ]?OTC)$", raw))
+    if is_otc:
+        raw = re.sub(r"(?:[-_ ]?OTC)$", "", raw)
+    # IQ Option's regular binary/turbo feed commonly labels FX as EURNZD-op.
+    # -op is a platform suffix, not an OTC marker.
+    if raw.endswith("-OP"):
+        raw = raw[:-3]
+    name = raw.replace("-", "").replace("_", "")
     if not re.fullmatch(r"[A-Z]{6}", name):
-        return False
+        return "", is_otc
     currencies = {
         "USD", "EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD", "SGD",
         "HKD", "NOK", "SEK", "MXN", "TRY", "ZAR", "PLN", "CZK", "HUF",
         "DKK", "CNH", "THB", "INR", "BRL", "IDR", "MYR", "PHP", "NGN",
         "AED", "SAR"
     }
-    return name[:3] in currencies and name[3:] in currencies and name[:3] != name[3:]
+    if name[:3] not in currencies or name[3:] not in currencies or name[:3] == name[3:]:
+        return "", is_otc
+    return name, is_otc
+
+
+def is_supported_binary_asset(asset):
+    return bool(binary_fx_asset_info(asset)[0])
 
 
 def get_asset_names():
     """Return only binary/turbo FX assets that match the selected market mode."""
-    global LAST_ASSET_DIAGNOSTIC
+    global LAST_ASSET_DIAGNOSTIC, LAST_ASSET_DISCOVERY_MODE
+    scan_mode = str(MARKET_MODE).upper()
+    LAST_ASSET_DISCOVERY_MODE = scan_mode
     client = IQ
     if client is None:
         return []
@@ -313,33 +331,33 @@ def get_asset_names():
                     continue
 
                 raw_name = str(active.get("name", "")).strip()
-                if "." in raw_name:
-                    raw_name = raw_name.split(".", 1)[1].strip()
-                if not raw_name or not is_supported_binary_asset(raw_name):
+                symbol, is_otc = binary_fx_asset_info(raw_name)
+                if not symbol:
                     continue
 
                 counts["supported_fx"] += 1
-                is_otc = bool(re.search(r"(?:[-_ ]?OTC)$", raw_name, re.IGNORECASE))
                 counts["otc" if is_otc else "regular"] += 1
 
-                if MARKET_MODE == "REGULAR" and is_otc:
+                if scan_mode == "REGULAR" and is_otc:
                     continue
-                if MARKET_MODE == "OTC" and not is_otc:
+                if scan_mode == "OTC" and not is_otc:
                     continue
-                candidates.add(raw_name)
+                # Regular "-op" broker names are converted to the canonical six-letter
+                # symbol for candle requests and binary buy(); OTC names retain OTC suffix.
+                candidates.add(raw_name.rsplit(".", 1)[-1].strip() if is_otc else symbol)
 
         supported = sorted(candidates)
         if supported:
             LAST_ASSET_DIAGNOSTIC = (
-                f"Found {len(supported)} FX pairs in {MARKET_MODE} mode "
+                f"Found {len(supported)} FX pairs in {scan_mode} mode "
                 f"({counts['regular']} regular, {counts['otc']} OTC available)."
             )
-        elif MARKET_MODE == "REGULAR" and counts["otc"] > 0 and counts["regular"] == 0:
+        elif scan_mode == "REGULAR" and counts["otc"] > 0 and counts["regular"] == 0:
             LAST_ASSET_DIAGNOSTIC = (
                 f"No regular FX pairs are currently enabled. The broker returned "
                 f"{counts['otc']} OTC FX pairs; select BOTH MARKETS or OTC PAIRS."
             )
-        elif MARKET_MODE == "OTC" and counts["regular"] > 0 and counts["otc"] == 0:
+        elif scan_mode == "OTC" and counts["regular"] > 0 and counts["otc"] == 0:
             LAST_ASSET_DIAGNOSTIC = (
                 f"No OTC FX pairs are currently enabled. The broker returned "
                 f"{counts['regular']} regular FX pairs; select BOTH MARKETS or REGULAR PAIRS."
@@ -351,13 +369,13 @@ def get_asset_names():
             )
         else:
             LAST_ASSET_DIAGNOSTIC = (
-                f"No FX pairs matched market mode {MARKET_MODE}; "
+                f"No FX pairs matched market mode {scan_mode}; "
                 f"regular={counts['regular']}, OTC={counts['otc']}."
             )
         logging.info(
             "IQ Option asset discovery mode=%s: entries=%d enabled=%d supported_fx=%d "
             "regular=%d otc=%d selected=%d",
-            MARKET_MODE, counts["binary_turbo_entries"], counts["enabled_entries"],
+            scan_mode, counts["binary_turbo_entries"], counts["enabled_entries"],
             counts["supported_fx"], counts["regular"], counts["otc"], len(supported)
         )
         logging.info("Asset discovery detail: %s", LAST_ASSET_DIAGNOSTIC)
@@ -961,6 +979,7 @@ def status_message():
             f"Selected strategy: {strategy_label()}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\n"
             f"Stake: $1 | Expiry: {strategy_expiry()} minute(s)\n"
             f"Market selection: {MARKET_MODE}\n"
+            f"Last discovery mode: {LAST_ASSET_DISCOVERY_MODE}\n"
             f"Asset discovery: {LAST_ASSET_DIAGNOSTIC}\n"
             f"Breakout 5-minute trend filter: {'ON' if FIVE_MINUTE_TREND_FILTER_ENABLED else 'OFF'}\n"
             f"Order requests: {ORDER_ATTEMPTS} | Accepted: {ORDER_ACCEPTED} | Rejected/timeouts: {ORDER_REJECTED}\n"
