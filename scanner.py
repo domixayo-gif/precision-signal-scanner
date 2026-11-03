@@ -5,6 +5,9 @@ from iqoptionapi.stable_api import IQ_Option
 from breakout_retest_filter import build_entry_signal
 from trend_filter import classify_trend
 from execution_guard import TradeExposureGuard, classify_profit
+from momentum_strategy import calculate_signal as calculate_momentum_signal
+from ema_strategy import calculate_signal as calculate_ema_signal
+import base64, json
 
 # PURE BREAKOUT & RETEST — PRACTICE ONLY.
 BOT_NAME = "Breakout & Retest IQ Option Scanner"
@@ -18,6 +21,16 @@ MAX_SIGNAL_AGE_SECONDS, ORDER_REQUEST_TIMEOUT = 90, 12
 MAX_CONCURRENT_TRADES = 3
 MAX_TRADES_PER_AUTO_SESSION = 20
 MARKET_MODE = "BOTH"
+STRATEGY_SETTINGS = {
+    "B": {"name": "Breakout & Retest", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 60},
+    "M": {"name": "Momentum 10", "expiry_minutes": 1, "scan_interval_seconds": 60, "lookback": 50},
+    "E": {"name": "EMA 20/50 + ADX 14 + RSI 14", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 80},
+}
+ACTIVE_STRATEGY = "B"
+STRATEGY_GENERATION = 0
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+GITHUB_REPOSITORY = os.getenv("GITHUB_REPOSITORY", "")
+GITHUB_REF_NAME = os.getenv("GITHUB_REF_NAME", "main")
 # Enabled: executable 1-minute setups must agree with the closed 5-minute trend.
 FIVE_MINUTE_TREND_FILTER_ENABLED = True
 IQ_EMAIL, IQ_PASSWORD = os.getenv("IQ_EMAIL", ""), os.getenv("IQ_PASSWORD", "")
@@ -84,9 +97,13 @@ def telegram_send(message, keyboard=True):
         return False
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": str(message)[:4000], "disable_web_page_preview": True}
     if keyboard:
-        payload["reply_markup"] = {"keyboard": [[{"text":"START AUTO"},{"text":"STOP AUTO"}],
-            [{"text":"SCAN MARKET"},{"text":"STATUS"}],
-            [{"text":"REGULAR PAIRS"},{"text":"OTC PAIRS"},{"text":"BOTH MARKETS"}]], "resize_keyboard": True}
+        payload["reply_markup"] = {"keyboard": [
+            [{"text":"B — BREAKOUT"},{"text":"M — MOMENTUM"}],
+            [{"text":"E — EMA"},{"text":"START AUTO"}],
+            [{"text":"STOP AUTO"},{"text":"SCAN MARKET"}],
+            [{"text":"STATUS"}],
+            [{"text":"REGULAR PAIRS"},{"text":"OTC PAIRS"},{"text":"BOTH MARKETS"}]
+        ], "resize_keyboard": True}
     try:
         response = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
                                  json=payload, timeout=12)
@@ -147,7 +164,7 @@ def connect_iq(timeout=40):
     IQ = result[1]
     balance = result[2]
     logging.info("Connected in PRACTICE. Balance %s", money(balance))
-    telegram_send(f"🟢 BREAKOUT & RETEST CONNECTED\nAccount: PRACTICE ONLY\nBalance: {money(balance)}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nExpiry: 2 minutes | Stake: $1\nManual scans never place trades.")
+    telegram_send(f"🟢 IQ OPTION CONNECTED\nAccount: PRACTICE ONLY\nBalance: {money(balance)}\nSelected strategy: {ACTIVE_STRATEGY} — {STRATEGY_SETTINGS[ACTIVE_STRATEGY]['name']}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nStake: $1\nManual scans never place trades.")
 
 def practice_mode_verified(timeout=15):
     client = IQ
@@ -331,10 +348,14 @@ def send_signal(signal, manual=False):
         f"{'MANUAL SCAN — no trade placed.' if manual else 'AUTO MODE — PRACTICE order only.'}"
     )
 
-def scan_market(manual=False, auto_eligible=False):
+def scan_market(manual=False, auto_eligible=False, strategy=None, generation=None):
     global SCAN_IN_PROGRESS, ASSET_CURSOR, LAST_ASSET_COUNT, LAST_SCAN_FINISHED
     global LAST_SCAN_CANDIDATES, LAST_SCAN_SCANNED, LAST_SCAN_TOTAL, LAST_SCAN_TIMED_OUT
     global LAST_SCAN_ERROR, LAST_REJECTIONS
+    strategy = str(strategy or ACTIVE_STRATEGY).upper()
+    generation = STRATEGY_GENERATION if generation is None else int(generation)
+    if strategy in ("M", "E"):
+        return scan_indicator_market(manual, auto_eligible, strategy, generation)
     results, rejected = [], {}
     scanned = attempted = total = 0
     timed_out, error_text = False, ""
@@ -356,7 +377,7 @@ def scan_market(manual=False, auto_eligible=False):
         logging.info("Breakout/retest scan: %d of %d assets; manual=%s auto_eligible=%s",
                      len(batch), total, manual, auto_eligible)
         for index, asset in enumerate(batch, 1):
-            if not RUNNING:
+            if not RUNNING or strategy != ACTIVE_STRATEGY or generation != STRATEGY_GENERATION:
                 break
             if IQ is None and not ensure_connection():
                 timed_out = True
@@ -373,6 +394,8 @@ def scan_market(manual=False, auto_eligible=False):
                 continue
             timeouts = 0
             scanned += 1
+            if strategy != ACTIVE_STRATEGY or generation != STRATEGY_GENERATION:
+                break
             # Determine closed bars from their timestamps, rather than blindly
             # dropping the final item (some broker responses omit the forming bar).
             now = int(time.time())
@@ -389,6 +412,9 @@ def scan_market(manual=False, auto_eligible=False):
                         reason = "; ".join(retest.reasons) if retest.reasons else retest.state.value
                         rejected[reason] = rejected.get(reason, 0) + 1
                 else:
+                    candidate.update({"strategy": "B", "generation": generation,
+                                      "expiry_minutes": STRATEGY_SETTINGS["B"]["expiry_minutes"],
+                                      "max_signal_age_seconds": MAX_SIGNAL_AGE_SECONDS})
                     # A valid 1-minute retest is executable only when the latest
                     # CLOSED 5-minute candles confirm the same directional trend.
                     trend_candles = fetch_candles(asset, timeframe=300, count=60)
@@ -414,16 +440,18 @@ def scan_market(manual=False, auto_eligible=False):
                             rejected["first retest signal stale"] = rejected.get("first retest signal stale", 0) + 1
                         elif manual:
                             candidate["entry_time"] = max(int(time.time()), stamp)
-                            if MANUAL_SIGNAL_SENT_BY_ASSET.get(asset) != str(stamp):
+                            signal_key = f"{strategy}:{asset}"
+                            if MANUAL_SIGNAL_SENT_BY_ASSET.get(signal_key) != str(stamp):
                                 results.append(candidate)
-                                MANUAL_SIGNAL_SENT_BY_ASSET[asset] = str(stamp)
+                                MANUAL_SIGNAL_SENT_BY_ASSET[signal_key] = str(stamp)
                                 if len(results) <= TOP_SIGNALS:
                                     send_signal(candidate, manual=True)
                             else:
                                 rejected["setup already reported"] = rejected.get("setup already reported", 0) + 1
-                        elif LAST_SIGNAL_BY_ASSET.get(asset) != str(stamp):
+                        elif LAST_SIGNAL_BY_ASSET.get(f"{strategy}:{asset}") != str(stamp):
                             results.append(candidate)
-                            if auto_eligible and AUTO_MODE:
+                            if (auto_eligible and AUTO_MODE and strategy == ACTIVE_STRATEGY
+                                    and generation == STRATEGY_GENERATION):
                                 # Submit fresh setups through the main loop immediately,
                                 # without waiting for the remaining symbols in this batch.
                                 EXECUTION_QUEUE.put(candidate)
@@ -451,7 +479,141 @@ def scan_market(manual=False, auto_eligible=False):
             suffix = "\\nConnection timed out; scanner will reconnect." if timed_out else (f"\\n{error_text}" if error_text else "")
             telegram_send(f"NO TRADE — NO VALID FIRST RETEST\\nScanned: {scanned}/{total}\\nTop rejection reasons: {reasons}{suffix}")
         SCAN_RESULTS_QUEUE.put({"manual": manual, "auto_eligible": auto_eligible, "results": results,
-                                "timed_out": timed_out, "error": error_text})
+                                "timed_out": timed_out, "error": error_text,
+                                "strategy": strategy, "generation": generation})
+        with STATE_LOCK:
+            SCAN_IN_PROGRESS = False
+
+
+
+def send_indicator_signal(signal, manual=False):
+    strategy = signal.get("strategy", ACTIVE_STRATEGY)
+    name = STRATEGY_SETTINGS.get(strategy, {}).get("name", strategy)
+    direction = "CALL 🟢" if signal["direction"] == "call" else "PUT 🔴"
+    expiry = int(signal.get("expiry_minutes", STRATEGY_SETTINGS[strategy]["expiry_minutes"]))
+    stamp = int(signal.get("candle_time", time.time()))
+    if strategy == "M":
+        detail = (f"Momentum score: {signal.get('score', 0)}/100\n"
+                  f"Normalized momentum: {signal.get('normalized_momentum', 0):.3f}")
+    else:
+        detail = (f"EMA20: {signal.get('ema20', 0):.6f} | EMA50: {signal.get('ema50', 0):.6f}\n"
+                  f"ADX14: {signal.get('adx14', 0):.2f} | RSI14: {signal.get('rsi14', 0):.2f}")
+    telegram_send(
+        f"📣 {strategy} — {name} SIGNAL\n{display_asset(signal.get('asset'))} — {direction}\n"
+        f"Entry: closed 1-minute candle ({lagos_time(stamp)})\n{detail}\n"
+        f"Expiry: {expiry} minute(s)\n"
+        f"{'MANUAL SCAN — no trade placed.' if manual else 'AUTO MODE — PRACTICE order only.'}"
+    )
+
+
+def scan_indicator_market(manual, auto_eligible, strategy, generation):
+    global SCAN_IN_PROGRESS, ASSET_CURSOR, LAST_ASSET_COUNT, LAST_SCAN_FINISHED, LAST_SCAN_CANDIDATES
+    global LAST_SCAN_SCANNED, LAST_SCAN_TOTAL, LAST_SCAN_TIMED_OUT, LAST_SCAN_ERROR, LAST_REJECTIONS
+    settings = STRATEGY_SETTINGS[strategy]
+    results, rejected = [], {}
+    scanned = attempted = total = 0
+    timed_out, error_text = False, ""
+    start = ASSET_CURSOR
+    timeouts = 0
+    try:
+        if not ensure_connection():
+            error_text = "IQ Option disconnected; reconnect failed."
+            return
+        assets = get_asset_names()
+        total = len(assets)
+        LAST_ASSET_COUNT = total
+        if not assets:
+            timed_out = IQ is None
+            error_text = "Asset discovery timed out or IQ Option returned zero symbols."
+            return
+        start = ASSET_CURSOR % total
+        batch = [assets[(start + i) % total] for i in range(min(MAX_SYMBOLS_PER_SCAN, total))]
+        logging.info("%s scan: %d of %d FX assets; manual=%s auto_eligible=%s",
+                     strategy, len(batch), total, manual, auto_eligible)
+        for index, asset in enumerate(batch, 1):
+            if not RUNNING or strategy != ACTIVE_STRATEGY or generation != STRATEGY_GENERATION:
+                break
+            if IQ is None and not ensure_connection():
+                timed_out = True
+                rejected["connection/reconnect failed"] = rejected.get("connection/reconnect failed", 0) + 1
+                break
+            attempted += 1
+            candles = fetch_candles(asset, timeframe=CANDLE_SECONDS, count=settings["lookback"])
+            if candles is None:
+                timed_out = True
+                timeouts += 1
+                rejected["candle timeout"] = rejected.get("candle timeout", 0) + 1
+                if timeouts >= 2 or not ensure_connection():
+                    break
+                continue
+            timeouts = 0
+            scanned += 1
+            if strategy != ACTIVE_STRATEGY or generation != STRATEGY_GENERATION:
+                break
+            now = int(time.time())
+            closed = [c for c in candles
+                      if int(c.get("from") or 0) + CANDLE_SECONDS <= now]
+            if strategy == "M":
+                signal, reason = calculate_momentum_signal(asset, closed, CANDLE_SECONDS)
+            else:
+                signal, reason = calculate_ema_signal(asset, closed, CANDLE_SECONDS)
+            if signal is None:
+                rejected[reason or "no valid setup"] = rejected.get(reason or "no valid setup", 0) + 1
+            else:
+                signal.update({
+                    "strategy": strategy, "generation": generation,
+                    "expiry_minutes": settings["expiry_minutes"],
+                    "max_signal_age_seconds": MAX_SIGNAL_AGE_SECONDS,
+                })
+                stamp = int(signal["candle_time"])
+                age = time.time() - stamp
+                signal_key = f"{strategy}:{asset}"
+                if age > MAX_SIGNAL_AGE_SECONDS or age < -5:
+                    rejected["signal candle is stale"] = rejected.get("signal candle is stale", 0) + 1
+                elif manual:
+                    if MANUAL_SIGNAL_SENT_BY_ASSET.get(signal_key) != str(stamp):
+                        results.append(signal)
+                        MANUAL_SIGNAL_SENT_BY_ASSET[signal_key] = str(stamp)
+                        if len(results) <= TOP_SIGNALS:
+                            send_indicator_signal(signal, manual=True)
+                    else:
+                        rejected["setup already reported"] = rejected.get("setup already reported", 0) + 1
+                elif LAST_SIGNAL_BY_ASSET.get(signal_key) != str(stamp):
+                    results.append(signal)
+                    if (auto_eligible and AUTO_MODE and strategy == ACTIVE_STRATEGY
+                            and generation == STRATEGY_GENERATION):
+                        EXECUTION_QUEUE.put(signal)
+                        logging.info("%s signal queued for immediate PRACTICE execution: %s %s",
+                                     strategy, asset, signal["direction"].upper())
+                else:
+                    rejected["signal already handled"] = rejected.get("signal already handled", 0) + 1
+            if index % PROGRESS_EVERY == 0:
+                logging.info("%s scan progress %d/%d; candidates=%d",
+                             strategy, index, len(batch), len(results))
+            time.sleep(REQUEST_PAUSE_SECONDS)
+    except Exception as exc:
+        error_text = str(exc)
+        logging.exception("%s market scan failed", strategy)
+    finally:
+        if total:
+            ASSET_CURSOR = (start + max(attempted, 1)) % total
+        LAST_SCAN_FINISHED = time.time()
+        LAST_SCAN_CANDIDATES = len(results)
+        LAST_SCAN_SCANNED, LAST_SCAN_TOTAL = scanned, total
+        LAST_SCAN_TIMED_OUT, LAST_SCAN_ERROR = timed_out, error_text
+        LAST_REJECTIONS = dict(sorted(rejected.items(), key=lambda item: item[1], reverse=True)[:8])
+        logging.info("%s scan finished: scanned=%d/%d candidates=%d timeout=%s error=%s",
+                     strategy, scanned, total, len(results), timed_out, error_text or "none")
+        if manual and not results and strategy == ACTIVE_STRATEGY and generation == STRATEGY_GENERATION:
+            top = sorted(rejected.items(), key=lambda item: item[1], reverse=True)[:3]
+            reasons = "; ".join(f"{name}: {count}" for name, count in top) or "No valid closed candles returned."
+            suffix = f"\n{error_text}" if error_text else ""
+            telegram_send(f"NO TRADE — {strategy}\nScanned: {scanned}/{total}\nTop rejection reasons: {reasons}{suffix}")
+        SCAN_RESULTS_QUEUE.put({
+            "manual": manual, "auto_eligible": auto_eligible, "results": results,
+            "timed_out": timed_out, "error": error_text,
+            "strategy": strategy, "generation": generation,
+        })
         with STATE_LOCK:
             SCAN_IN_PROGRESS = False
 
@@ -463,8 +625,12 @@ def start_scan(manual=False):
         SCAN_IN_PROGRESS = True
         LAST_SCAN_STARTED = time.time()
         eligible = bool(AUTO_MODE and not manual)
-    threading.Thread(target=scan_market, kwargs={"manual":manual, "auto_eligible":eligible},
-                     daemon=True, name="market-scan").start()
+        strategy = ACTIVE_STRATEGY
+        generation = STRATEGY_GENERATION
+    threading.Thread(target=scan_market,
+                     kwargs={"manual": manual, "auto_eligible": eligible,
+                             "strategy": strategy, "generation": generation},
+                     daemon=True, name=f"market-scan-{strategy}").start()
     return True
 
 
@@ -480,14 +646,22 @@ def execute_signal(signal):
         set_auto(False, "PRACTICE mode could not be verified")
         telegram_send("🛑 AUTO STOPPED: PRACTICE mode could not be verified.")
         return False
+    strategy = str(signal.get("strategy", "B")).upper()
+    generation = int(signal.get("generation", STRATEGY_GENERATION))
+    if strategy != ACTIVE_STRATEGY or generation != STRATEGY_GENERATION:
+        logging.info("Skipping signal from inactive strategy/generation: %s/%s", strategy, generation)
+        return False
+    expiry_minutes = int(signal.get("expiry_minutes", STRATEGY_SETTINGS[strategy]["expiry_minutes"]))
     asset = str(signal.get("asset", ""))
     direction = str(signal.get("direction", "")).lower()
     candle_time = int(signal.get("candle_time") or time.time())
     age = time.time() - candle_time
-    if age > MAX_SIGNAL_AGE_SECONDS or age < -5:
-        logging.info("Skipping stale signal %s (age %.1fs)", asset, age)
+    max_age = int(signal.get("max_signal_age_seconds", MAX_SIGNAL_AGE_SECONDS))
+    signal_key = f"{strategy}:{asset}"
+    if age > max_age or age < -5:
+        logging.info("Skipping stale %s signal %s (age %.1fs)", strategy, asset, age)
         return False
-    if not asset or direction not in ("call", "put") or LAST_SIGNAL_BY_ASSET.get(asset) == str(candle_time):
+    if not asset or direction not in ("call", "put") or LAST_SIGNAL_BY_ASSET.get(signal_key) == str(candle_time):
         return False
     with STATE_LOCK:
         allowed, exposure_reason = TRADE_EXPOSURE.can_open(asset, time.time())
@@ -497,7 +671,7 @@ def execute_signal(signal):
                          TRADE_EXPOSURE.count(time.time()), MAX_CONCURRENT_TRADES)
             return False
     # Mark this candle before sending the request, so a timed-out request is never retried for the same candle.
-    LAST_SIGNAL_BY_ASSET[asset] = str(candle_time)
+    LAST_SIGNAL_BY_ASSET[signal_key] = str(candle_time)
     result_queue = queue.Queue(maxsize=1)
     client = IQ
     def worker():
@@ -506,7 +680,7 @@ def execute_signal(signal):
                 result_queue.put(("safety", "PRACTICE verification failed"))
                 return
             with client_api_lock(client):
-                response = client.buy(STAKE, asset, direction, EXPIRY_MINUTES)
+                response = client.buy(STAKE, asset, direction, expiry_minutes)
             result_queue.put(("result", response))
         except Exception as exc:
             try:
@@ -515,8 +689,8 @@ def execute_signal(signal):
                 pass
     ORDER_ATTEMPTS += 1
     LAST_ORDER_STATUS = f"REQUEST SENT: {display_asset(asset)} {direction.upper()}; awaiting broker confirmation"
-    logging.info("ORDER REQUEST attempt=%d asset=%s direction=%s stake=%s expiry=%sm",
-                 ORDER_ATTEMPTS, asset, direction.upper(), money(STAKE), EXPIRY_MINUTES)
+    logging.info("ORDER REQUEST attempt=%d strategy=%s asset=%s direction=%s stake=%s expiry=%sm",
+                 ORDER_ATTEMPTS, strategy, asset, direction.upper(), money(STAKE), expiry_minutes)
     threading.Thread(target=worker, daemon=True, name="place-practice-order").start()
     try:
         status, response = result_queue.get(timeout=ORDER_REQUEST_TIMEOUT)
@@ -561,7 +735,7 @@ def execute_signal(signal):
     with STATE_LOCK:
         TRADE_EXPOSURE.register(order_id, asset, direction, accepted_at)
     telegram_send(f"🟡 PRACTICE ORDER ACCEPTED\n{display_asset(asset)} — {direction.upper()}\nOrder ID: {order_id}\n"
-                  f"Stake: {money(STAKE)} | Expiry: {EXPIRY_MINUTES} minutes\n"
+                  f"Strategy: {strategy} | Stake: {money(STAKE)} | Expiry: {expiry_minutes} minute(s)\n"
                   f"Open exposure: {TRADE_EXPOSURE.count(time.time())}/{MAX_CONCURRENT_TRADES}\n"
                   f"Session trades: {AUTO_SESSION_ACCEPTED}/{MAX_TRADES_PER_AUTO_SESSION}\n"
                   f"No trade history or outcome tracking is kept.")
@@ -580,6 +754,99 @@ def set_auto(enabled, reason=""):
     return True
 
 
+def strategy_label(strategy=None):
+    key = str(strategy or ACTIVE_STRATEGY).upper()
+    return f"{key} — {STRATEGY_SETTINGS.get(key, {}).get('name', 'Unknown strategy')}"
+
+
+def strategy_expiry(strategy=None):
+    key = str(strategy or ACTIVE_STRATEGY).upper()
+    return int(STRATEGY_SETTINGS.get(key, STRATEGY_SETTINGS["B"])["expiry_minutes"])
+
+
+def persist_active_strategy(strategy):
+    if not (GITHUB_TOKEN and GITHUB_REPOSITORY):
+        return False
+    url = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/contents/active_strategy.json"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    try:
+        current = requests.get(url, headers=headers, params={"ref": GITHUB_REF_NAME}, timeout=8)
+        payload = {
+            "message": f"Select {strategy} strategy",
+            "content": base64.b64encode((json.dumps({"strategy": strategy}) + "\\n").encode()).decode(),
+            "branch": GITHUB_REF_NAME,
+        }
+        if current.status_code == 200:
+            payload["sha"] = current.json().get("sha")
+        elif current.status_code != 404:
+            current.raise_for_status()
+        response = requests.put(url, headers=headers, json=payload, timeout=8)
+        response.raise_for_status()
+        return True
+    except Exception as exc:
+        logging.warning("Could not persist active strategy selection: %s", exc)
+        return False
+
+
+def load_active_strategy():
+    global ACTIVE_STRATEGY
+    if not (GITHUB_TOKEN and GITHUB_REPOSITORY):
+        return
+    url = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/contents/active_strategy.json"
+    headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
+    try:
+        response = requests.get(url, headers=headers, params={"ref": GITHUB_REF_NAME}, timeout=8)
+        if response.status_code == 404:
+            return
+        response.raise_for_status()
+        raw = base64.b64decode(response.json().get("content", "")).decode()
+        selected = str(json.loads(raw).get("strategy", "B")).upper()
+        if selected in STRATEGY_SETTINGS:
+            ACTIVE_STRATEGY = selected
+    except Exception as exc:
+        logging.warning("Could not load saved strategy selection; defaulting to B: %s", exc)
+
+
+def select_strategy(strategy):
+    global ACTIVE_STRATEGY, STRATEGY_GENERATION, MANUAL_SCAN_REQUESTED
+    strategy = str(strategy).upper()
+    if strategy not in STRATEGY_SETTINGS:
+        return False
+    with STATE_LOCK:
+        set_auto(False, "Strategy changed; AUTO must be restarted manually")
+        ACTIVE_STRATEGY = strategy
+        STRATEGY_GENERATION += 1
+        MANUAL_SCAN_REQUESTED = False
+        while True:
+            try:
+                EXECUTION_QUEUE.get_nowait()
+            except queue.Empty:
+                break
+    persisted = persist_active_strategy(strategy)
+    status = "Saved for future workflow restarts." if persisted else "Selected for this running session."
+    telegram_send(f"✅ STRATEGY SELECTED\n{strategy_label(strategy)}\nAUTO MODE: OFF\n{status}\nSend START AUTO when ready. Switching never starts orders automatically.")
+    logging.info("Selected strategy %s; generation=%d; persisted=%s",
+                 strategy, STRATEGY_GENERATION, persisted)
+    return True
+
+
+def parse_strategy_command(command):
+    normalized = command.strip().upper().replace("—", "-")
+    aliases = {
+        "B": "B", "/B": "B", "STRATEGY B": "B", "/STRATEGY B": "B",
+        "B - BREAKOUT": "B", "BREAKOUT": "B", "BREAKOUT & RETEST": "B",
+        "M": "M", "/M": "M", "STRATEGY M": "M", "/STRATEGY M": "M",
+        "M - MOMENTUM": "M", "MOMENTUM": "M", "MOMENTUM 10": "M",
+        "E": "E", "/E": "E", "STRATEGY E": "E", "/STRATEGY E": "E",
+        "E - EMA": "E", "EMA": "E", "EMA STRATEGY": "E",
+    }
+    return aliases.get(normalized)
+
+
 def status_message():
     connected = practice = False
     balance = "Unavailable"
@@ -592,10 +859,12 @@ def status_message():
     except Exception:
         connected = practice = False
     age = f"{int(time.time()-LAST_SCAN_FINISHED)} seconds ago" if LAST_SCAN_FINISHED else "Not completed yet"
-    return (f"📊 BREAKOUT & RETEST STATUS\nConnection: {'CONNECTED' if connected else 'DISCONNECTED'}\n"
+    return (f"📊 IQ OPTION SCANNER STATUS\nConnection: {'CONNECTED' if connected else 'DISCONNECTED'}\n"
             f"Practice verification: {'OK' if practice else 'NOT VERIFIED'}\nBalance: {balance}\n"
-            f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nStake: $1 | Expiry: 2 minutes\n"
-            f"Market selection: {MARKET_MODE}\nStrategy: PURE BREAKOUT & RETEST ONLY\nMomentum: OFF | 5-minute trend filter: {'ON' if FIVE_MINUTE_TREND_FILTER_ENABLED else 'OFF'}\nEntry: first valid closed retest candle; no extra confirmation\n"
+            f"Selected strategy: {strategy_label()}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\n"
+            f"Stake: $1 | Expiry: {strategy_expiry()} minute(s)\n"
+            f"Market selection: {MARKET_MODE}\n"
+            f"Breakout 5-minute trend filter: {'ON' if FIVE_MINUTE_TREND_FILTER_ENABLED else 'OFF'}\n"
             f"Order requests: {ORDER_ATTEMPTS} | Accepted: {ORDER_ACCEPTED} | Rejected/timeouts: {ORDER_REJECTED}\n"
             f"Last order: {LAST_ORDER_STATUS}\n"
             f"Open trades: {TRADE_EXPOSURE.count(time.time())}/{MAX_CONCURRENT_TRADES}\n"
@@ -622,6 +891,10 @@ def process_telegram_update(update):
         return
     command = raw.upper()
     logging.info("Telegram command: %s", command)
+    selected = parse_strategy_command(command)
+    if selected:
+        select_strategy(selected)
+        return
     if command in ("/START", "START AUTO"):
         if not AUTO_TRADING_ALLOWED:
             telegram_send("AUTO is disabled in this scanner.")
@@ -656,9 +929,9 @@ def process_telegram_update(update):
     elif command in ("STATUS", "/STATUS"):
         telegram_send(status_message())
     elif command in ("/HELP", "HELP"):
-        telegram_send("Commands:\nSTART AUTO — enable PRACTICE trades\nSTOP AUTO — stop new automatic trades\nSCAN MARKET — report-only signal scan\nREGULAR PAIRS / OTC PAIRS / BOTH MARKETS — choose market\nSTATUS — connection and scan status\nOpen exposure is capped at 3 trades total and 1 per pair. No trade outcomes are recorded.")
+        telegram_send("Strategy buttons: B — Breakout & Retest; M — Momentum 10; E — EMA 20/50 + ADX 14 + RSI 14.\nSTART AUTO — enable PRACTICE trades for the selected strategy\nSTOP AUTO — stop new orders\nSCAN MARKET — report-only scan\nREGULAR PAIRS / OTC PAIRS / BOTH MARKETS — choose market\nSTATUS — scanner status\nSwitching strategy always turns AUTO OFF. One strategy can trade at a time. No win/loss history is recorded.")
     else:
-        telegram_send("Unknown command. Use START AUTO, STOP AUTO, SCAN MARKET, REGULAR PAIRS, OTC PAIRS, BOTH MARKETS, STATUS, or /HELP.")
+        telegram_send("Unknown command. Use B, M, E, START AUTO, STOP AUTO, SCAN MARKET, REGULAR PAIRS, OTC PAIRS, BOTH MARKETS, STATUS, or /HELP.")
 
 
 def telegram_listener():
@@ -704,7 +977,7 @@ def heartbeat():
     if time.time() - LAST_HEARTBEAT < HEARTBEAT_SECONDS:
         return
     LAST_HEARTBEAT = time.time()
-    telegram_send(f"💓 BREAKOUT & RETEST HEARTBEAT\nAccount: PRACTICE ONLY\n"
+    telegram_send(f"💓 SCANNER HEARTBEAT — {strategy_label()}\nAccount: PRACTICE ONLY\n"
                   f"Connection: {'OK' if practice_mode_verified() else 'NOT VERIFIED'}\n"
                   f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\n"
                   f"Discovered assets: {LAST_ASSET_COUNT}\nLast scan: {LAST_SCAN_SCANNED}/{LAST_SCAN_TOTAL}\n"
@@ -714,7 +987,8 @@ def heartbeat():
 
 def main():
     global RUNNING, MANUAL_SCAN_REQUESTED
-    telegram_send("🚀 BREAKOUT & RETEST STARTING\nPRACTICE-only scanner is connecting. AUTO MODE starts OFF after every GitHub Actions restart; send START AUTO after startup to enable PRACTICE execution.\nManual SCAN MARKET sends signals only and never places trades.\nMax open exposure: 3 trades total, 1 per pair. No trade outcomes are recorded.")
+    load_active_strategy()
+    telegram_send(f"🚀 IQ OPTION SCANNER STARTING\nSelected strategy: {strategy_label()}\nPRACTICE-only scanner is connecting. AUTO MODE starts OFF after every GitHub Actions restart; send START AUTO to enable PRACTICE execution.\nChoose B, M, or E at any time; switching turns AUTO OFF.\nManual SCAN MARKET sends signals only and never places trades.\nMax open exposure: 3 trades total, 1 per pair. No win/loss history is recorded.")
     threading.Thread(target=telegram_listener, daemon=True, name="telegram-listener").start()
     while RUNNING:
         try:
@@ -749,7 +1023,8 @@ def main():
                 MANUAL_SCAN_REQUESTED = False
                 if not start_scan(manual=True):
                     MANUAL_SCAN_REQUESTED = True
-            elif not SCAN_IN_PROGRESS and time.time() - LAST_SCAN_STARTED >= SCAN_INTERVAL_SECONDS:
+            elif (not SCAN_IN_PROGRESS
+                  and time.time() - LAST_SCAN_STARTED >= STRATEGY_SETTINGS[ACTIVE_STRATEGY]["scan_interval_seconds"]):
                 start_scan(manual=False)
             heartbeat()
             time.sleep(0.5)
