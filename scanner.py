@@ -681,14 +681,13 @@ def execute_signal(signal):
             if not practice_mode_verified():
                 result_queue.put(("safety", "PRACTICE verification failed"))
                 return
-            with client_api_lock(client):
-                with STATE_LOCK:
-                    if (not AUTO_MODE or strategy != ACTIVE_STRATEGY
-                            or generation != STRATEGY_GENERATION):
-                        result_queue.put(("cancelled", "strategy changed before order submission"))
-                        return
-                    with client_api_lock(client):
-                        response = client.buy(STAKE, asset, direction, expiry_minutes)
+            with STATE_LOCK:
+                if (not AUTO_MODE or strategy != ACTIVE_STRATEGY
+                        or generation != STRATEGY_GENERATION):
+                    result_queue.put(("cancelled", "strategy changed before order submission"))
+                    return
+                with client_api_lock(client):
+                    response = client.buy(STAKE, asset, direction, expiry_minutes)
             result_queue.put(("result", response))
         except Exception as exc:
             try:
