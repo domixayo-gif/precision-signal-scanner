@@ -632,7 +632,7 @@ def process_telegram_update(update):
             if not AUTO_MODE:
                 AUTO_SESSION_ACCEPTED = 0
             set_auto(True)
-            telegram_send(f"🟢 AUTO MODE ON\nPRACTICE verified. {money(STAKE)} stake / {EXPIRY_MINUTES}-minute expiry.\nSession limit: {MAX_TRADES_PER_AUTO_SESSION} accepted trades. Max concurrent open trades: {MAX_CONCURRENT_TRADES}; one open trade per asset.\nOrders are submitted as soon as a valid first retest is detected. Broker outcomes are checked and saved to trade_history.csv.")
+            telegram_send(f"🟢 AUTO MODE ON\nPRACTICE verified. {money(STAKE)} stake / {EXPIRY_MINUTES}-minute expiry.\nSession limit: {MAX_TRADES_PER_AUTO_SESSION} accepted trades. Max concurrent open trades: {MAX_CONCURRENT_TRADES}; one open trade per asset.\nOrders are submitted as soon as a valid first retest is detected. No trade outcomes are recorded.")
     elif command in ("/STOP", "STOP AUTO"):
         set_auto(False, "Stopped manually")
         telegram_send("🔴 AUTO MODE OFF. No new automatic orders will be started.")
@@ -656,7 +656,7 @@ def process_telegram_update(update):
     elif command in ("STATUS", "/STATUS"):
         telegram_send(status_message())
     elif command in ("/HELP", "HELP"):
-        telegram_send("Commands:\nSTART AUTO — enable PRACTICE trades\nSTOP AUTO — stop new automatic trades\nSCAN MARKET — report-only signal scan\nREGULAR PAIRS / OTC PAIRS / BOTH MARKETS — choose market\nSTATUS — connection and scan status\nOpen exposure is capped at 3 trades total and 1 per pair. Broker outcomes are checked and saved to trade_history.csv.")
+        telegram_send("Commands:\nSTART AUTO — enable PRACTICE trades\nSTOP AUTO — stop new automatic trades\nSCAN MARKET — report-only signal scan\nREGULAR PAIRS / OTC PAIRS / BOTH MARKETS — choose market\nSTATUS — connection and scan status\nOpen exposure is capped at 3 trades total and 1 per pair. No trade outcomes are recorded.")
     else:
         telegram_send("Unknown command. Use START AUTO, STOP AUTO, SCAN MARKET, REGULAR PAIRS, OTC PAIRS, BOTH MARKETS, STATUS, or /HELP.")
 
@@ -714,7 +714,7 @@ def heartbeat():
 
 def main():
     global RUNNING, MANUAL_SCAN_REQUESTED
-    telegram_send("🚀 BREAKOUT & RETEST STARTING\nPRACTICE-only scanner is connecting. AUTO MODE starts OFF after every GitHub Actions restart; send START AUTO after startup to enable PRACTICE execution.\nManual SCAN MARKET sends signals only and never places trades.\nMax open exposure: 3 trades total, 1 per pair. Broker results are checked and saved to trade_history.csv.")
+    telegram_send("🚀 BREAKOUT & RETEST STARTING\nPRACTICE-only scanner is connecting. AUTO MODE starts OFF after every GitHub Actions restart; send START AUTO after startup to enable PRACTICE execution.\nManual SCAN MARKET sends signals only and never places trades.\nMax open exposure: 3 trades total, 1 per pair. No trade outcomes are recorded.")
     threading.Thread(target=telegram_listener, daemon=True, name="telegram-listener").start()
     while RUNNING:
         try:
