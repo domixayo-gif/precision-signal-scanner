@@ -31,7 +31,7 @@ class MomentumStrategyTests(unittest.TestCase):
     def test_momentum_signal_uses_close_time(self):
         candles = make_downtrend_with_bullish_reversal()
         signal, reason = calculate_signal("EURUSD", candles, 60)
-        self.assertIsNone(signal, reason)
+        self.assertIsNotNone(signal, reason)
         self.assertEqual(signal["direction"], "call")
         self.assertEqual(signal["candle_time"], candles[-1]["from"] + 60)
 
