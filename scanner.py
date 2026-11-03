@@ -220,20 +220,22 @@ def is_supported_binary_asset(asset):
 
 
 def get_asset_names():
+    """Return only binary/turbo FX assets that match the selected market mode."""
     client = IQ
     if client is None:
         return []
     result_queue = queue.Queue(maxsize=1)
+
     def worker():
         try:
-            # Do not use get_all_ACTIVES_OPCODE here: it can include stocks and
-            # other instruments that binary-option buy() cannot trade. Build the
-            # universe only from IQ Option's binary/turbo active tables.
+            # Read the broker's binary/turbo tables. The broad opcode list can
+            # contain stocks and instruments that binary buy() cannot execute.
             with client_api_lock(client):
                 init_info = client.get_all_init()
             result_queue.put(("ok", init_info))
         except Exception as exc:
             result_queue.put(("error", str(exc)))
+
     threading.Thread(target=worker, daemon=True, name="asset-discovery").start()
     try:
         status, data = result_queue.get(timeout=REQUEST_TIMEOUT)
@@ -245,39 +247,96 @@ def get_asset_names():
     if status != "ok":
         logging.warning("Binary/turbo asset discovery failed: %s", data)
         return []
+    if not isinstance(data, dict):
+        logging.warning("Binary/turbo asset discovery returned %s, not a dictionary.",
+                        type(data).__name__)
+        return []
+
     try:
-        result = data.get("result", {})
+        # IQ Option library versions may return the tables directly or wrap
+        # them in "result" (and some responses use "data").
+        result = data.get("result")
+        if not isinstance(result, dict):
+            result = data.get("data")
+        if not isinstance(result, dict):
+            result = data
+        if not any(key in result for key in ("binary", "turbo")):
+            logging.warning("No binary/turbo tables found in IQ Option init response; keys=%s",
+                            list(result.keys())[:20])
+            return []
+
         candidates = set()
-        total_binary_turbo = 0
+        counts = {
+            "binary_turbo_entries": 0,
+            "enabled_entries": 0,
+            "supported_fx": 0,
+            "regular": 0,
+            "otc": 0,
+        }
+
+        def flag_is_true(value):
+            # Broker/library versions may encode flags as bool, 0/1 or text.
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return value != 0
+            if isinstance(value, str):
+                return value.strip().lower() in {"1", "true", "yes", "on"}
+            return False
+
         for market in ("binary", "turbo"):
             market_data = result.get(market, {})
-            actives = market_data.get("actives", {})
-            if not isinstance(actives, dict):
+            if not isinstance(market_data, dict):
                 continue
-            for active in actives.values():
+            actives = market_data.get("actives", {})
+            if isinstance(actives, dict):
+                active_items = actives.values()
+            elif isinstance(actives, list):
+                active_items = actives
+            else:
+                continue
+
+            for active in active_items:
                 if not isinstance(active, dict):
                     continue
-                total_binary_turbo += 1
-                # Only take enabled, unsuspended binary/turbo instruments.
-                if active.get("enabled") is not True or active.get("is_suspended") is not False:
+                counts["binary_turbo_entries"] += 1
+
+                # Require an explicit enabled flag, but treat numeric/string
+                # representations consistently. Only an explicit suspended
+                # flag blocks an otherwise enabled asset.
+                if not flag_is_true(active.get("enabled")):
                     continue
+                counts["enabled_entries"] += 1
+                if flag_is_true(active.get("is_suspended")):
+                    continue
+
                 raw_name = str(active.get("name", "")).strip()
                 if "." in raw_name:
                     raw_name = raw_name.split(".", 1)[1].strip()
-                if raw_name and is_supported_binary_asset(raw_name):
-                    is_otc = bool(re.search(r"(?:[-_ ]?OTC)$", raw_name, re.IGNORECASE))
-                    if MARKET_MODE == "REGULAR" and is_otc:
-                        continue
-                    if MARKET_MODE == "OTC" and not is_otc:
-                        continue
-                    candidates.add(raw_name)
+                if not raw_name or not is_supported_binary_asset(raw_name):
+                    continue
+
+                counts["supported_fx"] += 1
+                is_otc = bool(re.search(r"(?:[-_ ]?OTC)$", raw_name, re.IGNORECASE))
+                counts["otc" if is_otc else "regular"] += 1
+
+                if MARKET_MODE == "REGULAR" and is_otc:
+                    continue
+                if MARKET_MODE == "OTC" and not is_otc:
+                    continue
+                candidates.add(raw_name)
+
         supported = sorted(candidates)
-        logging.info("Read %d binary/turbo actives; %d enabled, unsuspended FX candidates.", total_binary_turbo, len(supported))
+        logging.info(
+            "IQ Option asset discovery mode=%s: entries=%d enabled=%d supported_fx=%d "
+            "regular=%d otc=%d selected=%d",
+            MARKET_MODE, counts["binary_turbo_entries"], counts["enabled_entries"],
+            counts["supported_fx"], counts["regular"], counts["otc"], len(supported)
+        )
         return supported
     except Exception as exc:
-        logging.warning("Could not parse IQ Option binary/turbo active list: %s", exc)
+        logging.exception("Could not parse IQ Option binary/turbo active list: %s", exc)
         return []
-
 
 def fetch_candles(asset, timeframe=CANDLE_SECONDS, count=LOOKBACK_CANDLES):
     global IQ
