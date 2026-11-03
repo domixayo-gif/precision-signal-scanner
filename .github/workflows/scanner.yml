@@ -29,8 +29,8 @@ on:
       - "requirements.txt"
       - ".github/workflows/scanner.yml"
   schedule:
-    # Fallback start every 6 hours if a dispatch fails.
-    - cron: "0 */6 * * *"
+    # Restart before the 350-minute runner limit so Telegram polling has less downtime.
+    - cron: "0 */4 * * *"
 
 permissions:
   contents: write
