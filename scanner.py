@@ -57,6 +57,7 @@ LAST_HEARTBEAT = LAST_SCAN_STARTED = LAST_SCAN_FINISHED = 0
 LAST_ASSET_COUNT = LAST_SCAN_SCANNED = LAST_SCAN_TOTAL = LAST_SCAN_CANDIDATES = ASSET_CURSOR = 0
 LAST_SCAN_TIMED_OUT, LAST_SCAN_ERROR = False, ""
 LAST_REJECTIONS = {}
+LAST_ASSET_DIAGNOSTIC = "Asset discovery has not run yet."
 TRADE_EXPOSURE = TradeExposureGuard(max_open_trades=MAX_CONCURRENT_TRADES,
                                      expiry_seconds=EXPIRY_MINUTES * 60, expiry_grace_seconds=10)
 ORDER_ATTEMPTS = ORDER_ACCEPTED = ORDER_REJECTED = 0
@@ -221,6 +222,7 @@ def is_supported_binary_asset(asset):
 
 def get_asset_names():
     """Return only binary/turbo FX assets that match the selected market mode."""
+    global LAST_ASSET_DIAGNOSTIC
     client = IQ
     if client is None:
         return []
@@ -327,12 +329,38 @@ def get_asset_names():
                 candidates.add(raw_name)
 
         supported = sorted(candidates)
+        if supported:
+            LAST_ASSET_DIAGNOSTIC = (
+                f"Found {len(supported)} FX pairs in {MARKET_MODE} mode "
+                f"({counts['regular']} regular, {counts['otc']} OTC available)."
+            )
+        elif MARKET_MODE == "REGULAR" and counts["otc"] > 0 and counts["regular"] == 0:
+            LAST_ASSET_DIAGNOSTIC = (
+                f"No regular FX pairs are currently enabled. The broker returned "
+                f"{counts['otc']} OTC FX pairs; select BOTH MARKETS or OTC PAIRS."
+            )
+        elif MARKET_MODE == "OTC" and counts["regular"] > 0 and counts["otc"] == 0:
+            LAST_ASSET_DIAGNOSTIC = (
+                f"No OTC FX pairs are currently enabled. The broker returned "
+                f"{counts['regular']} regular FX pairs; select BOTH MARKETS or REGULAR PAIRS."
+            )
+        elif counts["supported_fx"] == 0:
+            LAST_ASSET_DIAGNOSTIC = (
+                f"The broker returned {counts['binary_turbo_entries']} binary/turbo entries, "
+                f"but none matched the supported FX-pair filter."
+            )
+        else:
+            LAST_ASSET_DIAGNOSTIC = (
+                f"No FX pairs matched market mode {MARKET_MODE}; "
+                f"regular={counts['regular']}, OTC={counts['otc']}."
+            )
         logging.info(
             "IQ Option asset discovery mode=%s: entries=%d enabled=%d supported_fx=%d "
             "regular=%d otc=%d selected=%d",
             MARKET_MODE, counts["binary_turbo_entries"], counts["enabled_entries"],
             counts["supported_fx"], counts["regular"], counts["otc"], len(supported)
         )
+        logging.info("Asset discovery detail: %s", LAST_ASSET_DIAGNOSTIC)
         return supported
     except Exception as exc:
         logging.exception("Could not parse IQ Option binary/turbo active list: %s", exc)
@@ -429,7 +457,7 @@ def scan_market(manual=False, auto_eligible=False, strategy=None, generation=Non
         LAST_ASSET_COUNT = total
         if not assets:
             timed_out = IQ is None
-            error_text = "Asset discovery timed out or IQ Option returned zero symbols."
+            error_text = LAST_ASSET_DIAGNOSTIC
             return
         start = ASSET_CURSOR % total
         batch = [assets[(start+i) % total] for i in range(min(MAX_SYMBOLS_PER_SCAN, total))]
@@ -585,7 +613,7 @@ def scan_indicator_market(manual, auto_eligible, strategy, generation):
         LAST_ASSET_COUNT = total
         if not assets:
             timed_out = IQ is None
-            error_text = "Asset discovery timed out or IQ Option returned zero symbols."
+            error_text = LAST_ASSET_DIAGNOSTIC
             return
         start = ASSET_CURSOR % total
         batch = [assets[(start + i) % total] for i in range(min(MAX_SYMBOLS_PER_SCAN, total))]
@@ -933,6 +961,7 @@ def status_message():
             f"Selected strategy: {strategy_label()}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\n"
             f"Stake: $1 | Expiry: {strategy_expiry()} minute(s)\n"
             f"Market selection: {MARKET_MODE}\n"
+            f"Asset discovery: {LAST_ASSET_DIAGNOSTIC}\n"
             f"Breakout 5-minute trend filter: {'ON' if FIVE_MINUTE_TREND_FILTER_ENABLED else 'OFF'}\n"
             f"Order requests: {ORDER_ATTEMPTS} | Accepted: {ORDER_ACCEPTED} | Rejected/timeouts: {ORDER_REJECTED}\n"
             f"Last order: {LAST_ORDER_STATUS}\n"
@@ -1049,8 +1078,9 @@ def heartbeat():
     telegram_send(f"💓 SCANNER HEARTBEAT — {strategy_label()}\nAccount: PRACTICE ONLY\n"
                   f"Connection: {'OK' if practice_mode_verified() else 'NOT VERIFIED'}\n"
                   f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\n"
-                  f"Discovered assets: {LAST_ASSET_COUNT}\nLast scan: {LAST_SCAN_SCANNED}/{LAST_SCAN_TOTAL}\n"
-                  f"Candidates: {LAST_SCAN_CANDIDATES}\nScan in progress: {'YES' if SCAN_IN_PROGRESS else 'NO'}\n"
+                  f"Market selection: {MARKET_MODE}\n"
+                  f"Discovered assets: {LAST_ASSET_COUNT}\nAsset discovery: {LAST_ASSET_DIAGNOSTIC}\n"
+                  f"Last scan: {LAST_SCAN_SCANNED}/{LAST_SCAN_TOTAL}\nCandidates: {LAST_SCAN_CANDIDATES}\nScan in progress: {'YES' if SCAN_IN_PROGRESS else 'NO'}\n"
                   f"No valid first retest means NO TRADE.")
 
 
