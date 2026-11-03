@@ -37,7 +37,7 @@ class EmaStrategyTests(unittest.TestCase):
     def test_ema_strategy_produces_valid_direction_when_filters_align(self):
         candles = make_trending_candles()
         signal, reason = calculate_signal("EURUSD", candles)
-        self.assertIsNone(reason)
+        self.assertEqual(reason, "")
         self.assertIsNotNone(signal)
         self.assertEqual(signal["direction"], "call")
         self.assertGreater(signal["adx14"], 20)
