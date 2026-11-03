@@ -425,6 +425,8 @@ def scan_market(manual=False, auto_eligible=False, strategy=None, generation=Non
                     closed_trend = [c for c in trend_candles
                                     if int(c.get("from") or 0) + 300 <= now]
                     trend = classify_trend(closed_trend)
+                    if strategy != ACTIVE_STRATEGY or generation != STRATEGY_GENERATION:
+                        break
                     required_trend = "up" if candidate["direction"] == "call" else "down"
                     if trend != required_trend:
                         reason = "5-minute trend unclear/sideways" if trend == "sideways" else "1-minute setup disagrees with 5-minute trend"
@@ -680,7 +682,13 @@ def execute_signal(signal):
                 result_queue.put(("safety", "PRACTICE verification failed"))
                 return
             with client_api_lock(client):
-                response = client.buy(STAKE, asset, direction, expiry_minutes)
+                with STATE_LOCK:
+                    if (not AUTO_MODE or strategy != ACTIVE_STRATEGY
+                            or generation != STRATEGY_GENERATION):
+                        result_queue.put(("cancelled", "strategy changed before order submission"))
+                        return
+                    with client_api_lock(client):
+                        response = client.buy(STAKE, asset, direction, expiry_minutes)
             result_queue.put(("result", response))
         except Exception as exc:
             try:
@@ -699,6 +707,9 @@ def execute_signal(signal):
         LAST_ORDER_STATUS = f"TIMEOUT: {display_asset(asset)} {direction.upper()}; broker acceptance unknown"
         set_auto(False, "Order request timed out; no retry made")
         telegram_send(f"⚠️ AUTO STOPPED — ORDER RESPONSE TIMED OUT\n{display_asset(asset)} {direction.upper()}\nNo retry was made for this candle. Check the practice account before restarting.")
+        return False
+    if status == "cancelled":
+        logging.info("Order safely cancelled before broker submission: %s", response)
         return False
     if status == "safety":
         ORDER_REJECTED += 1
@@ -777,7 +788,7 @@ def persist_active_strategy(strategy):
         current = requests.get(url, headers=headers, params={"ref": GITHUB_REF_NAME}, timeout=8)
         payload = {
             "message": f"Select {strategy} strategy",
-            "content": base64.b64encode((json.dumps({"strategy": strategy}) + "\\n").encode()).decode(),
+            "content": base64.b64encode((json.dumps({"strategy": strategy}) + "\n").encode()).decode(),
             "branch": GITHUB_REF_NAME,
         }
         if current.status_code == 200:
@@ -905,7 +916,7 @@ def process_telegram_update(update):
             if not AUTO_MODE:
                 AUTO_SESSION_ACCEPTED = 0
             set_auto(True)
-            telegram_send(f"🟢 AUTO MODE ON\nPRACTICE verified. {money(STAKE)} stake / {EXPIRY_MINUTES}-minute expiry.\nSession limit: {MAX_TRADES_PER_AUTO_SESSION} accepted trades. Max concurrent open trades: {MAX_CONCURRENT_TRADES}; one open trade per asset.\nOrders are submitted as soon as a valid first retest is detected. No trade outcomes are recorded.")
+            telegram_send(f"🟢 AUTO MODE ON\nSelected strategy: {strategy_label()}\nPRACTICE verified. {money(STAKE)} stake / {strategy_expiry()}-minute expiry.\nSession limit: {MAX_TRADES_PER_AUTO_SESSION} accepted trades. Max concurrent open trades: {MAX_CONCURRENT_TRADES}; one open trade per asset.\nOnly the selected strategy can submit orders. No trade outcomes are recorded.")
     elif command in ("/STOP", "STOP AUTO"):
         set_auto(False, "Stopped manually")
         telegram_send("🔴 AUTO MODE OFF. No new automatic orders will be started.")
@@ -1011,14 +1022,18 @@ def main():
                     completed = SCAN_RESULTS_QUEUE.get_nowait()
                 except queue.Empty:
                     break
+                if (completed.get("strategy", ACTIVE_STRATEGY) != ACTIVE_STRATEGY
+                        or completed.get("generation", STRATEGY_GENERATION) != STRATEGY_GENERATION):
+                    continue
                 completed_results = completed.get("results", [])
                 if completed_results and not completed.get("manual") and not completed.get("auto_eligible"):
-                    logging.warning("%d valid setup(s) found but AUTO_MODE was OFF when this scan started; no order submitted.",
-                                    len(completed_results))
-                    telegram_send(f"🔔 {len(completed_results)} VALID BREAKOUT/RETEST SETUP(S) FOUND\nAUTO MODE is OFF, so no order was submitted.\nSend START AUTO to enable PRACTICE execution.")
+                    strategy = completed.get("strategy", ACTIVE_STRATEGY)
+                    logging.warning("%d valid %s setup(s) found but AUTO_MODE was OFF when this scan started; no order submitted.",
+                                    len(completed_results), strategy)
+                    telegram_send(f"🔔 {len(completed_results)} VALID {strategy} SETUP(S) FOUND\nAUTO MODE is OFF, so no order was submitted.\nSend START AUTO to enable PRACTICE execution.")
                 elif completed.get("auto_eligible") and completed_results:
-                    logging.info("%d fresh retest setup(s) were handed to the execution queue during scanning; no end-of-batch delay.",
-                                 len(completed_results))
+                    logging.info("%d fresh %s setup(s) were handed to the execution queue during scanning.",
+                                 len(completed_results), completed.get("strategy", ACTIVE_STRATEGY))
             if MANUAL_SCAN_REQUESTED and not SCAN_IN_PROGRESS:
                 MANUAL_SCAN_REQUESTED = False
                 if not start_scan(manual=True):
