@@ -1,10 +1,9 @@
-import os, time, math, logging, threading, traceback, requests, queue, re, csv, subprocess
+import os, time, math, logging, threading, traceback, requests, queue, re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from iqoptionapi.stable_api import IQ_Option
 from breakout_retest_filter import build_entry_signal
 from trend_filter import classify_trend
-from broker_results import get_binary_option_net_profit
 from execution_guard import TradeExposureGuard, classify_profit
 
 # PURE BREAKOUT & RETEST — PRACTICE ONLY.
@@ -18,10 +17,6 @@ MAX_SYMBOLS_PER_SCAN, TOP_SIGNALS, PROGRESS_EVERY = 40, 3, 10
 MAX_SIGNAL_AGE_SECONDS, ORDER_REQUEST_TIMEOUT = 90, 12
 MAX_CONCURRENT_TRADES = 3
 MAX_TRADES_PER_AUTO_SESSION = 20
-TRADE_HISTORY_FILE = "trade_history.csv"
-OUTCOME_CHECK_DELAY_SECONDS = 10
-OUTCOME_RETRY_SECONDS, OUTCOME_MAX_ATTEMPTS = 30, 8
-TRADE_HISTORY_BATCH_SIZE, TRADE_HISTORY_FLUSH_SECONDS = 5, 60
 MARKET_MODE = "BOTH"
 # Enabled: executable 1-minute setups must agree with the closed 5-minute trend.
 FIVE_MINUTE_TREND_FILTER_ENABLED = True
@@ -51,13 +46,6 @@ LAST_SCAN_TIMED_OUT, LAST_SCAN_ERROR = False, ""
 LAST_REJECTIONS = {}
 TRADE_EXPOSURE = TradeExposureGuard(max_open_trades=MAX_CONCURRENT_TRADES,
                                      expiry_seconds=EXPIRY_MINUTES * 60, expiry_grace_seconds=10)
-TRADE_RECORDS = {}
-TRADE_HISTORY_ROWS = []
-OUTCOME_RESULTS = queue.Queue()
-TRADE_HISTORY_DIRTY = 0
-LAST_TRADE_HISTORY_FLUSH = 0
-TRADE_TOTAL_WINS = TRADE_TOTAL_LOSSES = TRADE_TOTAL_DRAWS = 0
-TRADE_TOTAL_PNL = 0.0
 ORDER_ATTEMPTS = ORDER_ACCEPTED = ORDER_REJECTED = 0
 AUTO_SESSION_ACCEPTED = 0
 LAST_ORDER_STATUS = "No order attempt yet"
@@ -480,195 +468,8 @@ def start_scan(manual=False):
     return True
 
 
-def current_open_trade_count():
-    with STATE_LOCK:
-        return TRADE_EXPOSURE.count(time.time())
-
-
-def load_trade_history():
-    """Load the CSV ledger and restore any still-open or unresolved practice orders."""
-    global TRADE_HISTORY_ROWS, TRADE_TOTAL_WINS, TRADE_TOTAL_LOSSES
-    global TRADE_TOTAL_DRAWS, TRADE_TOTAL_PNL
-    try:
-        with open(TRADE_HISTORY_FILE, newline="", encoding="utf-8") as handle:
-            TRADE_HISTORY_ROWS = list(csv.DictReader(handle))
-        now = time.time()
-        restored_open = 0
-        for row in TRADE_HISTORY_ROWS:
-            outcome = str(row.get("outcome", "")).upper()
-            pnl = safe_float(row.get("net_profit"), 0.0)
-            if outcome == "WIN":
-                TRADE_TOTAL_WINS += 1
-                TRADE_TOTAL_PNL += pnl
-            elif outcome == "LOSS":
-                TRADE_TOTAL_LOSSES += 1
-                TRADE_TOTAL_PNL += pnl
-            elif outcome == "DRAW":
-                TRADE_TOTAL_DRAWS += 1
-            order_id = str(row.get("order_id", "")).strip()
-            if not order_id or outcome != "PENDING" or order_id in TRADE_RECORDS:
-                continue
-            try:
-                accepted_at = datetime.fromisoformat(row["accepted_at_utc"]).timestamp()
-                expiry_minutes = int(row.get("expiry_minutes") or EXPIRY_MINUTES)
-                expires_at = accepted_at + expiry_minutes * 60 + 10
-                record = dict(row)
-                record.update({
-                    "expires_at": expires_at, "outcome_attempts": 0,
-                    "next_outcome_check": 0, "outcome_thread": None,
-                    "recovered": True,
-                })
-                TRADE_RECORDS[order_id] = record
-                if expires_at > now:
-                    TRADE_EXPOSURE.register(order_id, row.get("asset", ""),
-                                             row.get("direction", ""), accepted_at)
-                    restored_open += 1
-            except Exception as exc:
-                logging.warning("Could not restore pending order %s: %s", order_id, exc)
-        logging.info("Loaded %d trade-history rows; restored %d still-open orders.",
-                     len(TRADE_HISTORY_ROWS), restored_open)
-    except FileNotFoundError:
-        TRADE_HISTORY_ROWS = []
-    except Exception:
-        logging.exception("Could not load trade history CSV.")
-        TRADE_HISTORY_ROWS = []
-
-
-def persist_trade_history(force=False):
-    """Batch-save verified order outcomes to the repository CSV on Actions."""
-    global TRADE_HISTORY_DIRTY, LAST_TRADE_HISTORY_FLUSH
-    now = time.time()
-    if not TRADE_HISTORY_ROWS:
-        return
-    if not force and TRADE_HISTORY_DIRTY < TRADE_HISTORY_BATCH_SIZE and now - LAST_TRADE_HISTORY_FLUSH < TRADE_HISTORY_FLUSH_SECONDS:
-        return
-    fields = ["accepted_at_utc", "order_id", "asset", "direction", "stake",
-              "expiry_minutes", "signal_source", "outcome", "net_profit",
-              "result_checked_at_utc", "result_error"]
-    try:
-        with open(TRADE_HISTORY_FILE, "w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=fields)
-            writer.writeheader()
-            writer.writerows([{key: row.get(key, "") for key in fields} for row in TRADE_HISTORY_ROWS])
-        if os.getenv("GITHUB_ACTIONS", "").lower() == "true":
-            subprocess.run(["git", "config", "user.name", "github-actions[bot]"],
-                           check=True, capture_output=True, text=True, timeout=15)
-            subprocess.run(["git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"],
-                           check=True, capture_output=True, text=True, timeout=15)
-            subprocess.run(["git", "add", TRADE_HISTORY_FILE],
-                           check=True, capture_output=True, text=True, timeout=15)
-            staged = subprocess.run(["git", "diff", "--cached", "--quiet"],
-                                    capture_output=True, text=True, timeout=15)
-            if staged.returncode != 0:
-                subprocess.run(["git", "commit", "-m", "Update verified practice trade history"],
-                               check=True, capture_output=True, text=True, timeout=30)
-            branch = os.getenv("GITHUB_REF_NAME", "main")
-            subprocess.run(["git", "push", "origin", f"HEAD:{branch}"],
-                           check=True, capture_output=True, text=True, timeout=45)
-        TRADE_HISTORY_DIRTY = 0
-        LAST_TRADE_HISTORY_FLUSH = now
-        logging.info("Trade history saved: %d rows.", len(TRADE_HISTORY_ROWS))
-    except Exception as exc:
-        logging.exception("Trade history persistence failed: %s", exc)
-
-
-def _outcome_worker(order_id, client, recovered=False):
-    try:
-        pnl = get_binary_option_net_profit(
-            client, order_id, lock=client_api_lock(client), timeout=12
-        )
-        OUTCOME_RESULTS.put((str(order_id), "ok", float(pnl)))
-    except Exception as exc:
-        OUTCOME_RESULTS.put((str(order_id), "error", str(exc)))
-
-def process_trade_outcomes():
-    """Start background broker-result checks and apply completed results."""
-    global TRADE_HISTORY_DIRTY, TRADE_TOTAL_WINS, TRADE_TOTAL_LOSSES
-    global TRADE_TOTAL_DRAWS, TRADE_TOTAL_PNL
-    now = time.time()
-    while True:
-        try:
-            order_id, status, value = OUTCOME_RESULTS.get_nowait()
-        except queue.Empty:
-            break
-        record = TRADE_RECORDS.get(order_id)
-        if not record or record.get("outcome") != "PENDING":
-            continue
-        if status == "ok":
-            pnl = round(float(value), 2)
-            outcome = classify_profit(pnl)
-            record["outcome"] = outcome
-            record["net_profit"] = f"{pnl:.2f}"
-            record["result_checked_at_utc"] = utc_now().isoformat()
-            record["result_error"] = ""
-            TRADE_TOTAL_PNL += pnl
-            if outcome == "WIN":
-                TRADE_TOTAL_WINS += 1
-            elif outcome == "LOSS":
-                TRADE_TOTAL_LOSSES += 1
-            else:
-                TRADE_TOTAL_DRAWS += 1
-            fields = ("accepted_at_utc", "order_id", "asset", "direction", "stake",
-                      "expiry_minutes", "signal_source", "outcome", "net_profit",
-                      "result_checked_at_utc", "result_error")
-            for row in TRADE_HISTORY_ROWS:
-                if str(row.get("order_id")) == order_id:
-                    row.update({key: record.get(key, "") for key in fields})
-                    break
-            logging.info("TRADE RESULT order_id=%s asset=%s outcome=%s net_pnl=%s",
-                         order_id, record["asset"], outcome, money(pnl))
-            telegram_send(f"📊 PRACTICE TRADE RESULT\n{display_asset(record['asset'])} — {record['direction'].upper()}\n"
-                          f"Order ID: {order_id}\nResult: {outcome}\nNet P/L: {money(pnl)}")
-            TRADE_HISTORY_DIRTY += 1
-            persist_trade_history()
-        else:
-            record["result_error"] = str(value)[:180]
-            record["next_outcome_check"] = now + OUTCOME_RETRY_SECONDS
-            logging.warning("Outcome check failed for order %s (attempt %s): %s",
-                            order_id, record["outcome_attempts"], value)
-            if int(record.get("outcome_attempts", 0))  >= OUTCOME_MAX_ATTEMPTS:
-                record["outcome"] = "UNVERIFIED"
-                record["result_checked_at_utc"] = utc_now().isoformat()
-                fields = ("accepted_at_utc", "order_id", "asset", "direction", "stake",
-                          "expiry_minutes", "signal_source", "outcome", "net_profit",
-                          "result_checked_at_utc", "result_error")
-                for row in TRADE_HISTORY_ROWS:
-                    if str(row.get("order_id")) == order_id:
-                        row.update({key: record.get(key, "") for key in fields})
-                        break
-                telegram_send(f"⚠️ RESULT UNVERIFIED\nOrder ID: {order_id}\nBroker result unavailable after 8 bounded checks. Check IQ Option history.")
-                TRADE_HISTORY_DIRTY += 1
-                persist_trade_history()
-
-    for order_id, record in list(TRADE_RECORDS.items()):
-        if record.get("outcome") != "PENDING":
-            continue
-        if now < float(record.get("expires_at", now)) + OUTCOME_CHECK_DELAY_SECONDS:
-            continue
-        worker = record.get("outcome_thread")
-        if worker is not None and worker.is_alive():
-            continue
-        if now < float(record.get("next_outcome_check", 0)):
-            continue
-        if int(record.get("outcome_attempts", 0))  >= OUTCOME_MAX_ATTEMPTS:
-            continue
-        if IQ is None or not practice_mode_verified():
-            record["next_outcome_check"] = now + OUTCOME_RETRY_SECONDS
-            continue
-        # One result lookup at a time: the community API has one shared bet-info response object.
-        if any(r.get("outcome_thread") is not None and r["outcome_thread"].is_alive()
-               for r in TRADE_RECORDS.values()):
-            break
-        record["outcome_attempts"] = int(record.get("outcome_attempts", 0)) + 1
-        worker = threading.Thread(target=_outcome_worker,
-                                  args=(order_id, IQ, bool(record.get("recovered", False))),
-                                  daemon=True, name=f"trade-result-{order_id}")
-        record["outcome_thread"] = worker
-        worker.start()
-
-
 def execute_signal(signal):
-    global TRADE_HISTORY_DIRTY, ORDER_ATTEMPTS, ORDER_ACCEPTED, ORDER_REJECTED, LAST_ORDER_STATUS, AUTO_SESSION_ACCEPTED
+    global ORDER_ATTEMPTS, ORDER_ACCEPTED, ORDER_REJECTED, LAST_ORDER_STATUS, AUTO_SESSION_ACCEPTED
     if not AUTO_TRADING_ALLOWED or not AUTO_MODE:
         return False
     if AUTO_SESSION_ACCEPTED >= MAX_TRADES_PER_AUTO_SESSION:
@@ -757,31 +558,13 @@ def execute_signal(signal):
     ORDER_ACCEPTED += 1
     AUTO_SESSION_ACCEPTED += 1
     LAST_ORDER_STATUS = f"ACCEPTED: {display_asset(asset)} {direction.upper()} — order {order_id}"
-    expires_at = accepted_at + EXPIRY_MINUTES * 60 + 10
     with STATE_LOCK:
         TRADE_EXPOSURE.register(order_id, asset, direction, accepted_at)
-        record = {
-            "accepted_at_utc": utc_now().isoformat(), "order_id": str(order_id),
-            "asset": asset, "direction": direction, "stake": f"{STAKE:.2f}",
-            "expiry_minutes": str(EXPIRY_MINUTES),
-            "signal_source": str(signal.get("source", "unknown")),
-            "outcome": "PENDING", "net_profit": "",
-            "result_checked_at_utc": "", "result_error": "",
-            "expires_at": expires_at, "outcome_attempts": 0,
-            "next_outcome_check": 0, "outcome_thread": None,
-        }
-        TRADE_RECORDS[str(order_id)] = record
-        TRADE_HISTORY_ROWS.append({key: record.get(key, "") for key in
-            ("accepted_at_utc", "order_id", "asset", "direction", "stake",
-             "expiry_minutes", "signal_source", "outcome", "net_profit",
-             "result_checked_at_utc", "result_error")})
-        TRADE_HISTORY_DIRTY += 1
-        persist_trade_history()
     telegram_send(f"🟡 PRACTICE ORDER ACCEPTED\n{display_asset(asset)} — {direction.upper()}\nOrder ID: {order_id}\n"
                   f"Stake: {money(STAKE)} | Expiry: {EXPIRY_MINUTES} minutes\n"
                   f"Open exposure: {TRADE_EXPOSURE.count(time.time())}/{MAX_CONCURRENT_TRADES}\n"
                   f"Session trades: {AUTO_SESSION_ACCEPTED}/{MAX_TRADES_PER_AUTO_SESSION}\n"
-                  f"Broker result will be checked after expiry.")
+                  f"No trade history or outcome tracking is kept.")
     if AUTO_SESSION_ACCEPTED >= MAX_TRADES_PER_AUTO_SESSION:
         set_auto(False, "20 accepted trades reached for this START AUTO session")
         telegram_send("🛑 AUTO MODE OFF — 20 accepted PRACTICE trades completed in this session.")
@@ -817,7 +600,7 @@ def status_message():
             f"Last order: {LAST_ORDER_STATUS}\n"
             f"Open trades: {TRADE_EXPOSURE.count(time.time())}/{MAX_CONCURRENT_TRADES}\n"
             f"Trades this AUTO session: {AUTO_SESSION_ACCEPTED}/{MAX_TRADES_PER_AUTO_SESSION}\n"
-            f"Verified results this run: W{TRADE_TOTAL_WINS}/L{TRADE_TOTAL_LOSSES}/D{TRADE_TOTAL_DRAWS} | Net P/L: {money(TRADE_TOTAL_PNL)}\n"
+
             f"Discovered assets: {LAST_ASSET_COUNT}\nLast scan: {age}\n"
             f"Last batch: {LAST_SCAN_SCANNED}/{LAST_SCAN_TOTAL}\nCandidates: {LAST_SCAN_CANDIDATES}\n"
             f"Scan in progress: {'YES' if SCAN_IN_PROGRESS else 'NO'}\n"
@@ -921,8 +704,6 @@ def heartbeat():
     if time.time() - LAST_HEARTBEAT < HEARTBEAT_SECONDS:
         return
     LAST_HEARTBEAT = time.time()
-    process_trade_outcomes()
-    persist_trade_history()
     telegram_send(f"💓 BREAKOUT & RETEST HEARTBEAT\nAccount: PRACTICE ONLY\n"
                   f"Connection: {'OK' if practice_mode_verified() else 'NOT VERIFIED'}\n"
                   f"AUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\n"
@@ -933,12 +714,10 @@ def heartbeat():
 
 def main():
     global RUNNING, MANUAL_SCAN_REQUESTED
-    load_trade_history()
     telegram_send("🚀 BREAKOUT & RETEST STARTING\nPRACTICE-only scanner is connecting. AUTO MODE starts OFF after every GitHub Actions restart; send START AUTO after startup to enable PRACTICE execution.\nManual SCAN MARKET sends signals only and never places trades.\nMax open exposure: 3 trades total, 1 per pair. Broker results are checked and saved to trade_history.csv.")
     threading.Thread(target=telegram_listener, daemon=True, name="telegram-listener").start()
     while RUNNING:
         try:
-            process_trade_outcomes()
             if IQ is None and not ensure_connection():
                 if AUTO_MODE:
                     set_auto(False, "Connection lost")
@@ -980,8 +759,6 @@ def main():
             logging.exception("Main loop error: %s", exc)
             time.sleep(2)
     set_auto(False, "Scanner stopped")
-    process_trade_outcomes()
-    persist_trade_history(force=True)
     telegram_send("Scanner stopped. AUTO MODE OFF.")
 
 
