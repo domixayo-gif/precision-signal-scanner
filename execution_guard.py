@@ -39,17 +39,20 @@ class TradeExposureGuard:
             return False, "maximum concurrent trade limit reached"
         return True, "capacity available"
 
-    def register(self, order_id, asset, direction, accepted_at):
+    def register(self, order_id, asset, direction, accepted_at, expiry_seconds=None):
         key = str(order_id)
         if not key or key in self.open_trades:
             raise ValueError("Order ID must be unique and non-empty.")
         accepted_at = float(accepted_at)
+        duration = self.expiry_seconds if expiry_seconds is None else int(expiry_seconds)
+        if duration < 1:
+            raise ValueError("Trade expiry must be positive.")
         self.open_trades[key] = OpenTrade(
             order_id=key,
             asset=str(asset),
             direction=str(direction).lower(),
             accepted_at=accepted_at,
-            expires_at=accepted_at + self.expiry_seconds + self.expiry_grace_seconds,
+            expires_at=accepted_at + duration + self.expiry_grace_seconds,
         )
 
     def count(self, now):
