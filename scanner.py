@@ -28,7 +28,7 @@ def select_breakout_expiry(direction, trend_5m, trend_15m, strong_15m=False):
 # PURE BREAKOUT & RETEST — PRACTICE ONLY.
 BOT_NAME = "Breakout & Retest IQ Option Scanner"
 AUTO_TRADING_ALLOWED = True
-STAKE, EXPIRY_MINUTES, CANDLE_SECONDS, LOOKBACK_CANDLES = 1.0, 5, 60, 60
+STAKE, EXPIRY_MINUTES, CANDLE_SECONDS, LOOKBACK_CANDLES = 1.0, 2, 60, 60
 MIN_CLOSED_CANDLES = 28
 SCAN_INTERVAL_SECONDS, REQUEST_PAUSE_SECONDS, RECONNECT_SECONDS = 30, 0.12, 30
 HEARTBEAT_SECONDS, REQUEST_TIMEOUT = 300, 15
@@ -38,7 +38,7 @@ MAX_CONCURRENT_TRADES = 3
 MAX_TRADES_PER_AUTO_SESSION = 20
 MARKET_MODE = "BOTH"
 STRATEGY_SETTINGS = {
-    "B": {"name": "Breakout & Retest", "expiry_minutes": 5, "scan_interval_seconds": 30, "lookback": 60},
+    "B": {"name": "Breakout & Retest", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 60},
     "M": {"name": "Momentum 10", "expiry_minutes": 1, "scan_interval_seconds": 60, "lookback": 50},
     "E": {"name": "EMA 20/50 + ADX 14 + RSI 14", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 80},
     "F": {"name": "Precision Fusion X — Strict Confluence", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 80},
@@ -77,7 +77,7 @@ LAST_REJECTIONS = {}
 LAST_ASSET_DIAGNOSTIC = "Asset discovery has not run yet."
 LAST_ASSET_DISCOVERY_MODE = "NOT RUN"
 TRADE_EXPOSURE = TradeExposureGuard(max_open_trades=MAX_CONCURRENT_TRADES,
-                                     expiry_seconds=15 * 60, expiry_grace_seconds=10)
+                                     expiry_seconds=2 * 60, expiry_grace_seconds=10)
 ORDER_ATTEMPTS = ORDER_ACCEPTED = ORDER_REJECTED = 0
 AUTO_SESSION_ACCEPTED = 0
 LAST_ORDER_STATUS = "No order attempt yet"
