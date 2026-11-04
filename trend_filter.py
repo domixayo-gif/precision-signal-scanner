@@ -37,3 +37,28 @@ def classify_trend(candles):
         return "sideways"
     except (KeyError, TypeError, ValueError, OverflowError):
         return "sideways"
+
+
+def is_strong_trend(candles, trend=None):
+    """Identify a strong directional trend from closed candles only."""
+    if not isinstance(candles, list) or len(candles) < 55:
+        return False
+    try:
+        closes = [float(c["close"]) for c in candles]
+        ranges = [max(0.0, float(c["high"]) - float(c["low"])) for c in candles[-14:]]
+        atr = sum(ranges) / len(ranges) if ranges else 0.0
+        if atr <= 0:
+            return False
+        ema20_now = _ema(closes, 20)
+        ema50_now = _ema(closes, 50)
+        ema20_previous = _ema(closes[:-5], 20)
+        if None in (ema20_now, ema50_now, ema20_previous):
+            return False
+        direction = trend or classify_trend(candles)
+        aligned = ((direction == "up" and ema20_now > ema50_now and ema20_now > ema20_previous)
+                   or (direction == "down" and ema20_now < ema50_now and ema20_now < ema20_previous))
+        separation = abs(ema20_now - ema50_now) / atr
+        slope = abs(ema20_now - ema20_previous) / atr
+        return bool(aligned and separation >= 0.35 and slope >= 0.10)
+    except (KeyError, TypeError, ValueError, OverflowError, ZeroDivisionError):
+        return False
