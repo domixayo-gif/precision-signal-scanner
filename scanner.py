@@ -7,6 +7,7 @@ from trend_filter import classify_trend
 from execution_guard import TradeExposureGuard, classify_profit
 from momentum_strategy import calculate_signal as calculate_momentum_signal
 from ema_strategy import calculate_signal as calculate_ema_signal
+from fusion_strategy import calculate_signal as calculate_fusion_signal
 import base64, json
 
 # PURE BREAKOUT & RETEST — PRACTICE ONLY.
@@ -25,6 +26,7 @@ STRATEGY_SETTINGS = {
     "B": {"name": "Breakout & Retest", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 60},
     "M": {"name": "Momentum 10", "expiry_minutes": 1, "scan_interval_seconds": 60, "lookback": 50},
     "E": {"name": "EMA 20/50 + ADX 14 + RSI 14", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 80},
+    "F": {"name": "Precision Fusion X — Strict Confluence", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 80},
 }
 ACTIVE_STRATEGY = "B"
 STRATEGY_GENERATION = 0
@@ -101,7 +103,8 @@ def telegram_send(message, keyboard=True):
     if keyboard:
         payload["reply_markup"] = {"keyboard": [
             [{"text":"B — BREAKOUT"},{"text":"M — MOMENTUM"}],
-            [{"text":"E — EMA"},{"text":"START AUTO"}],
+            [{"text":"E — EMA"},{"text":"F — FUSION"}],
+            [{"text":"START AUTO"}],
             [{"text":"STOP AUTO"},{"text":"SCAN MARKET"}],
             [{"text":"STATUS"}],
             [{"text":"REGULAR PAIRS"},{"text":"OTC PAIRS"},{"text":"BOTH MARKETS"}]
@@ -459,7 +462,7 @@ def scan_market(manual=False, auto_eligible=False, strategy=None, generation=Non
     global LAST_SCAN_ERROR, LAST_REJECTIONS
     strategy = str(strategy or ACTIVE_STRATEGY).upper()
     generation = STRATEGY_GENERATION if generation is None else int(generation)
-    if strategy in ("M", "E"):
+    if strategy in ("M", "E", "F"):
         return scan_indicator_market(manual, auto_eligible, strategy, generation)
     results, rejected = [], {}
     scanned = attempted = total = 0
@@ -600,10 +603,14 @@ def send_indicator_signal(signal, manual=False):
     expiry = int(signal.get("expiry_minutes", STRATEGY_SETTINGS[strategy]["expiry_minutes"]))
     stamp = int(signal.get("candle_time", time.time()))
     if strategy == "M":
-        detail = (f"Momentum score: {signal.get('score', 0)}/100\n"
+        detail = (f"Momentum score: {signal.get('score', 0)}/100\\n"
                   f"Normalized momentum: {signal.get('normalized_momentum', 0):.3f}")
+    elif strategy == "F":
+        detail = (f"Strict confluence: {signal.get('confluence', 'not recorded')}\\n"
+                  f"5-minute trend: {signal.get('trend_5m', 'unknown')} | ALMA: {signal.get('alma_direction', 'unknown')}\\n"
+                  f"CHOP25: {signal.get('choppiness', 'unknown')} | ADX14: {signal.get('adx14', 0):.2f} | RSI14: {signal.get('rsi14', 0):.2f}")
     else:
-        detail = (f"EMA20: {signal.get('ema20', 0):.6f} | EMA50: {signal.get('ema50', 0):.6f}\n"
+        detail = (f"EMA20: {signal.get('ema20', 0):.6f} | EMA50: {signal.get('ema50', 0):.6f}\\n"
                   f"ADX14: {signal.get('adx14', 0):.2f} | RSI14: {signal.get('rsi14', 0):.2f}")
     telegram_send(
         f"📣 {strategy} — {name} SIGNAL\n{display_asset(signal.get('asset'))} — {direction}\n"
@@ -662,8 +669,18 @@ def scan_indicator_market(manual, auto_eligible, strategy, generation):
                       if int(c.get("from") or 0) + CANDLE_SECONDS <= now]
             if strategy == "M":
                 signal, reason = calculate_momentum_signal(asset, closed, CANDLE_SECONDS)
-            else:
+            elif strategy == "E":
                 signal, reason = calculate_ema_signal(asset, closed, CANDLE_SECONDS)
+            else:
+                trend_candles = fetch_candles(asset, timeframe=300, count=80)
+                if trend_candles is None:
+                    signal, reason = None, "5-minute candle request timed out"
+                else:
+                    closed_trend = [c for c in trend_candles
+                                    if int(c.get("from") or 0) + 300 <= now]
+                    signal, reason = calculate_fusion_signal(
+                        asset, closed, closed_trend, CANDLE_SECONDS
+                    )
             if signal is None:
                 rejected[reason or "no valid setup"] = rejected.get(reason or "no valid setup", 0) + 1
             else:
@@ -958,6 +975,8 @@ def parse_strategy_command(command):
         "M - MOMENTUM": "M", "MOMENTUM": "M", "MOMENTUM 10": "M",
         "E": "E", "/E": "E", "STRATEGY E": "E", "/STRATEGY E": "E",
         "E - EMA": "E", "EMA": "E", "EMA STRATEGY": "E",
+        "F": "F", "/F": "F", "STRATEGY F": "F", "/STRATEGY F": "F",
+        "F - FUSION": "F", "FUSION": "F", "PRECISION FUSION X": "F",
     }
     return aliases.get(normalized)
 
