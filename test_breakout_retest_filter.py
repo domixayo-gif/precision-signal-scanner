@@ -3,8 +3,7 @@ import unittest
 from breakout_retest_filter import RetestState, build_entry_signal, evaluate
 
 
-def build_bullish_breakout(extra_candles):
-    """Build two old resistance touches, a strong break, and its first retest."""
+def build_bullish_breakout(confirm=True):
     baseline_highs = [
         99.2, 99.3, 99.4, 99.5, 99.6, 100.0,
         99.9, 99.8, 99.7, 99.6, 99.5,
@@ -16,7 +15,7 @@ def build_bullish_breakout(extra_candles):
         {"open": 99.0, "close": 99.1,
          "high": baseline_highs[i] if i < len(baseline_highs) else 99.8,
          "low": 98.5, "from": i * 60}
-        for i in range(33 + len(extra_candles))
+        for i in range(33)
     ]
     for index in (5, 15):
         candles[index] = {
@@ -32,87 +31,69 @@ def build_bullish_breakout(extra_candles):
         "from": 31 * 60,
     }
     candles[32] = {
-        "open": 100.6, "close": 100.3, "high": 100.7, "low": 99.95,
-        "from": 32 * 60,
+        "open": 100.6, "close": 101.2 if confirm else 100.3,
+        "high": 101.3 if confirm else 100.7,
+        "low": 100.5 if confirm else 99.95, "from": 32 * 60,
     }
-    for offset, candle in enumerate(extra_candles, start=33):
-        candles[offset] = {**candle, "from": offset * 60}
     return candles
 
 
-class PureBreakoutRetestTests(unittest.TestCase):
-    def test_first_retest_triggers_without_second_pullback_or_confirmation(self):
-        candles = build_bullish_breakout([])
-        result = evaluate(candles)
+class ConfirmedBreakoutRetestTests(unittest.TestCase):
+    def test_first_retest_waits_without_entering(self):
+        candles = build_bullish_breakout()[:32]
+        signal, result = build_entry_signal("EURUSD-OTC", candles)
         self.assertEqual(result.state, RetestState.RETESTED)
-        self.assertEqual(result.direction, "up")
         self.assertEqual(result.retest_index, 31)
+        self.assertIsNone(result.confirmation_index)
+        self.assertIsNone(signal)
+        self.assertIn("waiting", result.reasons[0])
 
-    def test_retest_can_be_a_green_or_mixed_candle_if_level_holds(self):
-        candles = build_bullish_breakout([])
-        candles[31] = {
-            "open": 100.2, "close": 100.6, "high": 100.8, "low": 100.1,
-            "from": 31 * 60,
-        }
-        result = evaluate(candles)
+    def test_next_closed_candle_must_close_above_retest_high(self):
+        candles = build_bullish_breakout(confirm=True)
+        signal, result = build_entry_signal("EURUSD-OTC", candles)
         self.assertEqual(result.state, RetestState.RETESTED)
-        self.assertEqual(result.direction, "up")
+        self.assertEqual(result.retest_index, 31)
+        self.assertEqual(result.confirmation_index, 32)
+        self.assertEqual(signal["direction"], "call")
+        self.assertEqual(signal["candle_time"], candles[32]["from"] + 60)
+        self.assertEqual(signal["retest_candle_time"], candles[31]["from"] + 60)
 
-    def test_first_retest_can_happen_several_candles_after_breakout(self):
-        candles = build_bullish_breakout([
-            {"open": 100.9, "close": 100.8, "high": 101.1, "low": 100.6},
-            {"open": 100.8, "close": 100.7, "high": 101.0, "low": 100.5},
-            {"open": 100.5, "close": 100.3, "high": 100.7, "low": 99.95},
-        ])
-        candles[31]["low"] = 100.6
-        candles[32]["low"] = 100.5
-        result = evaluate(candles)
+    def test_failed_confirmation_blocks_entry(self):
+        candles = build_bullish_breakout(confirm=False)
+        signal, result = build_entry_signal("EURUSD-OTC", candles)
+        self.assertEqual(result.state, RetestState.INVALIDATED)
+        self.assertIsNone(signal)
+        self.assertIn("failed to confirm", result.reasons[0])
+
+    def test_old_confirmation_is_not_chased(self):
+        candles = build_bullish_breakout(confirm=True)
+        candles.append({
+            "open": 101.2, "close": 101.25, "high": 101.4, "low": 101.1,
+            "from": 33 * 60,
+        })
+        signal, result = build_entry_signal("EURUSD-OTC", candles)
+        self.assertEqual(result.confirmation_index, 32)
+        self.assertIsNone(signal)
+
+    def test_bearish_confirmation_maps_to_put(self):
+        candles = build_bullish_breakout(confirm=True)
+        inverted = [
+            {"open": 200-c["open"], "close": 200-c["close"],
+             "high": 200-c["low"], "low": 200-c["high"], "from": c["from"]}
+            for c in candles
+        ]
+        signal, result = build_entry_signal("EURUSD-OTC", inverted)
         self.assertEqual(result.state, RetestState.RETESTED)
-        self.assertEqual(result.retest_index, 35)
+        self.assertEqual(signal["direction"], "put")
 
-    def test_decisive_close_before_later_touch_invalidates_setup(self):
-        candles = build_bullish_breakout([])[:32]
+    def test_first_retest_that_breaks_level_is_invalidated(self):
+        candles = build_bullish_breakout(confirm=True)[:32]
         candles[31] = {
             "open": 100.3, "close": 99.7, "high": 100.4, "low": 99.5,
             "from": 31 * 60,
         }
         result = evaluate(candles)
         self.assertEqual(result.state, RetestState.INVALIDATED)
-        self.assertEqual(result.retest_index, 31)
-
-    def test_wick_sweep_can_still_be_a_valid_retest(self):
-        candles = build_bullish_breakout([])
-        candles[31]["low"] = 99.6
-        result = evaluate(candles)
-        self.assertEqual(result.state, RetestState.RETESTED)
-        self.assertEqual(result.direction, "up")
-
-    def test_entry_signal_uses_close_time_and_only_latest_retest(self):
-        candles = build_bullish_breakout([])[:32]
-        signal, result = build_entry_signal("EURUSD-OTC", candles, candle_seconds=60)
-        self.assertEqual(result.state, RetestState.RETESTED)
-        self.assertEqual(signal["direction"], "call")
-        self.assertEqual(signal["candle_time"], candles[-1]["from"] + 60)
-        self.assertEqual(signal["level"], result.level)
-        self.assertEqual(signal["zone"], result.zone)
-
-    def test_does_not_chase_a_retest_from_an_older_candle(self):
-        candles = build_bullish_breakout([])
-        signal, result = build_entry_signal("EURUSD-OTC", candles, candle_seconds=60)
-        self.assertEqual(result.state, RetestState.RETESTED)
-        self.assertEqual(result.retest_index, 31)
-        self.assertIsNone(signal)
-
-    def test_bearish_breakout_retest_maps_to_put(self):
-        candles = build_bullish_breakout([])
-        inverted = [
-            {"open": 200-c["open"], "close": 200-c["close"],
-             "high": 200-c["low"], "low": 200-c["high"], "from": c["from"]}
-            for c in candles
-        ]
-        result = evaluate(inverted)
-        self.assertEqual(result.state, RetestState.RETESTED)
-        self.assertEqual(result.direction, "down")
 
 
 if __name__ == "__main__":
