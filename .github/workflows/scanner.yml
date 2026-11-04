@@ -14,6 +14,8 @@ on:
       - "ema_strategy.py"
       - "test_momentum_strategy.py"
       - "test_ema_strategy.py"
+      - "fusion_strategy.py"
+      - "test_fusion_strategy.py"
       - "test_breakout_retest_filter.py"
       - "test_execution_guard.py"
       - "broker_results.py"
@@ -30,6 +32,8 @@ on:
       - "ema_strategy.py"
       - "test_momentum_strategy.py"
       - "test_ema_strategy.py"
+      - "fusion_strategy.py"
+      - "test_fusion_strategy.py"
       - "test_breakout_retest_filter.py"
       - "test_execution_guard.py"
       - "broker_results.py"
@@ -72,8 +76,8 @@ jobs:
 
       - name: Check scanner
         run: |
-          python -m py_compile scanner.py breakout_retest_filter.py trend_filter.py execution_guard.py broker_results.py momentum_strategy.py ema_strategy.py
-          python -m unittest test_breakout_retest_filter test_trend_filter test_execution_guard test_broker_results test_momentum_strategy test_ema_strategy -v
+          python -m py_compile scanner.py breakout_retest_filter.py trend_filter.py execution_guard.py broker_results.py momentum_strategy.py ema_strategy.py fusion_strategy.py
+          python -m unittest test_breakout_retest_filter test_trend_filter test_execution_guard test_broker_results test_momentum_strategy test_ema_strategy test_fusion_strategy -v
 
       - name: Cancel older scanner workflow instances
         if: github.event_name != 'pull_request'
