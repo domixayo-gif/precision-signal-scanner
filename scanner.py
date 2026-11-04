@@ -4,12 +4,26 @@ from zoneinfo import ZoneInfo
 from iqoptionapi.stable_api import IQ_Option
 from breakout_retest_filter import build_entry_signal
 from trend_filter import classify_trend, is_strong_trend
-from adaptive_expiry import select_breakout_expiry
 from execution_guard import TradeExposureGuard, classify_profit
 from momentum_strategy import calculate_signal as calculate_momentum_signal
 from ema_strategy import calculate_signal as calculate_ema_signal
 from fusion_strategy import calculate_signal as calculate_fusion_signal
 import base64, json
+
+def select_breakout_expiry(direction, trend_5m, trend_15m, strong_15m=False):
+    """Choose 5/10/15m from closed higher-timeframe trend alignment.
+
+    The 5-minute trend remains mandatory. Sideways, unavailable, or opposing
+    15-minute trend selects 5m; aligned 15m selects 10m; strong alignment 15m.
+    """
+    direction = str(direction or "").lower()
+    required = "up" if direction == "call" else "down" if direction == "put" else ""
+    if not required or str(trend_5m).lower() != required:
+        return 5
+    if str(trend_15m).lower() != required:
+        return 5
+    return 15 if bool(strong_15m) else 10
+
 
 # PURE BREAKOUT & RETEST — PRACTICE ONLY.
 BOT_NAME = "Breakout & Retest IQ Option Scanner"
