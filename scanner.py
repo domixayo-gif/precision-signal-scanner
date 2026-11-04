@@ -3,7 +3,8 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from iqoptionapi.stable_api import IQ_Option
 from breakout_retest_filter import build_entry_signal
-from trend_filter import classify_trend
+from trend_filter import classify_trend, is_strong_trend
+from adaptive_expiry import select_breakout_expiry
 from execution_guard import TradeExposureGuard, classify_profit
 from momentum_strategy import calculate_signal as calculate_momentum_signal
 from ema_strategy import calculate_signal as calculate_ema_signal
@@ -13,7 +14,7 @@ import base64, json
 # PURE BREAKOUT & RETEST — PRACTICE ONLY.
 BOT_NAME = "Breakout & Retest IQ Option Scanner"
 AUTO_TRADING_ALLOWED = True
-STAKE, EXPIRY_MINUTES, CANDLE_SECONDS, LOOKBACK_CANDLES = 1.0, 2, 60, 60
+STAKE, EXPIRY_MINUTES, CANDLE_SECONDS, LOOKBACK_CANDLES = 1.0, 5, 60, 60
 MIN_CLOSED_CANDLES = 28
 SCAN_INTERVAL_SECONDS, REQUEST_PAUSE_SECONDS, RECONNECT_SECONDS = 30, 0.12, 30
 HEARTBEAT_SECONDS, REQUEST_TIMEOUT = 300, 15
@@ -23,7 +24,7 @@ MAX_CONCURRENT_TRADES = 3
 MAX_TRADES_PER_AUTO_SESSION = 20
 MARKET_MODE = "BOTH"
 STRATEGY_SETTINGS = {
-    "B": {"name": "Breakout & Retest", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 60},
+    "B": {"name": "Breakout & Retest", "expiry_minutes": 5, "scan_interval_seconds": 30, "lookback": 60},
     "M": {"name": "Momentum 10", "expiry_minutes": 1, "scan_interval_seconds": 60, "lookback": 50},
     "E": {"name": "EMA 20/50 + ADX 14 + RSI 14", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 80},
     "F": {"name": "Precision Fusion X — Strict Confluence", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 80},
@@ -62,7 +63,7 @@ LAST_REJECTIONS = {}
 LAST_ASSET_DIAGNOSTIC = "Asset discovery has not run yet."
 LAST_ASSET_DISCOVERY_MODE = "NOT RUN"
 TRADE_EXPOSURE = TradeExposureGuard(max_open_trades=MAX_CONCURRENT_TRADES,
-                                     expiry_seconds=EXPIRY_MINUTES * 60, expiry_grace_seconds=10)
+                                     expiry_seconds=15 * 60, expiry_grace_seconds=10)
 ORDER_ATTEMPTS = ORDER_ACCEPTED = ORDER_REJECTED = 0
 AUTO_SESSION_ACCEPTED = 0
 LAST_ORDER_STATUS = "No order attempt yet"
@@ -452,7 +453,8 @@ def send_signal(signal, manual=False):
         f"Retest zone: {zone[0]:.6f} – {zone[1]:.6f}\\n"
         f"5-minute trend: {str(signal.get('trend_5m', 'not recorded')).upper()}\\n"
         f"Entry: first retest candle close ({lagos_time(stamp)}); no extra confirmation candle\\n"
-        f"Expiry: {EXPIRY_MINUTES} minutes\\n"
+        f"15-minute trend: {str(signal.get('trend_15m', 'unavailable')).upper()}\\n"
+        f"Adaptive expiry: {int(signal.get('expiry_minutes', 5))} minutes\\n"
         f"{'MANUAL SCAN — no trade placed.' if manual else 'AUTO MODE — PRACTICE order only.'}"
     )
 
@@ -521,7 +523,7 @@ def scan_market(manual=False, auto_eligible=False, strategy=None, generation=Non
                         rejected[reason] = rejected.get(reason, 0) + 1
                 else:
                     candidate.update({"strategy": "B", "generation": generation,
-                                      "expiry_minutes": STRATEGY_SETTINGS["B"]["expiry_minutes"],
+                                      "expiry_minutes": 5,
                                       "max_signal_age_seconds": MAX_SIGNAL_AGE_SECONDS})
                     # A valid 1-minute retest is executable only when the latest
                     # CLOSED 5-minute candles confirm the same directional trend.
@@ -543,6 +545,18 @@ def scan_market(manual=False, auto_eligible=False, strategy=None, generation=Non
                                      asset, candidate["direction"].upper(), trend, required_trend)
                     else:
                         candidate["trend_5m"] = trend
+                        # Select expiry from CLOSED 15-minute structure. The 5m
+                        # alignment remains mandatory; opposing/sideways 15m uses 5m,
+                        # aligned 15m uses 10m, and strong aligned 15m uses 15m.
+                        higher_candles = fetch_candles(asset, timeframe=900, count=60)
+                        closed_higher = [c for c in (higher_candles or [])
+                                         if int(c.get("from") or 0) + 900 <= now]
+                        trend_15m = classify_trend(closed_higher)
+                        strong_15m = is_strong_trend(closed_higher, trend_15m)
+                        candidate["trend_15m"] = trend_15m
+                        candidate["expiry_minutes"] = select_breakout_expiry(
+                            candidate["direction"], trend, trend_15m, strong_15m
+                        )
                         # candle_time is the retest candle CLOSE time, not its open.
                         stamp = int(candidate["candle_time"])
                         age = time.time() - stamp
@@ -865,7 +879,8 @@ def execute_signal(signal):
     AUTO_SESSION_ACCEPTED += 1
     LAST_ORDER_STATUS = f"ACCEPTED: {display_asset(asset)} {direction.upper()} — order {order_id}"
     with STATE_LOCK:
-        TRADE_EXPOSURE.register(order_id, asset, direction, accepted_at)
+        TRADE_EXPOSURE.register(order_id, asset, direction, accepted_at,
+                                expiry_seconds=expiry_minutes * 60)
     telegram_send(f"🟡 PRACTICE ORDER ACCEPTED\n{display_asset(asset)} — {direction.upper()}\nOrder ID: {order_id}\n"
                   f"Strategy: {strategy} | Stake: {money(STAKE)} | Expiry: {expiry_minutes} minute(s)\n"
                   f"Open exposure: {TRADE_EXPOSURE.count(time.time())}/{MAX_CONCURRENT_TRADES}\n"
@@ -996,7 +1011,7 @@ def status_message():
     return (f"📊 IQ OPTION SCANNER STATUS\nConnection: {'CONNECTED' if connected else 'DISCONNECTED'}\n"
             f"Practice verification: {'OK' if practice else 'NOT VERIFIED'}\nBalance: {balance}\n"
             f"Selected strategy: {strategy_label()}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\n"
-            f"Stake: $1 | Expiry: {strategy_expiry()} minute(s)\n"
+            f"Stake: $1 | Expiry: {'adaptive 5/10/15 minutes' if ACTIVE_STRATEGY == 'B' else str(strategy_expiry()) + ' minute(s)'}\n"
             f"Market selection: {MARKET_MODE}\n"
             f"Last discovery mode: {LAST_ASSET_DISCOVERY_MODE}\n"
             f"Asset discovery: {LAST_ASSET_DIAGNOSTIC}\n"
@@ -1041,7 +1056,7 @@ def process_telegram_update(update):
             if not AUTO_MODE:
                 AUTO_SESSION_ACCEPTED = 0
             set_auto(True)
-            telegram_send(f"🟢 AUTO MODE ON\nSelected strategy: {strategy_label()}\nPRACTICE verified. {money(STAKE)} stake / {strategy_expiry()}-minute expiry.\nSession limit: {MAX_TRADES_PER_AUTO_SESSION} accepted trades. Max concurrent open trades: {MAX_CONCURRENT_TRADES}; one open trade per asset.\nOnly the selected strategy can submit orders. No trade outcomes are recorded.")
+            telegram_send(f"🟢 AUTO MODE ON\nSelected strategy: {strategy_label()}\nPRACTICE verified. {money(STAKE)} stake / {'adaptive 5/10/15-minute expiry' if ACTIVE_STRATEGY == 'B' else str(strategy_expiry()) + '-minute expiry'}.\nSession limit: {MAX_TRADES_PER_AUTO_SESSION} accepted trades. Max concurrent open trades: {MAX_CONCURRENT_TRADES}; one open trade per asset.\nOnly the selected strategy can submit orders. No trade outcomes are recorded.")
     elif command in ("/STOP", "STOP AUTO"):
         set_auto(False, "Stopped manually")
         telegram_send("🔴 AUTO MODE OFF. No new automatic orders will be started.")
