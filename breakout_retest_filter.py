@@ -22,6 +22,7 @@ class RetestResult:
     zone: tuple[float, float] | None = None
     reasons: tuple[str, ...] = ()
     retest_index: int | None = None
+    confirmation_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -105,9 +106,9 @@ def _level_for_breakout(pivots, breakout_index, atr, cfg):
 def evaluate(candles, cfg=DEFAULT_CONFIG):
     """Detect a valid breakout followed by its first retest.
 
-    Entry readiness is reached on the first closed candle that touches the
-    broken level and closes without decisively crossing back through it.
-    No second pullback candle or continuation/confirmation candle is required.
+    A valid first retest is only a setup, not an entry. The immediately
+    following closed candle must confirm continuation by closing beyond the
+    retest candle's high (up break) or low (down break).
     """
     try:
         if not isinstance(candles, list) or len(candles) < max(28, cfg.min_level_age + 2 * cfg.pivot_n + 5):
@@ -189,10 +190,39 @@ def evaluate(candles, cfg=DEFAULT_CONFIG):
                         )))
                         break
 
+                    # The first valid retest is not an entry. Wait for the
+                    # immediately following fully closed candle to confirm
+                    # continuation beyond the retest candle's extreme.
+                    if retest_index == latest:
+                        candidates.append((b, RetestResult(
+                            RetestState.RETESTED, direction, level, zone,
+                            ("valid first retest; waiting for the next closed confirmation candle",),
+                            retest_index, None
+                        )))
+                        break
+
+                    confirmation = candles[retest_index + 1]
+                    confirmation_open = _num(confirmation, "open")
+                    confirmation_close = _num(confirmation, "close")
+                    confirmed = (
+                        confirmation_close > _num(retest, "high")
+                        and confirmation_close > confirmation_open
+                        if direction == "up" else
+                        confirmation_close < _num(retest, "low")
+                        and confirmation_close < confirmation_open
+                    )
+                    if not confirmed:
+                        candidates.append((b, RetestResult(
+                            RetestState.INVALIDATED, direction, level, zone,
+                            ("next closed candle failed to confirm continuation beyond the retest candle",),
+                            retest_index, retest_index + 1
+                        )))
+                        break
+
                     candidates.append((b, RetestResult(
                         RetestState.RETESTED, direction, level, zone,
-                        ("first valid breakout retest detected; entry does not wait for confirmation candles",),
-                        retest_index
+                        ("first retest held and the next closed candle confirmed continuation",),
+                        retest_index, retest_index + 1
                     )))
                     break
 
@@ -211,22 +241,26 @@ def build_entry_signal(asset, candles, candle_seconds=60, cfg=DEFAULT_CONFIG):
     result = evaluate(candles, cfg)
     if result.state != RetestState.RETESTED:
         return None, result
-    if result.retest_index != len(candles) - 1:
+    if result.confirmation_index is None:
+        return None, result
+    if result.confirmation_index != len(candles) - 1:
         return None, result
     try:
-        candle = candles[result.retest_index]
-        candle_open_time = int(candle["from"])
-        candle_close_time = candle_open_time + int(candle_seconds)
+        retest_candle = candles[result.retest_index]
+        confirmation_candle = candles[result.confirmation_index]
+        retest_close_time = int(retest_candle["from"]) + int(candle_seconds)
+        confirmation_close_time = int(confirmation_candle["from"]) + int(candle_seconds)
         signal = {
             "asset": str(asset),
             "direction": "call" if result.direction == "up" else "put",
             "score": 100,
-            "candle_time": candle_close_time,
-            "entry_time": candle_close_time,
-            "price": _num(candle, "close"),
+            "candle_time": confirmation_close_time,
+            "entry_time": confirmation_close_time,
+            "retest_candle_time": retest_close_time,
+            "price": _num(confirmation_candle, "close"),
             "level": result.level,
             "zone": result.zone,
-            "source": "Pure breakout + first valid retest",
+            "source": "Pure breakout + first retest + closed confirmation candle",
         }
         return signal, result
     except (KeyError, TypeError, ValueError, OverflowError):
