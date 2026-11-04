@@ -32,6 +32,8 @@ on:
       - "ema_strategy.py"
       - "test_momentum_strategy.py"
       - "test_ema_strategy.py"
+      - "fusion_strategy.py"
+      - "test_fusion_strategy.py"
       - "test_breakout_retest_filter.py"
       - "test_execution_guard.py"
       - "broker_results.py"
