@@ -1065,9 +1065,9 @@ def process_telegram_update(update):
     elif command in ("STATUS", "/STATUS"):
         telegram_send(status_message())
     elif command in ("/HELP", "HELP"):
-        telegram_send("Strategy buttons: B — Breakout & Retest; M — Momentum 10; E — EMA 20/50 + ADX 14 + RSI 14.\nSTART AUTO — enable PRACTICE trades for the selected strategy\nSTOP AUTO — stop new orders\nSCAN MARKET — report-only scan\nREGULAR PAIRS / OTC PAIRS / BOTH MARKETS — choose market\nSTATUS — scanner status\nSwitching strategy always turns AUTO OFF. One strategy can trade at a time. No win/loss history is recorded.")
+        telegram_send("Strategy buttons: B — Breakout & Retest; M — Momentum 10; E — EMA 20/50 + ADX 14 + RSI 14; F — Precision Fusion X strict confluence\nSTART AUTO — enable PRACTICE trades for the selected strategy\nSTOP AUTO — stop new orders\nSCAN MARKET — report-only scan\nREGULAR PAIRS / OTC PAIRS / BOTH MARKETS — choose market\nSTATUS — scanner status\nSwitching strategy always turns AUTO OFF. One strategy can trade at a time. No win/loss history is recorded.")
     else:
-        telegram_send("Unknown command. Use B, M, E, START AUTO, STOP AUTO, SCAN MARKET, REGULAR PAIRS, OTC PAIRS, BOTH MARKETS, STATUS, or /HELP.")
+        telegram_send("Unknown command. Use B, M, E, F, START AUTO, STOP AUTO, SCAN MARKET, REGULAR PAIRS, OTC PAIRS, BOTH MARKETS, STATUS, or /HELP.")
 
 
 def telegram_listener():
@@ -1125,7 +1125,7 @@ def heartbeat():
 def main():
     global RUNNING, MANUAL_SCAN_REQUESTED
     load_active_strategy()
-    telegram_send(f"🚀 IQ OPTION SCANNER STARTING\nSelected strategy: {strategy_label()}\nPRACTICE-only scanner is connecting. AUTO MODE starts OFF after every GitHub Actions restart; send START AUTO to enable PRACTICE execution.\nChoose B, M, or E at any time; switching turns AUTO OFF.\nManual SCAN MARKET sends signals only and never places trades.\nMax open exposure: 3 trades total, 1 per pair. No win/loss history is recorded.")
+    telegram_send(f"🚀 IQ OPTION SCANNER STARTING\nSelected strategy: {strategy_label()}\nPRACTICE-only scanner is connecting. AUTO MODE starts OFF after every GitHub Actions restart; send START AUTO to enable PRACTICE execution.\nChoose B, M, E, or F at any time; switching turns AUTO OFF.\nManual SCAN MARKET sends signals only and never places trades.\nMax open exposure: 3 trades total, 1 per pair. No win/loss history is recorded.")
     threading.Thread(target=telegram_listener, daemon=True, name="telegram-listener").start()
     while RUNNING:
         try:
