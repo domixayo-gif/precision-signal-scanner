@@ -529,8 +529,10 @@ def scan_market(manual=False, auto_eligible=False, strategy=None, generation=Non
             else:
                 candidate, retest = build_entry_signal(asset, closed, CANDLE_SECONDS)
                 if candidate is None:
-                    if retest.state.value == "retested":
-                        rejected["first retest candle already passed"] = rejected.get("first retest candle already passed", 0) + 1
+                    if retest.state.value == "retested" and retest.confirmation_index is None:
+                        rejected["waiting for next closed confirmation candle"] = rejected.get("waiting for next closed confirmation candle", 0) + 1
+                    elif retest.state.value == "retested":
+                        rejected["confirmation candle already passed; no late entry"] = rejected.get("confirmation candle already passed; no late entry", 0) + 1
                     else:
                         reason = "; ".join(retest.reasons) if retest.reasons else retest.state.value
                         rejected[reason] = rejected.get(reason, 0) + 1
