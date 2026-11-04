@@ -466,9 +466,8 @@ def send_signal(signal, manual=False):
         f"Signal ID: {sid}\\nConfirmed breakout level: {signal.get('level', 0):.6f}\\n"
         f"Retest zone: {zone[0]:.6f} – {zone[1]:.6f}\\n"
         f"5-minute trend: {str(signal.get('trend_5m', 'not recorded')).upper()}\\n"
-        f"Entry: first retest candle close ({lagos_time(stamp)}); no extra confirmation candle\\n"
-        f"15-minute trend: {str(signal.get('trend_15m', 'unavailable')).upper()}\\n"
-        f"Adaptive expiry: {int(signal.get('expiry_minutes', 5))} minutes\\n"
+        f"Entry: first retest + next closed confirmation candle ({lagos_time(stamp)})\\n"
+        f"Fixed expiry: {int(signal.get('expiry_minutes', 2))} minutes\\n"
         f"{'MANUAL SCAN — no trade placed.' if manual else 'AUTO MODE — PRACTICE order only.'}"
     )
 
@@ -537,7 +536,7 @@ def scan_market(manual=False, auto_eligible=False, strategy=None, generation=Non
                         rejected[reason] = rejected.get(reason, 0) + 1
                 else:
                     candidate.update({"strategy": "B", "generation": generation,
-                                      "expiry_minutes": 5,
+                                      "expiry_minutes": 2,
                                       "max_signal_age_seconds": MAX_SIGNAL_AGE_SECONDS})
                     # A valid 1-minute retest is executable only when the latest
                     # CLOSED 5-minute candles confirm the same directional trend.
@@ -559,18 +558,7 @@ def scan_market(manual=False, auto_eligible=False, strategy=None, generation=Non
                                      asset, candidate["direction"].upper(), trend, required_trend)
                     else:
                         candidate["trend_5m"] = trend
-                        # Select expiry from CLOSED 15-minute structure. The 5m
-                        # alignment remains mandatory; opposing/sideways 15m uses 5m,
-                        # aligned 15m uses 10m, and strong aligned 15m uses 15m.
-                        higher_candles = fetch_candles(asset, timeframe=900, count=60)
-                        closed_higher = [c for c in (higher_candles or [])
-                                         if int(c.get("from") or 0) + 900 <= now]
-                        trend_15m = classify_trend(closed_higher)
-                        strong_15m = is_strong_trend(closed_higher, trend_15m)
-                        candidate["trend_15m"] = trend_15m
-                        candidate["expiry_minutes"] = select_breakout_expiry(
-                            candidate["direction"], trend, trend_15m, strong_15m
-                        )
+                        candidate["expiry_minutes"] = 2
                         # candle_time is the retest candle CLOSE time, not its open.
                         stamp = int(candidate["candle_time"])
                         age = time.time() - stamp
@@ -1025,7 +1013,7 @@ def status_message():
     return (f"📊 IQ OPTION SCANNER STATUS\nConnection: {'CONNECTED' if connected else 'DISCONNECTED'}\n"
             f"Practice verification: {'OK' if practice else 'NOT VERIFIED'}\nBalance: {balance}\n"
             f"Selected strategy: {strategy_label()}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\n"
-            f"Stake: $1 | Expiry: {'adaptive 5/10/15 minutes' if ACTIVE_STRATEGY == 'B' else str(strategy_expiry()) + ' minute(s)'}\n"
+            f"Stake: $1 | Expiry: {strategy_expiry()} minute(s)\\n"
             f"Market selection: {MARKET_MODE}\n"
             f"Last discovery mode: {LAST_ASSET_DISCOVERY_MODE}\n"
             f"Asset discovery: {LAST_ASSET_DIAGNOSTIC}\n"
@@ -1070,7 +1058,7 @@ def process_telegram_update(update):
             if not AUTO_MODE:
                 AUTO_SESSION_ACCEPTED = 0
             set_auto(True)
-            telegram_send(f"🟢 AUTO MODE ON\nSelected strategy: {strategy_label()}\nPRACTICE verified. {money(STAKE)} stake / {'adaptive 5/10/15-minute expiry' if ACTIVE_STRATEGY == 'B' else str(strategy_expiry()) + '-minute expiry'}.\nSession limit: {MAX_TRADES_PER_AUTO_SESSION} accepted trades. Max concurrent open trades: {MAX_CONCURRENT_TRADES}; one open trade per asset.\nOnly the selected strategy can submit orders. No trade outcomes are recorded.")
+            telegram_send(f"🟢 AUTO MODE ON\nSelected strategy: {strategy_label()}\nPRACTICE verified. {money(STAKE)} stake / {strategy_expiry()}-minute expiry.\nSession limit: {MAX_TRADES_PER_AUTO_SESSION} accepted trades. Max concurrent open trades: {MAX_CONCURRENT_TRADES}; one open trade per asset.\nOnly the selected strategy can submit orders. No trade outcomes are recorded.")
     elif command in ("/STOP", "STOP AUTO"):
         set_auto(False, "Stopped manually")
         telegram_send("🔴 AUTO MODE OFF. No new automatic orders will be started.")
