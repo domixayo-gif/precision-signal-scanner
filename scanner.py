@@ -525,8 +525,23 @@ def scan_market(manual=False, auto_eligible=False, strategy=None, generation=Non
             closed = [c for c in candles
                       if int(c.get("from") or 0) + CANDLE_SECONDS <= now]
             if len(closed) < MIN_CLOSED_CANDLES:
-                rejected["insufficient closed candles"] = rejected.get("insufficient closed candles", 0) + 1
-            else:
+                # Some IQ Option responses contain only a short candle history
+                # even when 60 bars were requested. Retry once with a wider
+                # history window; keep the exact same strategy thresholds.
+                initial_closed_count = len(closed)
+                retry_candles = fetch_candles(asset, timeframe=CANDLE_SECONDS, count=120)
+                if retry_candles is not None:
+                    retry_closed = [c for c in retry_candles
+                                    if int(c.get("from") or 0) + CANDLE_SECONDS <= now]
+                    if len(retry_closed) > len(closed):
+                        candles, closed = retry_candles, retry_closed
+                if len(closed) < MIN_CLOSED_CANDLES:
+                    logging.info(
+                        "Insufficient candle history for %s: initial=%d retry=%d required=%d",
+                        asset, initial_closed_count, len(closed), MIN_CLOSED_CANDLES
+                    )
+                    rejected["insufficient closed candles"] = rejected.get("insufficient closed candles", 0) + 1
+            if len(closed) >= MIN_CLOSED_CANDLES:
                 candidate, retest = build_entry_signal(asset, closed, CANDLE_SECONDS)
                 if candidate is None:
                     if retest.state.value == "retested" and retest.confirmation_index is None:
