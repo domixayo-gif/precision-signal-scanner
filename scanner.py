@@ -462,12 +462,12 @@ def send_signal(signal, manual=False):
     sid = f"BR-{signal.get('asset','UNKNOWN')}-{signal['direction'].upper()}-{stamp}"
     zone = signal.get("zone") or (0.0, 0.0)
     telegram_send(
-        f"📣 BREAKOUT & RETEST SIGNAL\\n{display_asset(signal.get('asset'))} — {direction}\\n"
-        f"Signal ID: {sid}\\nConfirmed breakout level: {signal.get('level', 0):.6f}\\n"
-        f"Retest zone: {zone[0]:.6f} – {zone[1]:.6f}\\n"
-        f"5-minute trend: {str(signal.get('trend_5m', 'not recorded')).upper()}\\n"
-        f"Entry: first retest + next closed confirmation candle ({lagos_time(stamp)})\\n"
-        f"Fixed expiry: {int(signal.get('expiry_minutes', 2))} minutes\\n"
+        f"📣 BREAKOUT & RETEST SIGNAL\n{display_asset(signal.get('asset'))} — {direction}\n"
+        f"Signal ID: {sid}\nConfirmed breakout level: {signal.get('level', 0):.6f}\n"
+        f"Retest zone: {zone[0]:.6f} – {zone[1]:.6f}\n"
+        f"5-minute trend: {str(signal.get('trend_5m', 'not recorded')).upper()}\n"
+        f"Entry: first valid closed retest candle; no extra confirmation ({lagos_time(stamp)})\n"
+        f"Fixed expiry: {int(signal.get('expiry_minutes', 2))} minutes\n"
         f"{'MANUAL SCAN — no trade placed.' if manual else 'AUTO MODE — PRACTICE order only.'}"
     )
 
@@ -544,10 +544,8 @@ def scan_market(manual=False, auto_eligible=False, strategy=None, generation=Non
             if len(closed) >= MIN_CLOSED_CANDLES:
                 candidate, retest = build_entry_signal(asset, closed, CANDLE_SECONDS)
                 if candidate is None:
-                    if retest.state.value == "retested" and retest.confirmation_index is None:
-                        rejected["waiting for next closed confirmation candle"] = rejected.get("waiting for next closed confirmation candle", 0) + 1
-                    elif retest.state.value == "retested":
-                        rejected["confirmation candle already passed; no late entry"] = rejected.get("confirmation candle already passed; no late entry", 0) + 1
+                    if retest.state.value == "retested":
+                        rejected["first valid retest candle already passed; no late entry"] = rejected.get("first valid retest candle already passed; no late entry", 0) + 1
                     else:
                         reason = "; ".join(retest.reasons) if retest.reasons else retest.state.value
                         rejected[reason] = rejected.get(reason, 0) + 1
@@ -619,8 +617,8 @@ def scan_market(manual=False, auto_eligible=False, strategy=None, generation=Non
         if manual and not results:
             top = sorted(rejected.items(), key=lambda item: item[1], reverse=True)[:3]
             reasons = "; ".join(f"{name}: {count}" for name, count in top) or "No valid closed candles returned."
-            suffix = "\\nConnection timed out; scanner will reconnect." if timed_out else (f"\\n{error_text}" if error_text else "")
-            telegram_send(f"NO TRADE — NO VALID FIRST RETEST\\nScanned: {scanned}/{total}\\nTop rejection reasons: {reasons}{suffix}")
+            suffix = "\nConnection timed out; scanner will reconnect." if timed_out else (f"\n{error_text}" if error_text else "")
+            telegram_send(f"NO TRADE — NO VALID FIRST RETEST\nScanned: {scanned}/{total}\nTop rejection reasons: {reasons}{suffix}")
         SCAN_RESULTS_QUEUE.put({"manual": manual, "auto_eligible": auto_eligible, "results": results,
                                 "timed_out": timed_out, "error": error_text,
                                 "strategy": strategy, "generation": generation})
@@ -636,14 +634,14 @@ def send_indicator_signal(signal, manual=False):
     expiry = int(signal.get("expiry_minutes", STRATEGY_SETTINGS[strategy]["expiry_minutes"]))
     stamp = int(signal.get("candle_time", time.time()))
     if strategy == "M":
-        detail = (f"Momentum score: {signal.get('score', 0)}/100\\n"
+        detail = (f"Momentum score: {signal.get('score', 0)}/100\n"
                   f"Normalized momentum: {signal.get('normalized_momentum', 0):.3f}")
     elif strategy == "F":
-        detail = (f"Strict confluence: {signal.get('confluence', 'not recorded')}\\n"
-                  f"5-minute trend: {signal.get('trend_5m', 'unknown')} | ALMA: {signal.get('alma_direction', 'unknown')}\\n"
+        detail = (f"Strict confluence: {signal.get('confluence', 'not recorded')}\n"
+                  f"5-minute trend: {signal.get('trend_5m', 'unknown')} | ALMA: {signal.get('alma_direction', 'unknown')}\n"
                   f"CHOP25: {signal.get('choppiness', 'unknown')} | ADX14: {signal.get('adx14', 0):.2f} | RSI14: {signal.get('rsi14', 0):.2f}")
     else:
-        detail = (f"EMA20: {signal.get('ema20', 0):.6f} | EMA50: {signal.get('ema50', 0):.6f}\\n"
+        detail = (f"EMA20: {signal.get('ema20', 0):.6f} | EMA50: {signal.get('ema50', 0):.6f}\n"
                   f"ADX14: {signal.get('adx14', 0):.2f} | RSI14: {signal.get('rsi14', 0):.2f}")
     telegram_send(
         f"📣 {strategy} — {name} SIGNAL\n{display_asset(signal.get('asset'))} — {direction}\n"
@@ -887,7 +885,7 @@ def execute_signal(signal):
         LAST_ORDER_STATUS = f"BROKER REJECTED: {display_asset(asset)} {direction.upper()} — {str(order_id)[:120]}"
         logging.info("Practice order rejected for %s: %r", asset, response)
         detail = str(response[1] if len(response) > 1 else "broker returned no order ID")
-        detail = re.sub(r"[\\r\\n]+", " ", detail)[:220]
+        detail = re.sub(r"[\r\n]+", " ", detail)[:220]
         telegram_send(f"⚪ ORDER REJECTED\n{display_asset(asset)} {direction.upper()}\nNo trade was confirmed.\nBroker response: {detail}")
         if "insufficient funds" in detail.lower():
             set_auto(False, "Broker rejected order: insufficient funds")
@@ -1030,7 +1028,7 @@ def status_message():
     return (f"📊 IQ OPTION SCANNER STATUS\nConnection: {'CONNECTED' if connected else 'DISCONNECTED'}\n"
             f"Practice verification: {'OK' if practice else 'NOT VERIFIED'}\nBalance: {balance}\n"
             f"Selected strategy: {strategy_label()}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\n"
-            f"Stake: $1 | Expiry: {strategy_expiry()} minute(s)\\n"
+            f"Stake: $1 | Expiry: {strategy_expiry()} minute(s)\n"
             f"Market selection: {MARKET_MODE}\n"
             f"Last discovery mode: {LAST_ASSET_DISCOVERY_MODE}\n"
             f"Asset discovery: {LAST_ASSET_DIAGNOSTIC}\n"
