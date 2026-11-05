@@ -1,4 +1,4 @@
-"""Confirmed support/resistance breakout followed by the first valid retest.
+"""Confirmed support/resistance breakout followed by the first valid closed retest.
 
 Pure Python: no broker, network, order, or account access.
 Input candles must be closed and ordered oldest -> newest.
@@ -190,39 +190,14 @@ def evaluate(candles, cfg=DEFAULT_CONFIG):
                         )))
                         break
 
-                    # The first valid retest is not an entry. Wait for the
-                    # immediately following fully closed candle to confirm
-                    # continuation beyond the retest candle's extreme.
-                    if retest_index == latest:
-                        candidates.append((b, RetestResult(
-                            RetestState.RETESTED, direction, level, zone,
-                            ("valid first retest; waiting for the next closed confirmation candle",),
-                            retest_index, None
-                        )))
-                        break
-
-                    confirmation = candles[retest_index + 1]
-                    confirmation_open = _num(confirmation, "open")
-                    confirmation_close = _num(confirmation, "close")
-                    confirmed = (
-                        confirmation_close > _num(retest, "high")
-                        and confirmation_close > confirmation_open
-                        if direction == "up" else
-                        confirmation_close < _num(retest, "low")
-                        and confirmation_close < confirmation_open
-                    )
-                    if not confirmed:
-                        candidates.append((b, RetestResult(
-                            RetestState.INVALIDATED, direction, level, zone,
-                            ("next closed candle failed to confirm continuation beyond the retest candle",),
-                            retest_index, retest_index + 1
-                        )))
-                        break
-
+                    # The first valid retest candle is the entry trigger.
+                    # No additional continuation candle is required. If this
+                    # retest is not the latest closed candle, build_entry_signal
+                    # will reject it as a late entry rather than chase it.
                     candidates.append((b, RetestResult(
                         RetestState.RETESTED, direction, level, zone,
-                        ("first retest held and the next closed candle confirmed continuation",),
-                        retest_index, retest_index + 1
+                        ("first valid closed retest candle held; entry may trigger on this candle",),
+                        retest_index, None
                     )))
                     break
 
@@ -241,26 +216,24 @@ def build_entry_signal(asset, candles, candle_seconds=60, cfg=DEFAULT_CONFIG):
     result = evaluate(candles, cfg)
     if result.state != RetestState.RETESTED:
         return None, result
-    if result.confirmation_index is None:
-        return None, result
-    if result.confirmation_index != len(candles) - 1:
+    # Only act on the latest closed candle. A previously completed retest
+    # is never chased, and no extra confirmation candle is required.
+    if result.retest_index != len(candles) - 1:
         return None, result
     try:
         retest_candle = candles[result.retest_index]
-        confirmation_candle = candles[result.confirmation_index]
         retest_close_time = int(retest_candle["from"]) + int(candle_seconds)
-        confirmation_close_time = int(confirmation_candle["from"]) + int(candle_seconds)
         signal = {
             "asset": str(asset),
             "direction": "call" if result.direction == "up" else "put",
             "score": 100,
-            "candle_time": confirmation_close_time,
-            "entry_time": confirmation_close_time,
+            "candle_time": retest_close_time,
+            "entry_time": retest_close_time,
             "retest_candle_time": retest_close_time,
-            "price": _num(confirmation_candle, "close"),
+            "price": _num(retest_candle, "close"),
             "level": result.level,
             "zone": result.zone,
-            "source": "Pure breakout + first retest + closed confirmation candle",
+            "source": "Pure breakout + first valid closed retest candle",
         }
         return signal, result
     except (KeyError, TypeError, ValueError, OverflowError):
