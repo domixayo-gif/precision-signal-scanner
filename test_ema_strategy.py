@@ -9,7 +9,7 @@ from ema_strategy import (
 def trending_candles(direction="up", count=320):
     candles = []
     price = 100.0
-    deltas = (0.08, 0.06, 0.07, -0.05)
+    deltas = (0.055, 0.035, 0.015, -0.06)
     for index in range(count):
         delta = deltas[index % len(deltas)]
         if direction == "down":
