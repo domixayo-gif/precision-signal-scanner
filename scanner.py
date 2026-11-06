@@ -841,6 +841,10 @@ def execute_signal(signal):
             logging.info("Skipping %s %s: %s (open trades %d/%d).",
                          asset, direction.upper(), exposure_reason,
                          TRADE_EXPOSURE.count(time.time()), MAX_CONCURRENT_TRADES)
+            if martingale_followup:
+                EMA_MARTINGALE_STATUS = f"PAUSED — follow-up blocked by exposure guard: {exposure_reason}"
+                set_auto(False, "EMA martingale follow-up blocked by exposure guard")
+                telegram_send("🛑 EMA MARTINGALE PAUSED — the next same-direction step was blocked by the open-trade safety limit. AUTO is OFF; no new $1 sequence will start.")
             return False
     client = IQ
     if strategy == "E":
@@ -902,6 +906,10 @@ def execute_signal(signal):
         LAST_ORDER_STATUS = f"REQUEST ERROR: {display_asset(asset)} {direction.upper()} — {detail[:140]}"
         logging.warning("Order request failed for %s: %r", asset, response)
         telegram_send(f"⚠️ ORDER NOT CONFIRMED\n{display_asset(asset)} {direction.upper()}\nNo trade was confirmed.\nExecution error: {detail[:220]}")
+        if martingale_followup:
+            EMA_MARTINGALE_STATUS = "PAUSED — martingale follow-up order was not accepted"
+            set_auto(False, "EMA martingale follow-up was not accepted")
+            telegram_send("🛑 EMA MARTINGALE PAUSED — follow-up order was not accepted. AUTO is OFF; no fresh sequence will be started automatically.")
         if "insufficient funds" in detail.lower():
             set_auto(False, "Broker rejected order: insufficient funds")
             telegram_send("🛑 AUTO MODE OFF — IQ Option reported insufficient funds. No more orders will be attempted. Check the PRACTICE balance before manually restarting.")
@@ -914,6 +922,10 @@ def execute_signal(signal):
         detail = str(response[1] if len(response) > 1 else "broker returned no order ID")
         detail = re.sub(r"[\r\n]+", " ", detail)[:220]
         telegram_send(f"⚪ ORDER REJECTED\n{display_asset(asset)} {direction.upper()}\nNo trade was confirmed.\nBroker response: {detail}")
+        if martingale_followup:
+            EMA_MARTINGALE_STATUS = "PAUSED — martingale follow-up was rejected by broker"
+            set_auto(False, "EMA martingale follow-up rejected by broker")
+            telegram_send("🛑 EMA MARTINGALE PAUSED — broker rejected the next step. AUTO is OFF; no fresh sequence will be started automatically.")
         if "insufficient funds" in detail.lower():
             set_auto(False, "Broker rejected order: insufficient funds")
             telegram_send("🛑 AUTO MODE OFF — insufficient PRACTICE funds. Resolve the balance issue, then restart AUTO manually.")
