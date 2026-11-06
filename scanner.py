@@ -5,6 +5,8 @@ from iqoptionapi.stable_api import IQ_Option
 from breakout_retest_filter import build_entry_signal
 from trend_filter import classify_trend, is_strong_trend
 from execution_guard import TradeExposureGuard, classify_profit
+from broker_results import get_binary_option_net_profit
+from ema_martingale import stake_for_step, next_step_after_result, MAX_STEPS
 from momentum_strategy import calculate_signal as calculate_momentum_signal
 from ema_strategy import calculate_signal as calculate_ema_signal
 from fusion_strategy import calculate_signal as calculate_fusion_signal
@@ -81,6 +83,7 @@ TRADE_EXPOSURE = TradeExposureGuard(max_open_trades=MAX_CONCURRENT_TRADES,
 ORDER_ATTEMPTS = ORDER_ACCEPTED = ORDER_REJECTED = 0
 AUTO_SESSION_ACCEPTED = 0
 LAST_ORDER_STATUS = "No order attempt yet"
+EMA_MARTINGALE_STATUS = "READY — next EMA trade $1"
 
 
 def utc_now():
@@ -824,10 +827,13 @@ def execute_signal(signal):
     age = time.time() - candle_time
     max_age = int(signal.get("max_signal_age_seconds", MAX_SIGNAL_AGE_SECONDS))
     signal_key = f"{strategy}:{asset}"
-    if age > max_age or age < -5:
+    martingale_followup = bool(signal.get("_martingale_followup")) and strategy == "E"
+    martingale_step = int(signal.get("_martingale_step", 1)) if strategy == "E" else 1
+    order_stake = stake_for_step(martingale_step) if strategy == "E" else STAKE
+    if (age > max_age or age < -5) and not martingale_followup:
         logging.info("Skipping stale %s signal %s (age %.1fs)", strategy, asset, age)
         return False
-    if not asset or direction not in ("call", "put") or LAST_SIGNAL_BY_ASSET.get(signal_key) == str(candle_time):
+    if not asset or direction not in ("call", "put") or (LAST_SIGNAL_BY_ASSET.get(signal_key) == str(candle_time) and not martingale_followup):
         return False
     with STATE_LOCK:
         allowed, exposure_reason = TRADE_EXPOSURE.can_open(asset, time.time())
@@ -851,7 +857,7 @@ def execute_signal(signal):
                     result_queue.put(("cancelled", "strategy changed before order submission"))
                     return
                 with client_api_lock(client):
-                    response = client.buy(STAKE, asset, direction, expiry_minutes)
+                    response = client.buy(order_stake, asset, direction, expiry_minutes)
             result_queue.put(("result", response))
         except Exception as exc:
             try:
@@ -861,7 +867,7 @@ def execute_signal(signal):
     ORDER_ATTEMPTS += 1
     LAST_ORDER_STATUS = f"REQUEST SENT: {display_asset(asset)} {direction.upper()}; awaiting broker confirmation"
     logging.info("ORDER REQUEST attempt=%d strategy=%s asset=%s direction=%s stake=%s expiry=%sm",
-                 ORDER_ATTEMPTS, strategy, asset, direction.upper(), money(STAKE), expiry_minutes)
+                 ORDER_ATTEMPTS, strategy, asset, direction.upper(), money(order_stake), expiry_minutes)
     threading.Thread(target=worker, daemon=True, name="place-practice-order").start()
     try:
         status, response = result_queue.get(timeout=ORDER_REQUEST_TIMEOUT)
@@ -909,16 +915,57 @@ def execute_signal(signal):
     with STATE_LOCK:
         TRADE_EXPOSURE.register(order_id, asset, direction, accepted_at,
                                 expiry_seconds=expiry_minutes * 60)
+    step_note = f" | EMA martingale step {martingale_step}/{MAX_STEPS}" if strategy == "E" else ""
     telegram_send(f"🟡 PRACTICE ORDER ACCEPTED\n{display_asset(asset)} — {direction.upper()}\nOrder ID: {order_id}\n"
-                  f"Strategy: {strategy} | Stake: {money(STAKE)} | Expiry: {expiry_minutes} minute(s)\n"
+                  f"Strategy: {strategy} | Stake: {money(order_stake)}{step_note} | Expiry: {expiry_minutes} minute(s)\n"
                   f"Open exposure: {TRADE_EXPOSURE.count(time.time())}/{MAX_CONCURRENT_TRADES}\n"
                   f"Session trades: {AUTO_SESSION_ACCEPTED}/{MAX_TRADES_PER_AUTO_SESSION}\n"
-                  f"No trade history or outcome tracking is kept.")
-    if AUTO_SESSION_ACCEPTED >= MAX_TRADES_PER_AUTO_SESSION:
+                  f"EMA outcomes are checked only to manage the requested $1/$2/$4 sequence.")
+    if AUTO_SESSION_ACCEPTED >= MAX_TRADES_PER_AUTO_SESSION and strategy != "E":
         set_auto(False, "20 accepted trades reached for this START AUTO session")
         telegram_send("🛑 AUTO MODE OFF — 20 accepted PRACTICE trades completed in this session.")
     logging.info("Practice order accepted for %s; order id=%s; exposure=%d/%d",
                  asset, order_id, TRADE_EXPOSURE.count(time.time()), MAX_CONCURRENT_TRADES)
+    if strategy == "E":
+        global EMA_MARTINGALE_STATUS
+        EMA_MARTINGALE_STATUS = f"WAITING — step {martingale_step}/{MAX_STEPS}, stake {money(order_stake)}"
+        time.sleep(max(0.0, accepted_at + expiry_minutes * 60 + 2 - time.time()))
+        try:
+            if not practice_mode_verified():
+                raise RuntimeError("PRACTICE account verification failed before EMA result lookup")
+            net_profit = get_binary_option_net_profit(client, order_id, lock=client_api_lock(client), timeout=20)
+        except Exception as exc:
+            EMA_MARTINGALE_STATUS = f"PAUSED — result unverified for order {order_id}"
+            LAST_ORDER_STATUS = f"RESULT UNVERIFIED: order {order_id}; no martingale retry"
+            set_auto(False, "EMA outcome could not be verified; martingale stopped safely")
+            telegram_send(f"🛑 EMA MARTINGALE PAUSED\nOrder {order_id} result could not be verified.\nNo $2/$4 follow-up will be placed. AUTO is OFF.\nReason: {str(exc)[:180]}")
+            return True
+        outcome = classify_profit(net_profit)
+        with STATE_LOCK:
+            TRADE_EXPOSURE.complete(order_id)
+        LAST_ORDER_STATUS = f"RESULT CONFIRMED: {outcome} on order {order_id} (net {money(net_profit)})"
+        next_step = next_step_after_result(outcome, martingale_step)
+        if outcome == "LOSS" and next_step is not None:
+            if AUTO_SESSION_ACCEPTED >= MAX_TRADES_PER_AUTO_SESSION:
+                set_auto(False, "AUTO session trade limit reached before martingale continuation")
+            if AUTO_MODE and strategy == ACTIVE_STRATEGY and generation == STRATEGY_GENERATION and practice_mode_verified():
+                next_stake = stake_for_step(next_step)
+                EMA_MARTINGALE_STATUS = f"LOSS CONFIRMED — placing step {next_step}/{MAX_STEPS} at {money(next_stake)} in the same direction"
+                telegram_send(f"🔴 EMA LOSS CONFIRMED\n{display_asset(asset)} — {direction.upper()}\nNext trade: {money(next_stake)} in the SAME direction, without waiting for another signal.\nMartingale step {next_step}/{MAX_STEPS}.")
+                followup = dict(signal)
+                followup.update({"_martingale_followup": True, "_martingale_step": next_step, "_stake": next_stake})
+                return execute_signal(followup)
+            EMA_MARTINGALE_STATUS = "STOPPED — AUTO off or safety verification failed; next stake remains $1"
+            telegram_send("⚠️ EMA martingale continuation was not placed because AUTO is OFF or PRACTICE verification failed. No trade was forced.")
+        elif outcome == "LOSS":
+            EMA_MARTINGALE_STATUS = "3/3 LOSSES — sequence ended; next fresh EMA setup starts at $1"
+            telegram_send("🛑 EMA MARTINGALE SEQUENCE ENDED\nThe $4 third trade also lost. No $8 trade will be placed. The next fresh EMA signal starts a new $1 sequence.")
+        else:
+            EMA_MARTINGALE_STATUS = f"{outcome} — sequence reset; next fresh EMA setup starts at $1"
+            telegram_send(f"✅ EMA {outcome}\nOrder {order_id} closed with net {money(net_profit)}. Martingale sequence reset. Next fresh EMA setup starts at $1.")
+        if AUTO_SESSION_ACCEPTED >= MAX_TRADES_PER_AUTO_SESSION:
+            set_auto(False, "20 accepted trades reached for this START AUTO session")
+            telegram_send("🛑 AUTO MODE OFF — session limit reached: 20 accepted PRACTICE trades.")
     return True
 
 
