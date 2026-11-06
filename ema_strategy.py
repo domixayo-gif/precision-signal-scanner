@@ -228,6 +228,7 @@ def calculate_signal(asset, candles, candle_seconds=60, candles_5m=None):
         return None, "insufficient closed 5-minute trend candles (need 80)"
     try:
         required = ("open", "high", "low", "close", "from")
+        previous_stamp = None
         for candle in candles:
             if not isinstance(candle, dict) or any(key not in candle for key in required):
                 return None, "invalid candle data"
@@ -236,6 +237,10 @@ def calculate_signal(asset, candles, candle_seconds=60, candles_5m=None):
             opening, high, low, close = (float(candle[k]) for k in ("open", "high", "low", "close"))
             if min(opening, high, low, close) <= 0 or high < max(opening, close) or low > min(opening, close) or high < low:
                 return None, "invalid candle OHLC"
+            stamp = int(float(candle["from"]))
+            if stamp <= 0 or (previous_stamp is not None and stamp <= previous_stamp):
+                return None, "invalid or unordered candle timestamps"
+            previous_stamp = stamp
 
         closes = [float(candle["close"]) for candle in candles]
         ema20_values = ema_series(closes, EMA_FAST)
@@ -254,7 +259,7 @@ def calculate_signal(asset, candles, candle_seconds=60, candles_5m=None):
         if adx_value < ADX_MIN:
             return None, "ADX below 20: trend strength too weak"
         if chop_value >= CHOP_MAX:
-            return None, "CHOP14 indicates a sideways market"
+            return None, "CHOP25 indicates a sideways market"
         latest = candles[-1]
         opening, high, low, close = (float(latest[k]) for k in ("open", "high", "low", "close"))
         extension = abs(close - ema20_now) / atr_value
