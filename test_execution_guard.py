@@ -30,6 +30,14 @@ class TradeExposureGuardTests(unittest.TestCase):
         guard.register("1", "EURUSD-OTC", "call", 1000)
         self.assertEqual(guard.count(1120), 0)
 
+    def test_confirmed_result_releases_exposure_before_expiry_grace(self):
+        guard = TradeExposureGuard(max_open_trades=1, expiry_seconds=120, expiry_grace_seconds=10)
+        guard.register("1", "EURUSD-OTC", "call", 1000)
+        self.assertTrue(guard.complete("1"))
+        self.assertFalse(guard.complete("1"))
+        allowed, _ = guard.can_open("EURUSD-OTC", 1001)
+        self.assertTrue(allowed)
+
     def test_classifies_broker_net_profit(self):
         self.assertEqual(classify_profit(0.80), "WIN")
         self.assertEqual(classify_profit(-1.0), "LOSS")
