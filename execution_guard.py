@@ -55,6 +55,10 @@ class TradeExposureGuard:
             expires_at=accepted_at + duration + self.expiry_grace_seconds,
         )
 
+    def complete(self, order_id):
+        """Remove a trade once the broker has confirmed its closed result."""
+        return self.open_trades.pop(str(order_id), None) is not None
+
     def count(self, now):
         self.prune(now)
         return len(self.open_trades)
