@@ -11,6 +11,12 @@ class EmaMartingaleTests(unittest.TestCase):
         self.assertEqual([stake_for_step(i) for i in range(1, 4)], [1.0, 2.0, 4.0])
         self.assertEqual(MAX_STEPS, 3)
 
+    def test_balance_requirement_covers_remaining_sequence(self):
+        from ema_martingale import required_balance_from_step
+        self.assertEqual(required_balance_from_step(1), 7.0)
+        self.assertEqual(required_balance_from_step(2), 6.0)
+        self.assertEqual(required_balance_from_step(3), 4.0)
+
     def test_only_confirmed_loss_advances_same_sequence(self):
         self.assertEqual(next_step_after_result("LOSS", 1), 2)
         self.assertEqual(next_step_after_result("LOSS", 2), 3)
