@@ -29,13 +29,46 @@ def extract_net_profit(closed_options, order_id):
     return None
 
 
-def get_binary_option_net_profit(client, order_id, lock=None, timeout=12, poll_interval=0.2):
+def extract_async_order_net_profit(order_data):
+    """Extract realized P/L from IQ Option's order-specific async result."""
+    if not isinstance(order_data, dict):
+        return None
+    closed = order_data.get("option-closed")
+    if not isinstance(closed, dict) or not closed:
+        return None
+    msg = closed.get("msg")
+    if not isinstance(msg, dict):
+        return None
+    try:
+        profit_amount = float(msg["profit_amount"])
+        amount = float(msg["amount"])
+        return round(profit_amount - amount, 2)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def get_binary_option_net_profit(client, order_id, lock=None, timeout=35, poll_interval=0.2):
     api = getattr(client, "api", None)
     if api is None or not hasattr(api, "get_options_v2") or not hasattr(api, "get_options_v2_data"):
         raise RuntimeError("IQ Option client does not expose binary closed-option history")
     if not _RESULT_LOOKUP_LOCK.acquire(timeout=timeout):
         raise TimeoutError("Another broker-result lookup is still running")
     try:
+        # Prefer the order-specific async cache while this process still owns
+        # the order ID. General closed-options history can lag behind expiry.
+        async_lookup = getattr(client, "get_async_order", None)
+        async_deadline = time.monotonic() + timeout * 0.7
+        lookup_id = int(order_id) if str(order_id).isdigit() else order_id
+        if callable(async_lookup):
+            while time.monotonic() < async_deadline:
+                try:
+                    pnl = extract_async_order_net_profit(async_lookup(lookup_id))
+                    if pnl is not None:
+                        return pnl
+                except Exception:
+                    pass
+                time.sleep(poll_interval)
+
         acquired = False
         if lock is not None:
             acquired = lock.acquire(timeout=min(8, timeout))
@@ -48,7 +81,7 @@ def get_binary_option_net_profit(client, order_id, lock=None, timeout=12, poll_i
             if acquired:
                 lock.release()
 
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + max(0.1, timeout * 0.3)
         while time.monotonic() < deadline:
             payload = getattr(api, "get_options_v2_data", None)
             if isinstance(payload, dict):
@@ -58,6 +91,6 @@ def get_binary_option_net_profit(client, order_id, lock=None, timeout=12, poll_i
                 if pnl is not None:
                     return pnl
             time.sleep(poll_interval)
-        raise TimeoutError("Broker closed-option history did not contain this order before timeout")
+        raise TimeoutError("Neither order-specific async result nor closed-option history confirmed this order before timeout")
     finally:
         _RESULT_LOOKUP_LOCK.release()
