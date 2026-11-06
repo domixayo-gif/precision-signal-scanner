@@ -98,7 +98,7 @@ class EmaStrategyTests(unittest.TestCase):
         self.assertIsNotNone(signal)
         self.assertEqual(signal["direction"], "call")
         self.assertGreater(signal["plus_di14"], signal["minus_di14"])
-        self.assertLess(signal["extension_atr"], 1.5)
+        self.assertLess(signal["extension_atr"], 0.85)
 
     def test_bearish_ema_pullback_rejection_signals_put(self):
         signal, reason = calculate_signal("EURUSD", trending_candles("down"), candles_5m=higher_timeframe_candles("down"))
@@ -130,14 +130,14 @@ class EmaStrategyTests(unittest.TestCase):
     def test_malformed_ohlc_is_blocked(self):
         candles = trending_candles()
         candles[-1]["high"] = candles[-1]["low"] - 1
-        signal, reason = calculate_signal("EURUSD", candles)
+        signal, reason = calculate_signal("EURUSD", candles, candles_5m=higher_timeframe_candles())
         self.assertIsNone(signal)
         self.assertIn("invalid candle OHLC", reason)
 
     def test_zero_or_nonfinite_close_is_blocked(self):
         candles = trending_candles()
         candles[-1]["close"] = float("nan")
-        signal, reason = calculate_signal("EURUSD", candles)
+        signal, reason = calculate_signal("EURUSD", candles, candles_5m=higher_timeframe_candles())
         self.assertIsNone(signal)
         self.assertEqual(reason, "invalid candle data")
 
