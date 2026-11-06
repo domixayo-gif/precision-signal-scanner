@@ -954,7 +954,7 @@ def execute_signal(signal):
         try:
             if not practice_mode_verified():
                 raise RuntimeError("PRACTICE account verification failed before EMA result lookup")
-            net_profit = get_binary_option_net_profit(client, order_id, lock=client_api_lock(client), timeout=20)
+            net_profit = get_binary_option_net_profit(client, order_id, lock=client_api_lock(client), timeout=35)
         except Exception as exc:
             EMA_MARTINGALE_STATUS = f"PAUSED — result unverified for order {order_id}"
             LAST_ORDER_STATUS = f"RESULT UNVERIFIED: order {order_id}; no martingale retry"
