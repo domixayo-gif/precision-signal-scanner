@@ -6,7 +6,7 @@ from breakout_retest_filter import build_entry_signal
 from trend_filter import classify_trend, is_strong_trend
 from execution_guard import TradeExposureGuard, classify_profit
 from broker_results import get_binary_option_net_profit
-from ema_martingale import stake_for_step, next_step_after_result, MAX_STEPS
+from ema_martingale import stake_for_step, next_step_after_result, required_balance_from_step, MAX_STEPS
 from momentum_strategy import calculate_signal as calculate_momentum_signal
 from ema_strategy import calculate_signal as calculate_ema_signal
 from fusion_strategy import calculate_signal as calculate_fusion_signal
@@ -842,10 +842,20 @@ def execute_signal(signal):
                          asset, direction.upper(), exposure_reason,
                          TRADE_EXPOSURE.count(time.time()), MAX_CONCURRENT_TRADES)
             return False
+    client = IQ
+    if strategy == "E":
+        try:
+            available_balance = safe_float(client.get_balance(), 0.0)
+        except Exception:
+            available_balance = 0.0
+        if available_balance < required_balance_from_step(martingale_step):
+            EMA_MARTINGALE_STATUS = "PAUSED — insufficient balance for remaining sequence"
+            set_auto(False, "Insufficient PRACTICE balance for EMA martingale")
+            telegram_send("EMA martingale paused: insufficient PRACTICE balance for remaining steps; no order placed.")
+            return False
     # Mark this candle before sending the request, so a timed-out request is never retried for the same candle.
     LAST_SIGNAL_BY_ASSET[signal_key] = str(candle_time)
     result_queue = queue.Queue(maxsize=1)
-    client = IQ
     def worker():
         try:
             if not practice_mode_verified():
