@@ -10,10 +10,10 @@ EMA_SLOW = 50
 RSI_PERIOD = 14
 ADX_PERIOD = 14
 ATR_PERIOD = 14
-CHOP_PERIOD = 14
+CHOP_PERIOD = 25
 ADX_MIN = 20.0
 CHOP_MAX = 61.8
-MAX_EXTENSION_ATR = 1.5
+MAX_EXTENSION_ATR = 0.85
 PULLBACK_TOLERANCE_ATR = 0.20
 MIN_CANDLES = 260
 
@@ -194,7 +194,28 @@ def choppiness_index(candles, period=CHOP_PERIOD):
         return None
 
 
-def calculate_signal(asset, candles, candle_seconds=60):
+def _five_minute_direction(candles):
+    """Confirm higher-timeframe EMA20/50 alignment and EMA20 slope."""
+    if not isinstance(candles, list) or len(candles) < 80:
+        return None
+    try:
+        closes = [float(c["close"]) for c in candles]
+        if not all(isfinite(value) and value > 0 for value in closes):
+            return None
+        fast_now, slow_now = ema(closes, 20), ema(closes, 50)
+        fast_previous = ema(closes[:-5], 20)
+        if None in (fast_now, slow_now, fast_previous):
+            return None
+        if fast_now > slow_now and fast_now > fast_previous and closes[-1] > fast_now:
+            return "call"
+        if fast_now < slow_now and fast_now < fast_previous and closes[-1] < fast_now:
+            return "put"
+        return None
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+
+
+def calculate_signal(asset, candles, candle_seconds=60, candles_5m=None):
     """Signal only on a fresh EMA20 pullback bounce in a directional market.
 
     Candles must be closed and ordered oldest -> newest. No signal is emitted
@@ -203,8 +224,11 @@ def calculate_signal(asset, candles, candle_seconds=60):
     """
     if not isinstance(candles, list) or len(candles) < MIN_CANDLES:
         return None, f"insufficient closed candles (need {MIN_CANDLES})"
+    if not isinstance(candles_5m, list) or len(candles_5m) < 80:
+        return None, "insufficient closed 5-minute trend candles (need 80)"
     try:
         required = ("open", "high", "low", "close", "from")
+        previous_stamp = None
         for candle in candles:
             if not isinstance(candle, dict) or any(key not in candle for key in required):
                 return None, "invalid candle data"
@@ -213,6 +237,10 @@ def calculate_signal(asset, candles, candle_seconds=60):
             opening, high, low, close = (float(candle[k]) for k in ("open", "high", "low", "close"))
             if min(opening, high, low, close) <= 0 or high < max(opening, close) or low > min(opening, close) or high < low:
                 return None, "invalid candle OHLC"
+            stamp = int(float(candle["from"]))
+            if stamp <= 0 or (previous_stamp is not None and stamp <= previous_stamp):
+                return None, "invalid or unordered candle timestamps"
+            previous_stamp = stamp
 
         closes = [float(candle["close"]) for candle in candles]
         ema20_values = ema_series(closes, EMA_FAST)
@@ -231,7 +259,7 @@ def calculate_signal(asset, candles, candle_seconds=60):
         if adx_value < ADX_MIN:
             return None, "ADX below 20: trend strength too weak"
         if chop_value >= CHOP_MAX:
-            return None, "CHOP14 indicates a sideways market"
+            return None, "CHOP25 indicates a sideways market"
         latest = candles[-1]
         opening, high, low, close = (float(latest[k]) for k in ("open", "high", "low", "close"))
         extension = abs(close - ema20_now) / atr_value
@@ -263,6 +291,10 @@ def calculate_signal(asset, candles, candle_seconds=60):
         else:
             return None, "EMA alignment, slope, or +DI/-DI direction disagrees"
 
+        higher_timeframe = _five_minute_direction(candles_5m)
+        if higher_timeframe != direction:
+            return None, f"5-minute trend mismatch or sideways (expected {direction})"
+
         candle_time = int(float(latest["from"])) + int(candle_seconds)
         if candle_time <= 0 or int(candle_seconds) <= 0:
             return None, "invalid candle timestamp"
@@ -270,9 +302,9 @@ def calculate_signal(asset, candles, candle_seconds=60):
             "asset": str(asset), "direction": direction, "score": 0,
             "ema20": ema20_now, "ema50": ema50_now,
             "adx14": adx_value, "plus_di14": plus_di, "minus_di14": minus_di,
-            "rsi14": rsi_value, "atr14": atr_value, "chop14": chop_value,
-            "extension_atr": extension, "price": close, "candle_time": candle_time,
-            "source": "EMA20/50 trend + ADX/DI + CHOP14 + ATR + EMA20 pullback bounce",
+            "rsi14": rsi_value, "atr14": atr_value, "chop25": chop_value,
+            "extension_atr": extension, "trend_5m": higher_timeframe, "price": close, "candle_time": candle_time,
+            "source": "EMA20/50 pullback + ADX/DI + CHOP25/ATR + 5-minute EMA alignment",
         }, ""
     except (KeyError, TypeError, ValueError, OverflowError, IndexError):
         return None, "invalid candle data"

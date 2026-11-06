@@ -643,8 +643,9 @@ def send_indicator_signal(signal, manual=False):
     else:
         detail = (f"EMA20: {signal.get('ema20', 0):.6f} | EMA50: {signal.get('ema50', 0):.6f}\n"
                   f"ADX14: {signal.get('adx14', 0):.2f} | +DI/-DI: {signal.get('plus_di14', 0):.2f}/{signal.get('minus_di14', 0):.2f}\n"
-                  f"RSI14: {signal.get('rsi14', 0):.2f} | CHOP14: {signal.get('chop14', 0):.2f}\n"
-                  f"ATR14: {signal.get('atr14', 0):.6f} | Extension: {signal.get('extension_atr', 0):.2f} ATR")
+                  f"RSI14: {signal.get('rsi14', 0):.2f} | CHOP25: {signal.get('chop25', 0):.2f}\n"
+                  f"ATR14: {signal.get('atr14', 0):.6f} | Extension: {signal.get('extension_atr', 0):.2f} ATR\n"
+                  f"5-minute trend: {signal.get('trend_5m', 'unknown').upper()}")
     telegram_send(
         f"📣 {strategy} — {name} SIGNAL\n{display_asset(signal.get('asset'))} — {direction}\n"
         f"Entry: closed 1-minute candle ({lagos_time(stamp)})\n{detail}\n"
@@ -703,7 +704,15 @@ def scan_indicator_market(manual, auto_eligible, strategy, generation):
             if strategy == "M":
                 signal, reason = calculate_momentum_signal(asset, closed, CANDLE_SECONDS)
             elif strategy == "E":
-                signal, reason = calculate_ema_signal(asset, closed, CANDLE_SECONDS)
+                trend_candles = fetch_candles(asset, timeframe=300, count=100)
+                if trend_candles is None:
+                    signal, reason = None, "5-minute candle request timed out"
+                else:
+                    closed_trend = [c for c in trend_candles
+                                    if int(c.get("from") or 0) + 300 <= now]
+                    signal, reason = calculate_ema_signal(
+                        asset, closed, CANDLE_SECONDS, closed_trend
+                    )
             else:
                 trend_candles = fetch_candles(asset, timeframe=300, count=80)
                 if trend_candles is None:
