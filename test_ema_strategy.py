@@ -9,7 +9,7 @@ from ema_strategy import (
 def trending_candles(direction="up", count=320):
     candles = []
     price = 100.0
-    deltas = (0.055, 0.035, 0.015, -0.06)
+    deltas = (0.12, 0.08, 0.06, -0.07)
     for index in range(count):
         delta = deltas[index % len(deltas)]
         if direction == "down":
@@ -24,18 +24,27 @@ def trending_candles(direction="up", count=320):
         })
         price = close
 
-    # Make the latest closed candle a genuine EMA20 touch-and-rejection/bounce.
-    closes = [c["close"] for c in candles[:-1]]
+    # Create a pullback candle followed by a closed bounce/rejection candle.
+    closes = [c["close"] for c in candles[:-2]]
     fast = ema(closes, 20)
+    if direction == "up":
+        candles[-2].update({
+            "open": fast + 0.05, "close": fast - 0.05,
+            "high": fast + 0.07, "low": fast - 0.08,
+        })
+    else:
+        candles[-2].update({
+            "open": fast - 0.05, "close": fast + 0.05,
+            "high": fast + 0.08, "low": fast - 0.07,
+        })
+    fast = ema([c["close"] for c in candles[:-1]], 20)
     if direction == "up":
         opening, close = fast - 0.025, fast + 0.025
         low, high = fast - 0.045, close + 0.02
     else:
         opening, close = fast + 0.025, fast - 0.025
         high, low = fast + 0.045, close - 0.02
-    candles[-1].update({
-        "open": opening, "close": close, "high": high, "low": low,
-    })
+    candles[-1].update({"open": opening, "close": close, "high": high, "low": low})
     return candles
 
 
