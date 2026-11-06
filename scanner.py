@@ -40,7 +40,7 @@ MARKET_MODE = "BOTH"
 STRATEGY_SETTINGS = {
     "B": {"name": "Breakout & Retest", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 60},
     "M": {"name": "Momentum 10", "expiry_minutes": 1, "scan_interval_seconds": 60, "lookback": 50},
-    "E": {"name": "EMA 20/50 + ADX 14 + RSI 14", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 80},
+    "E": {"name": "EMA Precision — 20/50 Pullback + ADX/DI + CHOP/ATR", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 300},
     "F": {"name": "Precision Fusion X — Strict Confluence", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 80},
 }
 ACTIVE_STRATEGY = "B"
@@ -642,7 +642,9 @@ def send_indicator_signal(signal, manual=False):
                   f"CHOP25: {signal.get('choppiness', 'unknown')} | ADX14: {signal.get('adx14', 0):.2f} | RSI14: {signal.get('rsi14', 0):.2f}")
     else:
         detail = (f"EMA20: {signal.get('ema20', 0):.6f} | EMA50: {signal.get('ema50', 0):.6f}\n"
-                  f"ADX14: {signal.get('adx14', 0):.2f} | RSI14: {signal.get('rsi14', 0):.2f}")
+                  f"ADX14: {signal.get('adx14', 0):.2f} | +DI/-DI: {signal.get('plus_di14', 0):.2f}/{signal.get('minus_di14', 0):.2f}\n"
+                  f"RSI14: {signal.get('rsi14', 0):.2f} | CHOP14: {signal.get('chop14', 0):.2f}\n"
+                  f"ATR14: {signal.get('atr14', 0):.6f} | Extension: {signal.get('extension_atr', 0):.2f} ATR")
     telegram_send(
         f"📣 {strategy} — {name} SIGNAL\n{display_asset(signal.get('asset'))} — {direction}\n"
         f"Entry: closed 1-minute candle ({lagos_time(stamp)})\n{detail}\n"
