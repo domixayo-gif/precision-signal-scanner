@@ -17,8 +17,12 @@ class FakeApi:
 
 
 class FakeClient:
-    def __init__(self, api):
+    def __init__(self, api, async_result=None):
         self.api = api
+        self.async_result = async_result
+
+    def get_async_order(self, order_id):
+        return self.async_result or {}
 
 
 class BrokerResultTests(unittest.TestCase):
@@ -31,6 +35,20 @@ class BrokerResultTests(unittest.TestCase):
         self.assertEqual(extract_net_profit(rows, 1), 0.82)
         self.assertEqual(extract_net_profit(rows, 2), -1.0)
         self.assertEqual(extract_net_profit(rows, 3), 0.0)
+
+    def test_extracts_order_specific_async_result(self):
+        from broker_results import extract_async_order_net_profit
+        self.assertEqual(
+            extract_async_order_net_profit({"option-closed": {"msg": {"profit_amount": 1.82, "amount": 1.0}}}),
+            0.82,
+        )
+        self.assertIsNone(extract_async_order_net_profit({"option-closed": {}}))
+
+    def test_order_specific_async_result_is_checked_before_history(self):
+        api = FakeApi({"msg": {"closed_options": []}})
+        client = FakeClient(api, {"option-closed": {"msg": {"profit_amount": 0, "amount": 1}}})
+        self.assertEqual(get_binary_option_net_profit(client, 123, timeout=0.1), -1.0)
+        self.assertEqual(api.requested, [])
 
     def test_missing_order_returns_none(self):
         self.assertIsNone(extract_net_profit([], 123))
