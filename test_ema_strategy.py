@@ -154,6 +154,15 @@ class EmaStrategyTests(unittest.TestCase):
         self.assertIsNone(signal)
         self.assertIn("5-minute trend mismatch", reason)
 
+    def test_unordered_candle_timestamps_are_blocked(self):
+        candles = trending_candles()
+        candles[-1]["from"] = candles[-2]["from"]
+        signal, reason = calculate_signal(
+            "EURUSD", candles, candles_5m=higher_timeframe_candles()
+        )
+        self.assertIsNone(signal)
+        self.assertIn("unordered candle timestamps", reason)
+
 
 if __name__ == "__main__":
     unittest.main()
