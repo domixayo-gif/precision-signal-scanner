@@ -302,7 +302,7 @@ def calculate_signal(asset, candles, candle_seconds=60, candles_5m=None):
             "asset": str(asset), "direction": direction, "score": 0,
             "ema20": ema20_now, "ema50": ema50_now,
             "adx14": adx_value, "plus_di14": plus_di, "minus_di14": minus_di,
-            "rsi14": rsi_value, "atr14": atr_value, "chop14": chop_value,
+            "rsi14": rsi_value, "atr14": atr_value, "chop25": chop_value,
             "extension_atr": extension, "trend_5m": higher_timeframe, "price": close, "candle_time": candle_time,
             "source": "EMA20/50 pullback + ADX/DI + CHOP25/ATR + 5-minute EMA alignment",
         }, ""
