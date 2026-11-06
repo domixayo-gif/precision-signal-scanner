@@ -703,7 +703,15 @@ def scan_indicator_market(manual, auto_eligible, strategy, generation):
             if strategy == "M":
                 signal, reason = calculate_momentum_signal(asset, closed, CANDLE_SECONDS)
             elif strategy == "E":
-                signal, reason = calculate_ema_signal(asset, closed, CANDLE_SECONDS)
+                trend_candles = fetch_candles(asset, timeframe=300, count=100)
+                if trend_candles is None:
+                    signal, reason = None, "5-minute candle request timed out"
+                else:
+                    closed_trend = [c for c in trend_candles
+                                    if int(c.get("from") or 0) + 300 <= now]
+                    signal, reason = calculate_ema_signal(
+                        asset, closed, CANDLE_SECONDS, closed_trend
+                    )
             else:
                 trend_candles = fetch_candles(asset, timeframe=300, count=80)
                 if trend_candles is None:
