@@ -804,7 +804,7 @@ def start_scan(manual=False):
 
 
 def execute_signal(signal):
-    global ORDER_ATTEMPTS, ORDER_ACCEPTED, ORDER_REJECTED, LAST_ORDER_STATUS, AUTO_SESSION_ACCEPTED
+    global ORDER_ATTEMPTS, ORDER_ACCEPTED, ORDER_REJECTED, LAST_ORDER_STATUS, AUTO_SESSION_ACCEPTED, EMA_MARTINGALE_STATUS
     if not AUTO_TRADING_ALLOWED or not AUTO_MODE:
         return False
     if AUTO_SESSION_ACCEPTED >= MAX_TRADES_PER_AUTO_SESSION:
@@ -937,7 +937,6 @@ def execute_signal(signal):
     logging.info("Practice order accepted for %s; order id=%s; exposure=%d/%d",
                  asset, order_id, TRADE_EXPOSURE.count(time.time()), MAX_CONCURRENT_TRADES)
     if strategy == "E":
-        global EMA_MARTINGALE_STATUS
         EMA_MARTINGALE_STATUS = f"WAITING — step {martingale_step}/{MAX_STEPS}, stake {money(order_stake)}"
         time.sleep(max(0.0, accepted_at + expiry_minutes * 60 + 2 - time.time()))
         try:
