@@ -48,6 +48,27 @@ def trending_candles(direction="up", count=320):
     return candles
 
 
+
+def higher_timeframe_candles(direction="up", count=100):
+    output = []
+    price = 100.0
+    steps = (0.8, 0.6, 0.7, -0.25)
+    for index in range(count):
+        delta = steps[index % len(steps)]
+        if direction == "down":
+            delta = -delta
+        opening = price
+        close = price + delta
+        output.append({
+            "open": opening, "close": close,
+            "high": max(opening, close) + 0.12,
+            "low": min(opening, close) - 0.12,
+            "from": 1_800_000_000 + index * 300,
+        })
+        price = close
+    return output
+
+
 class EmaStrategyTests(unittest.TestCase):
     def test_ema_seed_and_smoothing(self):
         self.assertAlmostEqual(ema([1, 2, 3, 4], 3), 3.0)
@@ -72,7 +93,7 @@ class EmaStrategyTests(unittest.TestCase):
         self.assertLessEqual(value, 100)
 
     def test_bullish_ema_pullback_bounce_signals_call(self):
-        signal, reason = calculate_signal("EURUSD", trending_candles("up"))
+        signal, reason = calculate_signal("EURUSD", trending_candles("up"), candles_5m=higher_timeframe_candles("up"))
         self.assertEqual(reason, "")
         self.assertIsNotNone(signal)
         self.assertEqual(signal["direction"], "call")
@@ -80,7 +101,7 @@ class EmaStrategyTests(unittest.TestCase):
         self.assertLess(signal["extension_atr"], 1.5)
 
     def test_bearish_ema_pullback_rejection_signals_put(self):
-        signal, reason = calculate_signal("EURUSD", trending_candles("down"))
+        signal, reason = calculate_signal("EURUSD", trending_candles("down"), candles_5m=higher_timeframe_candles("down"))
         self.assertEqual(reason, "")
         self.assertIsNotNone(signal)
         self.assertEqual(signal["direction"], "put")
@@ -102,7 +123,7 @@ class EmaStrategyTests(unittest.TestCase):
                 "low": min(opening, close) - 0.01,
                 "from": 1_800_000_000 + index * 60,
             })
-        signal, reason = calculate_signal("EURUSD", candles)
+        signal, reason = calculate_signal("EURUSD", candles, candles_5m=higher_timeframe_candles())
         self.assertIsNone(signal)
         self.assertTrue("CHOP" in reason or "ADX" in reason or "EMA alignment" in reason)
 
@@ -119,6 +140,19 @@ class EmaStrategyTests(unittest.TestCase):
         signal, reason = calculate_signal("EURUSD", candles)
         self.assertIsNone(signal)
         self.assertEqual(reason, "invalid candle data")
+
+    def test_missing_five_minute_context_is_blocked(self):
+        signal, reason = calculate_signal("EURUSD", trending_candles("up"))
+        self.assertIsNone(signal)
+        self.assertIn("5-minute", reason)
+
+    def test_opposing_five_minute_trend_blocks_entry(self):
+        signal, reason = calculate_signal(
+            "EURUSD", trending_candles("up"),
+            candles_5m=higher_timeframe_candles("down"),
+        )
+        self.assertIsNone(signal)
+        self.assertIn("5-minute trend mismatch", reason)
 
 
 if __name__ == "__main__":
