@@ -20,6 +20,13 @@ def stake_for_step(step):
     return EMA_MARTINGALE_STAKES[index - 1]
 
 
+def required_balance_from_step(step):
+    """Capital required to complete the current step and every remaining step."""
+    index = int(step)
+    stake_for_step(index)
+    return round(sum(EMA_MARTINGALE_STAKES[index - 1:]), 2)
+
+
 def next_step_after_result(outcome, current_step):
     """Advance only on a confirmed loss; never exceed the third $4 trade."""
     step = int(current_step)
