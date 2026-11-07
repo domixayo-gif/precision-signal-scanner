@@ -45,8 +45,8 @@ on:
       - "requirements.txt"
       - ".github/workflows/scanner.yml"
   schedule:
-    # Restart before the 350-minute runner limit so Telegram polling has less downtime.
-    - cron: "0 */4 * * *"
+    # Restart after the 350-minute runner limit, with a buffer to avoid overlapping runs.
+    - cron: "0 */6 * * *"
 
 permissions:
   contents: write
@@ -55,7 +55,8 @@ permissions:
 concurrency:
   # Stable name: a workflow rename must not create a second live Telegram poller.
   group: iq-option-practice-scanner-${{ github.ref }}
-  cancel-in-progress: true
+  # Never terminate the active Telegram scanner just because another run is queued.
+  cancel-in-progress: false
 
 jobs:
   scan:
