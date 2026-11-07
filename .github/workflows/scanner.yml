@@ -55,7 +55,7 @@ permissions:
 concurrency:
   # Stable name: a workflow rename must not create a second live Telegram poller.
   group: iq-option-practice-scanner-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   scan:
