@@ -70,6 +70,7 @@ def get_binary_option_net_profit(
         next_history_refresh = 0.0
         history_response_deadline = 0.0
         history_request_pending = False
+        last_history_payload = None
 
         while time.monotonic() < deadline:
             if callable(async_lookup):
@@ -113,7 +114,8 @@ def get_binary_option_net_profit(
                         lock.release()
 
             payload = getattr(api, "get_options_v2_data", None)
-            if isinstance(payload, dict):
+            if isinstance(payload, dict) and payload is not last_history_payload:
+                last_history_payload = payload
                 msg = payload.get("msg", {})
                 closed = msg.get("closed_options", []) if isinstance(msg, dict) else []
                 pnl = extract_net_profit(closed, order_id)
