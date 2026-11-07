@@ -25,6 +25,18 @@ class FakeClient:
         return self.async_result or {}
 
 
+class RefreshingFakeApi(FakeApi):
+    def get_options_v2(self, limit, instruments):
+        self.requested.append((limit, instruments))
+        if len(self.requested) == 1:
+            rows = []
+        else:
+            rows = [
+                {"id": [456], "win": "win", "win_amount": 1.9, "amount": 1.0}
+            ]
+        self.get_options_v2_data = {"msg": {"closed_options": rows}}
+
+
 class BrokerResultTests(unittest.TestCase):
     def test_extracts_net_profit_for_win_loss_and_draw(self):
         rows = [
@@ -50,8 +62,14 @@ class BrokerResultTests(unittest.TestCase):
         self.assertEqual(get_binary_option_net_profit(client, 123, timeout=0.1), -1.0)
         self.assertEqual(api.requested, [])
 
-    def test_missing_order_returns_none(self):
-        self.assertIsNone(extract_net_profit([], 123))
+    def test_closed_options_history_is_refreshed_until_order_appears(self):
+        api = RefreshingFakeApi()
+        result = get_binary_option_net_profit(
+            FakeClient(api), 456, timeout=0.2, poll_interval=0.001,
+            history_refresh_interval=0.005,
+        )
+        self.assertEqual(result, 0.9)
+        self.assertGreaterEqual(len(api.requested), 2)
 
     def test_bounded_lookup_uses_closed_options_history(self):
         api = FakeApi()
@@ -61,7 +79,10 @@ class BrokerResultTests(unittest.TestCase):
     def test_lookup_times_out(self):
         api = FakeApi({"msg": {"closed_options": []}})
         with self.assertRaises(TimeoutError):
-            get_binary_option_net_profit(FakeClient(api), 999, timeout=0.05, poll_interval=0.01)
+            get_binary_option_net_profit(
+                FakeClient(api), 999, timeout=0.05, poll_interval=0.01,
+                history_refresh_interval=0.01,
+            )
 
 
 if __name__ == "__main__":
