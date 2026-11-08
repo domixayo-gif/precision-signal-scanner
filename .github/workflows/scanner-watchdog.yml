@@ -25,7 +25,9 @@ jobs:
         run: |
           python - <<'PY'
           import os
-          import requests
+          import json
+          import urllib.error
+          import urllib.request
 
           repo = os.environ["GH_REPOSITORY"]
           token = os.environ["GH_TOKEN"]
@@ -37,14 +39,12 @@ jobs:
           }
           active_states = {"queued", "pending", "in_progress", "waiting", "requested"}
 
-          response = requests.get(
-              f"{api}/repos/{repo}/actions/runs",
+          request = urllib.request.Request(
+              f"{api}/repos/{repo}/actions/runs?branch=main&per_page=100",
               headers=headers,
-              params={"branch": "main", "per_page": 100},
-              timeout=20,
           )
-          response.raise_for_status()
-          runs = response.json().get("workflow_runs", [])
+          with urllib.request.urlopen(request, timeout=20) as response:
+              runs = json.loads(response.read().decode("utf-8")).get("workflow_runs", [])
           active = [
               run for run in runs
               if run.get("path") == ".github/workflows/scanner.yml"
@@ -59,16 +59,21 @@ jobs:
               )
               raise SystemExit(0)
 
-          dispatch = requests.post(
+          payload = json.dumps({"ref": "main"}).encode("utf-8")
+          dispatch_request = urllib.request.Request(
               f"{api}/repos/{repo}/actions/workflows/scanner.yml/dispatches",
-              headers=headers,
-              json={"ref": "main"},
-              timeout=20,
+              data=payload,
+              headers={**headers, "Content-Type": "application/json"},
+              method="POST",
           )
-          if dispatch.status_code != 204:
-              print(f"Workflow dispatch failed: HTTP {dispatch.status_code} {dispatch.text}")
-              dispatch.raise_for_status()
-              raise SystemExit(1)
+          try:
+              with urllib.request.urlopen(dispatch_request, timeout=20) as response:
+                  if response.status != 204:
+                      raise SystemExit(f"Workflow dispatch returned HTTP {response.status}")
+          except urllib.error.HTTPError as error:
+              raise SystemExit(
+                  f"Workflow dispatch failed: HTTP {error.code} {error.read().decode('utf-8')}"
+              )
 
           print("No scanner run was active. Dispatched a fresh scanner workflow.")
           PY
