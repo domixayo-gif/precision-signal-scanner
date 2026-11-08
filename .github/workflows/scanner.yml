@@ -44,6 +44,8 @@ on:
       - "test_execution_guard.py"
       - "broker_results.py"
       - "test_broker_results.py"
+      - "order_expiry.py"
+      - "test_order_expiry.py"
       - "requirements.txt"
       - ".github/workflows/scanner.yml"
   schedule:
