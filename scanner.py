@@ -807,16 +807,17 @@ def execute_signal(signal):
     global ORDER_ATTEMPTS, ORDER_ACCEPTED, ORDER_REJECTED, LAST_ORDER_STATUS, AUTO_SESSION_ACCEPTED, EMA_MARTINGALE_STATUS
     if not AUTO_TRADING_ALLOWED or not AUTO_MODE:
         return False
-    if AUTO_SESSION_ACCEPTED >= MAX_TRADES_PER_AUTO_SESSION:
-        set_auto(False, "20 accepted trades reached for this START AUTO session")
-        telegram_send("🛑 AUTO MODE OFF — session limit reached: 20 accepted PRACTICE trades. Send START AUTO to begin a new session.")
+    strategy = str(signal.get("strategy", "B")).upper()
+    generation = int(signal.get("generation", STRATEGY_GENERATION))
+    martingale_followup = bool(signal.get("_martingale_followup")) and strategy == "E"
+    if AUTO_SESSION_ACCEPTED >= MAX_TRADES_PER_AUTO_SESSION and not martingale_followup:
+        set_auto(False, "20 accepted trades reached; no active EMA sequence remains")
+        telegram_send("🛑 AUTO MODE OFF — 20 accepted PRACTICE trades reached. No new trade sequence will start.")
         return False
     if not practice_mode_verified():
         set_auto(False, "PRACTICE mode could not be verified")
         telegram_send("🛑 AUTO STOPPED: PRACTICE mode could not be verified.")
         return False
-    strategy = str(signal.get("strategy", "B")).upper()
-    generation = int(signal.get("generation", STRATEGY_GENERATION))
     if strategy != ACTIVE_STRATEGY or generation != STRATEGY_GENERATION:
         logging.info("Skipping signal from inactive strategy/generation: %s/%s", strategy, generation)
         return False
@@ -827,7 +828,6 @@ def execute_signal(signal):
     age = time.time() - candle_time
     max_age = int(signal.get("max_signal_age_seconds", MAX_SIGNAL_AGE_SECONDS))
     signal_key = f"{strategy}:{asset}"
-    martingale_followup = bool(signal.get("_martingale_followup")) and strategy == "E"
     martingale_step = int(signal.get("_martingale_step", 1)) if strategy == "E" else 1
     order_stake = stake_for_step(martingale_step) if strategy == "E" else STAKE
     if (age > max_age or age < -5) and not martingale_followup:
@@ -967,8 +967,8 @@ def execute_signal(signal):
         LAST_ORDER_STATUS = f"RESULT CONFIRMED: {outcome} on order {order_id} (net {money(net_profit)})"
         next_step = next_step_after_result(outcome, martingale_step)
         if outcome == "LOSS" and next_step is not None:
-            if AUTO_SESSION_ACCEPTED >= MAX_TRADES_PER_AUTO_SESSION:
-                set_auto(False, "AUTO session trade limit reached before martingale continuation")
+            # The session cap blocks fresh sequences, never a follow-up belonging
+            # to an already accepted EMA $1/$2/$4 sequence.
             if AUTO_MODE and strategy == ACTIVE_STRATEGY and generation == STRATEGY_GENERATION and practice_mode_verified():
                 next_stake = stake_for_step(next_step)
                 EMA_MARTINGALE_STATUS = f"LOSS CONFIRMED — placing step {next_step}/{MAX_STEPS} at {money(next_stake)} in the same direction"
@@ -985,8 +985,8 @@ def execute_signal(signal):
             EMA_MARTINGALE_STATUS = f"{outcome} — sequence reset; next fresh EMA setup starts at $1"
             telegram_send(f"✅ EMA {outcome}\nOrder {order_id} closed with net {money(net_profit)}. Martingale sequence reset. Next fresh EMA setup starts at $1.")
         if AUTO_SESSION_ACCEPTED >= MAX_TRADES_PER_AUTO_SESSION:
-            set_auto(False, "20 accepted trades reached for this START AUTO session")
-            telegram_send("🛑 AUTO MODE OFF — session limit reached: 20 accepted PRACTICE trades.")
+            set_auto(False, "session cap reached and the active EMA sequence has finished")
+            telegram_send("🛑 AUTO MODE OFF — the 20-trade session cap was reached and the active EMA martingale sequence has now finished. No new sequence will start.")
     return True
 
 
