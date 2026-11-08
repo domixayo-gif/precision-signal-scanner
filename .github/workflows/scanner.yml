@@ -22,6 +22,8 @@ on:
       - "test_execution_guard.py"
       - "broker_results.py"
       - "test_broker_results.py"
+      - "order_expiry.py"
+      - "test_order_expiry.py"
       - "requirements.txt"
       - ".github/workflows/scanner.yml"
   push:
@@ -81,8 +83,8 @@ jobs:
 
       - name: Check scanner
         run: |
-          python -m py_compile scanner.py breakout_retest_filter.py trend_filter.py execution_guard.py broker_results.py momentum_strategy.py ema_strategy.py ema_martingale.py fusion_strategy.py
-          python -m unittest test_breakout_retest_filter test_trend_filter test_execution_guard test_broker_results test_momentum_strategy test_ema_strategy test_ema_martingale test_fusion_strategy -v
+          python -m py_compile scanner.py breakout_retest_filter.py trend_filter.py execution_guard.py broker_results.py order_expiry.py momentum_strategy.py ema_strategy.py ema_martingale.py fusion_strategy.py
+          python -m unittest test_breakout_retest_filter test_trend_filter test_execution_guard test_broker_results test_order_expiry test_momentum_strategy test_ema_strategy test_ema_martingale test_fusion_strategy -v
 
       - name: Cancel older scanner workflow instances
         if: github.event_name != 'pull_request'
