@@ -871,7 +871,16 @@ def execute_signal(signal):
                     result_queue.put(("cancelled", "strategy changed before order submission"))
                     return
                 with client_api_lock(client):
-                    response = client.buy(order_stake, asset, direction, expiry_minutes)
+                    if not callable(getattr(client, "buy_by_raw_expirations", None)):
+                        raise RuntimeError("Installed IQ Option API does not support explicit expiry timestamps; order was not submitted.")
+                    server_time = getattr(getattr(getattr(client, "api", None), "timesync", None),
+                                          "server_timestamp", None)
+                    from order_expiry import calculate_raw_expiry
+                    raw_expiry = calculate_raw_expiry(server_time, expiry_minutes)
+                    option_type = "turbo" if expiry_minutes <= 5 else "binary"
+                    response = client.buy_by_raw_expirations(
+                        order_stake, asset, direction, option_type, raw_expiry
+                    )
             result_queue.put(("result", response))
         except Exception as exc:
             try:
@@ -950,11 +959,15 @@ def execute_signal(signal):
                  asset, order_id, TRADE_EXPOSURE.count(time.time()), MAX_CONCURRENT_TRADES)
     if strategy == "E":
         EMA_MARTINGALE_STATUS = f"WAITING — step {martingale_step}/{MAX_STEPS}, stake {money(order_stake)}"
-        time.sleep(max(0.0, accepted_at + expiry_minutes * 60 + 2 - time.time()))
         try:
             if not practice_mode_verified():
                 raise RuntimeError("PRACTICE account verification failed before EMA result lookup")
-            net_profit = get_binary_option_net_profit(client, order_id, lock=client_api_lock(client), timeout=35)
+            # Poll the order-specific result cache throughout the expiry window.
+            # This avoids an extra fixed sleep before detecting a confirmed close.
+            result_timeout = expiry_minutes * 60 + 35
+            net_profit = get_binary_option_net_profit(
+                client, order_id, lock=client_api_lock(client), timeout=result_timeout
+            )
         except Exception as exc:
             EMA_MARTINGALE_STATUS = f"PAUSED — result unverified for order {order_id}"
             LAST_ORDER_STATUS = f"RESULT UNVERIFIED: order {order_id}; no martingale retry"
