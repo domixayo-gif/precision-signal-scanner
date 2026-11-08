@@ -1,0 +1,28 @@
+name: Scanner Execution Timing Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scanner.py"
+      - "order_expiry.py"
+      - "test_order_expiry.py"
+      - ".github/workflows/test-expiry.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  timing-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile scanner and test raw expiry calculation
+        run: |
+          python -m py_compile scanner.py order_expiry.py
+          python -m unittest test_order_expiry -v
