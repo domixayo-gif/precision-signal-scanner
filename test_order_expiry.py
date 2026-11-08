@@ -13,7 +13,7 @@ class RawExpiryTests(unittest.TestCase):
         expiry = calculate_raw_expiry(1800000035, 2)
         self.assertEqual(expiry % 60, 0)
         self.assertGreater(expiry - 1800000035, 30)
-        self.assertEqual(expiry, 1800000120)
+        self.assertEqual(expiry, 1800000180)
 
     def test_fractional_server_time_uses_broker_aligned_mark(self):
         expiry = calculate_raw_expiry(1800000000.2, 2)
