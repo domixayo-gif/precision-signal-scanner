@@ -1,0 +1,74 @@
+name: IQ Option Scanner Watchdog
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Check every 10 minutes and restart the scanner if no scanner run is active.
+    - cron: "*/10 * * * *"
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: iq-option-scanner-watchdog
+  cancel-in-progress: false
+
+jobs:
+  ensure-scanner-running:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start scanner only when no scanner run is active
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import os
+          import requests
+
+          repo = os.environ["GH_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          api = "https://api.github.com"
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {token}",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+          active_states = {"queued", "pending", "in_progress", "waiting", "requested"}
+
+          response = requests.get(
+              f"{api}/repos/{repo}/actions/runs",
+              headers=headers,
+              params={"branch": "main", "per_page": 100},
+              timeout=20,
+          )
+          response.raise_for_status()
+          runs = response.json().get("workflow_runs", [])
+          active = [
+              run for run in runs
+              if run.get("path") == ".github/workflows/scanner.yml"
+              and run.get("status") in active_states
+          ]
+
+          if active:
+              newest = max(active, key=lambda run: run.get("created_at", ""))
+              print(
+                  "Scanner already has an active run; no restart needed: "
+                  f"run #{newest.get('run_number')} ({newest.get('status')})."
+              )
+              raise SystemExit(0)
+
+          dispatch = requests.post(
+              f"{api}/repos/{repo}/actions/workflows/scanner.yml/dispatches",
+              headers=headers,
+              json={"ref": "main"},
+              timeout=20,
+          )
+          if dispatch.status_code != 204:
+              print(f"Workflow dispatch failed: HTTP {dispatch.status_code} {dispatch.text}")
+              dispatch.raise_for_status()
+              raise SystemExit(1)
+
+          print("No scanner run was active. Dispatched a fresh scanner workflow.")
+          PY
