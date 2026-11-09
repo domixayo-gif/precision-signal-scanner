@@ -6,6 +6,8 @@ on:
     paths:
       - "scanner.py"
       - "order_expiry.py"
+      - "asset_execution.py"
+      - "test_asset_execution.py"
       - "test_order_expiry.py"
       - ".github/workflows/test-expiry.yml"
 
@@ -24,5 +26,5 @@ jobs:
           python-version: "3.12"
       - name: Compile scanner and test raw expiry calculation
         run: |
-          python -m py_compile scanner.py order_expiry.py
-          python -m unittest test_order_expiry -v
+          python -m py_compile scanner.py order_expiry.py asset_execution.py
+          python -m unittest test_order_expiry test_asset_execution -v
