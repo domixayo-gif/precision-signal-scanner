@@ -373,16 +373,8 @@ def get_asset_names():
             # Regular "-op" broker names are converted to the canonical six-letter
             # symbol for candle requests and binary buy(); OTC names retain OTC suffix.
             broker_name = raw_name.rsplit(".", 1)[-1].strip()
-        asset_key = broker_name if is_otc else symbol
-        try:
-            broker_id = int(active_id)
-        except (TypeError, ValueError):
-            broker_id = active.get("id", active.get("active_id"))
-            try:
-                broker_id = int(broker_id)
-            except (TypeError, ValueError):
-                continue
-        candidates[asset_key] = broker_name
+            asset_key = broker_name if is_otc else symbol
+            candidates[asset_key] = broker_name
 
         supported = sorted(candidates)
         BROKER_ACTIVE_NAMES = dict(candidates)
