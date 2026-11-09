@@ -2,7 +2,7 @@ import os, time, math, logging, threading, traceback, requests, queue, re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from iqoptionapi.stable_api import IQ_Option
-from iqoptionapi.constants import OP_code
+import iqoptionapi.constants as OP_code
 from asset_execution import find_enabled_turbo_active_id
 from breakout_retest_filter import build_entry_signal
 from trend_filter import classify_trend, is_strong_trend
