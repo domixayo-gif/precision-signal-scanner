@@ -2,6 +2,8 @@ import os, time, math, logging, threading, traceback, requests, queue, re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from iqoptionapi.stable_api import IQ_Option
+from iqoptionapi.constants import OP_code
+from asset_execution import find_enabled_turbo_active_id
 from breakout_retest_filter import build_entry_signal
 from trend_filter import classify_trend, is_strong_trend
 from execution_guard import TradeExposureGuard, classify_profit
@@ -78,6 +80,8 @@ LAST_SCAN_TIMED_OUT, LAST_SCAN_ERROR = False, ""
 LAST_REJECTIONS = {}
 LAST_ASSET_DIAGNOSTIC = "Asset discovery has not run yet."
 LAST_ASSET_DISCOVERY_MODE = "NOT RUN"
+BROKER_ACTIVE_NAMES = {}
+LAST_TURBO_INIT_INFO = {}
 TRADE_EXPOSURE = TradeExposureGuard(max_open_trades=MAX_CONCURRENT_TRADES,
                                      expiry_seconds=2 * 60, expiry_grace_seconds=10)
 ORDER_ATTEMPTS = ORDER_ACCEPTED = ORDER_REJECTED = 0
@@ -260,6 +264,7 @@ def is_supported_binary_asset(asset):
 def get_asset_names():
     """Return only binary/turbo FX assets that match the selected market mode."""
     global LAST_ASSET_DIAGNOSTIC, LAST_ASSET_DISCOVERY_MODE
+    global BROKER_ACTIVE_NAMES, LAST_TURBO_INIT_INFO
     scan_mode = str(MARKET_MODE).upper()
     LAST_ASSET_DISCOVERY_MODE = scan_mode
     client = IQ
@@ -301,12 +306,14 @@ def get_asset_names():
             result = data.get("data")
         if not isinstance(result, dict):
             result = data
-        if not any(key in result for key in ("binary", "turbo")):
-            logging.warning("No binary/turbo tables found in IQ Option init response; keys=%s",
+        # Two-minute orders are submitted as TURBO. Binary-only availability
+        # must never make an asset eligible for a turbo purchase.
+        if not isinstance(result.get("turbo"), dict):
+            logging.warning("No turbo table found in IQ Option init response; keys=%s",
                             list(result.keys())[:20])
             return []
 
-        candidates = set()
+        candidates = {}
         counts = {
             "binary_turbo_entries": 0,
             "enabled_entries": 0,
@@ -325,52 +332,64 @@ def get_asset_names():
                 return value.strip().lower() in {"1", "true", "yes", "on"}
             return False
 
-        for market in ("binary", "turbo"):
-            market_data = result.get(market, {})
-            if not isinstance(market_data, dict):
+        market_data = result.get("turbo", {})
+        actives = market_data.get("actives", {})
+        if isinstance(actives, dict):
+            active_items = actives.items()
+        elif isinstance(actives, list):
+            active_items = [
+                (item.get("id", item.get("active_id")), item)
+                for item in actives if isinstance(item, dict)
+            ]
+        else:
+            active_items = []
+
+        for active_id, active in active_items:
+            if not isinstance(active, dict):
                 continue
-            actives = market_data.get("actives", {})
-            if isinstance(actives, dict):
-                active_items = actives.values()
-            elif isinstance(actives, list):
-                active_items = actives
-            else:
+            counts["binary_turbo_entries"] += 1
+
+            # Require an explicit enabled flag, but treat numeric/string
+            # representations consistently. Only an explicit suspended
+            # flag blocks an otherwise enabled asset.
+            if not flag_is_true(active.get("enabled")):
+                continue
+            counts["enabled_entries"] += 1
+            if flag_is_true(active.get("is_suspended")):
                 continue
 
-            for active in active_items:
-                if not isinstance(active, dict):
-                    continue
-                counts["binary_turbo_entries"] += 1
+            raw_name = str(active.get("name", "")).strip()
+            symbol, is_otc = binary_fx_asset_info(raw_name)
+            if not symbol:
+                continue
 
-                # Require an explicit enabled flag, but treat numeric/string
-                # representations consistently. Only an explicit suspended
-                # flag blocks an otherwise enabled asset.
-                if not flag_is_true(active.get("enabled")):
-                    continue
-                counts["enabled_entries"] += 1
-                if flag_is_true(active.get("is_suspended")):
-                    continue
+            counts["supported_fx"] += 1
+            counts["otc" if is_otc else "regular"] += 1
 
-                raw_name = str(active.get("name", "")).strip()
-                symbol, is_otc = binary_fx_asset_info(raw_name)
-                if not symbol:
-                    continue
-
-                counts["supported_fx"] += 1
-                counts["otc" if is_otc else "regular"] += 1
-
-                if scan_mode == "REGULAR" and is_otc:
-                    continue
-                if scan_mode == "OTC" and not is_otc:
-                    continue
-                # Regular "-op" broker names are converted to the canonical six-letter
-                # symbol for candle requests and binary buy(); OTC names retain OTC suffix.
-                candidates.add(raw_name.rsplit(".", 1)[-1].strip() if is_otc else symbol)
+            if scan_mode == "REGULAR" and is_otc:
+                continue
+            if scan_mode == "OTC" and not is_otc:
+                continue
+            # Regular "-op" broker names are converted to the canonical six-letter
+            # symbol for candle requests and binary buy(); OTC names retain OTC suffix.
+            broker_name = raw_name.rsplit(".", 1)[-1].strip()
+        asset_key = broker_name if is_otc else symbol
+        try:
+            broker_id = int(active_id)
+        except (TypeError, ValueError):
+            broker_id = active.get("id", active.get("active_id"))
+            try:
+                broker_id = int(broker_id)
+            except (TypeError, ValueError):
+                continue
+        candidates[asset_key] = broker_name
 
         supported = sorted(candidates)
+        BROKER_ACTIVE_NAMES = dict(candidates)
+        LAST_TURBO_INIT_INFO = {"result": {"turbo": market_data}}
         if supported:
             LAST_ASSET_DIAGNOSTIC = (
-                f"Found {len(supported)} FX pairs in {scan_mode} mode "
+                f"Found {len(supported)} enabled TURBO FX pairs in {scan_mode} mode "
                 f"({counts['regular']} regular, {counts['otc']} OTC available)."
             )
         elif scan_mode == "REGULAR" and counts["otc"] > 0 and counts["regular"] == 0:
@@ -385,7 +404,7 @@ def get_asset_names():
             )
         elif counts["supported_fx"] == 0:
             LAST_ASSET_DIAGNOSTIC = (
-                f"The broker returned {counts['binary_turbo_entries']} binary/turbo entries, "
+                f"The broker returned {counts['binary_turbo_entries']} turbo entries, "
                 f"but none matched the supported FX-pair filter."
             )
         else:
@@ -394,7 +413,7 @@ def get_asset_names():
                 f"regular={counts['regular']}, OTC={counts['otc']}."
             )
         logging.info(
-            "IQ Option asset discovery mode=%s: entries=%d enabled=%d supported_fx=%d "
+            "IQ Option TURBO asset discovery mode=%s: entries=%d enabled=%d supported_fx=%d "
             "regular=%d otc=%d selected=%d",
             scan_mode, counts["binary_turbo_entries"], counts["enabled_entries"],
             counts["supported_fx"], counts["regular"], counts["otc"], len(supported)
@@ -873,13 +892,28 @@ def execute_signal(signal):
                 with client_api_lock(client):
                     if not callable(getattr(client, "buy_by_raw_expirations", None)):
                         raise RuntimeError("Installed IQ Option API does not support explicit expiry timestamps; order was not submitted.")
+                    # Resolve the exact broker asset from the latest TURBO discovery
+                    # snapshot. Preserve -op / -OTC suffixes for broker ID lookup;
+                    # the canonical symbol remains reserved for candle analysis.
+                    broker_asset = BROKER_ACTIVE_NAMES.get(asset)
+                    if not broker_asset:
+                        result_queue.put(("unavailable", "No exact TURBO broker asset mapping from discovery"))
+                        return
+                    active_id = find_enabled_turbo_active_id(LAST_TURBO_INIT_INFO, broker_asset)
+                    if active_id is None:
+                        result_queue.put(("unavailable", "Asset is not enabled in the latest TURBO availability snapshot"))
+                        return
+                    if not isinstance(getattr(OP_code, "ACTIVES", None), dict):
+                        result_queue.put(("unavailable", "IQ Option active-ID table is unavailable"))
+                        return
+                    OP_code.ACTIVES[broker_asset] = active_id
                     server_time = getattr(getattr(getattr(client, "api", None), "timesync", None),
                                           "server_timestamp", None)
                     from order_expiry import calculate_raw_expiry
                     raw_expiry = calculate_raw_expiry(server_time, expiry_minutes)
                     option_type = "turbo" if expiry_minutes <= 5 else "binary"
                     response = client.buy_by_raw_expirations(
-                        order_stake, asset, direction, option_type, raw_expiry
+                        order_stake, broker_asset, direction, option_type, raw_expiry
                     )
             result_queue.put(("result", response))
         except Exception as exc:
@@ -902,6 +936,15 @@ def execute_signal(signal):
         return False
     if status == "cancelled":
         logging.info("Order safely cancelled before broker submission: %s", response)
+        return False
+    if status == "unavailable":
+        LAST_ORDER_STATUS = f"SKIPPED — {display_asset(asset)} {direction.upper()}: {response}"
+        logging.info("Skipped broker order locally for %s: %s", asset, response)
+        telegram_send(f"⚪ ORDER SKIPPED — NOT SENT TO BROKER\\n{display_asset(asset)} {direction.upper()}\\nReason: {str(response)[:180]}")
+        if martingale_followup:
+            EMA_MARTINGALE_STATUS = "PAUSED — follow-up asset unavailable in TURBO market"
+            set_auto(False, "EMA martingale follow-up asset unavailable")
+            telegram_send("🛑 EMA MARTINGALE PAUSED — follow-up asset was not available in the latest TURBO snapshot. AUTO is OFF.")
         return False
     if status == "safety":
         ORDER_REJECTED += 1
