@@ -86,6 +86,7 @@ LAST_TURBO_INIT_INFO = {}
 TRADE_EXPOSURE = TradeExposureGuard(max_open_trades=MAX_CONCURRENT_TRADES,
                                      expiry_seconds=2 * 60, expiry_grace_seconds=10)
 ORDER_ATTEMPTS = ORDER_ACCEPTED = ORDER_REJECTED = 0
+IN_FLIGHT_ORDER_REQUESTS = 0
 AUTO_SESSION_ACCEPTED = 0
 AUTO_SESSION_GENERATION = 0
 AUTO_STOP_REASON = "Not stopped in this run"
@@ -177,7 +178,7 @@ def send_session_report_if_ready():
     with SESSION_REPORT_LOCK:
         if not SESSION_LEDGER.ready_to_report():
             return False
-        if ORDER_ATTEMPTS > ORDER_ACCEPTED + ORDER_REJECTED:
+        if IN_FLIGHT_ORDER_REQUESTS > 0:
             return False
         report = SESSION_LEDGER.build_report()
         if not report:
@@ -866,7 +867,7 @@ def start_scan(manual=False):
 
 
 def execute_signal(signal):
-    global ORDER_ATTEMPTS, ORDER_ACCEPTED, ORDER_REJECTED, LAST_ORDER_STATUS, AUTO_SESSION_ACCEPTED, EMA_MARTINGALE_STATUS
+    global ORDER_ATTEMPTS, ORDER_ACCEPTED, ORDER_REJECTED, IN_FLIGHT_ORDER_REQUESTS, LAST_ORDER_STATUS, AUTO_SESSION_ACCEPTED, EMA_MARTINGALE_STATUS
     if not AUTO_TRADING_ALLOWED or not AUTO_MODE:
         return False
     strategy = str(signal.get("strategy", "B")).upper()
@@ -969,6 +970,7 @@ def execute_signal(signal):
             except queue.Full:
                 pass
     ORDER_ATTEMPTS += 1
+    IN_FLIGHT_ORDER_REQUESTS += 1
     LAST_ORDER_STATUS = f"REQUEST SENT: {display_asset(asset)} {direction.upper()}; awaiting broker confirmation"
     logging.info("ORDER REQUEST attempt=%d strategy=%s asset=%s direction=%s stake=%s expiry=%sm",
                  ORDER_ATTEMPTS, strategy, asset, direction.upper(), money(order_stake), expiry_minutes)
@@ -976,11 +978,13 @@ def execute_signal(signal):
     try:
         status, response = result_queue.get(timeout=ORDER_REQUEST_TIMEOUT)
     except queue.Empty:
+        IN_FLIGHT_ORDER_REQUESTS = max(0, IN_FLIGHT_ORDER_REQUESTS - 1)
         ORDER_REJECTED += 1
         LAST_ORDER_STATUS = f"TIMEOUT: {display_asset(asset)} {direction.upper()}; broker acceptance unknown"
         set_auto(False, "Order request timed out; no retry made")
         telegram_send(f"⚠️ AUTO STOPPED — ORDER RESPONSE TIMED OUT\n{display_asset(asset)} {direction.upper()}\nNo retry was made for this candle. Check the practice account before restarting.")
         return False
+    IN_FLIGHT_ORDER_REQUESTS = max(0, IN_FLIGHT_ORDER_REQUESTS - 1)
     if status == "cancelled":
         logging.info("Order safely cancelled before broker submission: %s", response)
         return False
@@ -1312,7 +1316,7 @@ def process_telegram_update(update):
     elif command in ("STATUS", "/STATUS"):
         telegram_send(status_message())
     elif command in ("/HELP", "HELP"):
-        telegram_send("Strategy buttons: B — Breakout & Retest; M — Momentum 10; E — EMA 20/50 + ADX 14 + RSI 14; F — Precision Fusion X strict confluence\nSTART AUTO — enable PRACTICE trades for the selected strategy\nSTOP AUTO — stop new orders\nSCAN MARKET — report-only scan\nREGULAR PAIRS / OTC PAIRS / BOTH MARKETS — choose market\nSTATUS — scanner status\nSwitching strategy always turns AUTO OFF. One strategy can trade at a time. No win/loss history is recorded.")
+        telegram_send("Strategy buttons: B — Breakout & Retest; M — Momentum 10; E — EMA 20/50 + ADX 14 + RSI 14; F — Precision Fusion X strict confluence\nSTART AUTO — enable PRACTICE trades for the selected strategy\nSTOP AUTO — stop new orders\nSCAN MARKET — report-only scan\nREGULAR PAIRS / OTC PAIRS / BOTH MARKETS — choose market\nSTATUS — scanner status\nSwitching strategy always turns AUTO OFF. One strategy can trade at a time. A broker-confirmed session P/L report is sent when AUTO ends.")
     else:
         telegram_send("Unknown command. Use B, M, E, F, START AUTO, STOP AUTO, SCAN MARKET, REGULAR PAIRS, OTC PAIRS, BOTH MARKETS, STATUS, or /HELP.")
 
