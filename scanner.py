@@ -1390,6 +1390,8 @@ def main():
                     break
                 if AUTO_MODE:
                     execute_signal(fresh_signal)
+                send_session_report_if_ready()
+            send_session_report_if_ready()
             while True:
                 try:
                     completed = SCAN_RESULTS_QUEUE.get_nowait()
