@@ -11,6 +11,7 @@ from broker_results import get_binary_option_net_profit
 from ema_martingale import stake_for_step, next_step_after_result, required_balance_from_step, MAX_STEPS
 from momentum_strategy import calculate_signal as calculate_momentum_signal
 from ema_strategy import calculate_signal as calculate_ema_signal
+from session_reporting import SessionLedger
 from fusion_strategy import calculate_signal as calculate_fusion_signal
 import base64, json
 
@@ -88,6 +89,8 @@ ORDER_ATTEMPTS = ORDER_ACCEPTED = ORDER_REJECTED = 0
 AUTO_SESSION_ACCEPTED = 0
 AUTO_SESSION_GENERATION = 0
 AUTO_STOP_REASON = "Not stopped in this run"
+SESSION_LEDGER = SessionLedger()
+SESSION_REPORT_LOCK = threading.Lock()
 LAST_ORDER_STATUS = "No order attempt yet"
 EMA_MARTINGALE_STATUS = "READY — next EMA trade $1"
 
@@ -166,6 +169,24 @@ def telegram_send(message, keyboard=True):
         return True
     except Exception as exc:
         logging.warning("Telegram send failed: %s", exc)
+        return False
+
+
+def send_session_report_if_ready():
+    """Send one final report after accepted orders are resolved or marked unknown."""
+    with SESSION_REPORT_LOCK:
+        if not SESSION_LEDGER.ready_to_report():
+            return False
+        if ORDER_ATTEMPTS > ORDER_ACCEPTED + ORDER_REJECTED:
+            return False
+        report = SESSION_LEDGER.build_report()
+        if not report:
+            return False
+        if telegram_send(report):
+            SESSION_LEDGER.mark_report_sent()
+            logging.info("AUTO session report sent to Telegram.")
+            return True
+        logging.warning("AUTO session report could not be delivered; it remains eligible for retry.")
         return False
 
 
@@ -1011,6 +1032,9 @@ def execute_signal(signal):
     accepted_at = time.time()
     ORDER_ACCEPTED += 1
     AUTO_SESSION_ACCEPTED += 1
+    SESSION_LEDGER.record_accepted(order_id, order_stake, strategy)
+    if SESSION_LEDGER.ended and strategy != "E":
+        SESSION_LEDGER.mark_unconfirmed(order_id)
     LAST_ORDER_STATUS = f"ACCEPTED: {display_asset(asset)} {direction.upper()} — order {order_id}"
     with STATE_LOCK:
         TRADE_EXPOSURE.register(order_id, asset, direction, accepted_at,
@@ -1039,14 +1063,18 @@ def execute_signal(signal):
             )
         except Exception as exc:
             EMA_MARTINGALE_STATUS = f"PAUSED — result unverified for order {order_id}"
+            SESSION_LEDGER.mark_unconfirmed(order_id)
             LAST_ORDER_STATUS = f"RESULT UNVERIFIED: order {order_id}; no martingale retry"
             set_auto(False, "EMA outcome could not be verified; martingale stopped safely")
             telegram_send(f"🛑 EMA MARTINGALE PAUSED\nOrder {order_id} result could not be verified.\nNo $2/$4 follow-up will be placed. AUTO is OFF.\nReason: {str(exc)[:180]}")
+            send_session_report_if_ready()
             return True
         outcome = classify_profit(net_profit)
+        SESSION_LEDGER.record_result(order_id, net_profit)
         with STATE_LOCK:
             TRADE_EXPOSURE.complete(order_id)
         LAST_ORDER_STATUS = f"RESULT CONFIRMED: {outcome} on order {order_id} (net {money(net_profit)})"
+        send_session_report_if_ready()
         next_step = next_step_after_result(outcome, martingale_step)
         if outcome == "LOSS" and next_step is not None:
             # The session cap blocks fresh sequences, never a follow-up belonging
@@ -1075,7 +1103,12 @@ def execute_signal(signal):
 def set_auto(enabled, reason=""):
     global AUTO_MODE, AUTO_SESSION_GENERATION, AUTO_STOP_REASON
     enabled = bool(enabled)
+    transitioned_off = False
     with STATE_LOCK:
+        if enabled and not AUTO_MODE:
+            if not SESSION_LEDGER.start():
+                logging.warning("AUTO start refused: previous session report is still awaiting a broker result.")
+                return False
         if enabled != AUTO_MODE:
             AUTO_SESSION_GENERATION += 1
         clear_pending_execution_queue()
@@ -1083,10 +1116,15 @@ def set_auto(enabled, reason=""):
             AUTO_STOP_REASON = "None — AUTO is ON"
         else:
             AUTO_STOP_REASON = str(reason or "Stopped manually")[:240]
+            transitioned_off = AUTO_MODE
         AUTO_MODE = enabled
+        if transitioned_off:
+            SESSION_LEDGER.end(AUTO_STOP_REASON)
     logging.info("AUTO mode %s: %s (session generation=%d)",
                  "ON" if enabled else "OFF", reason or "manual",
                  AUTO_SESSION_GENERATION)
+    if transitioned_off:
+        send_session_report_if_ready()
     return True
 
 
@@ -1211,6 +1249,7 @@ def status_message():
             f"Last order: {LAST_ORDER_STATUS}\n"
             f"Open trades: {TRADE_EXPOSURE.count(time.time())}/{MAX_CONCURRENT_TRADES}\n"
             f"Trades this AUTO session: {AUTO_SESSION_ACCEPTED}/{MAX_TRADES_PER_AUTO_SESSION}\n"
+            f"Session P/L (confirmed): {money(SESSION_LEDGER.net_profit)} | W/L/D: {SESSION_LEDGER.wins}/{SESSION_LEDGER.losses}/{SESSION_LEDGER.draws}\n"
 
             f"Discovered assets: {LAST_ASSET_COUNT}\nLast scan: {age}\n"
             f"Last batch: {LAST_SCAN_SCANNED}/{LAST_SCAN_TOTAL}\nCandidates: {LAST_SCAN_CANDIDATES}\n"
@@ -1245,9 +1284,11 @@ def process_telegram_update(update):
             telegram_send("AUTO refused: connection or PRACTICE verification failed. Check STATUS; AUTO remains OFF.")
         else:
             if not AUTO_MODE:
+                if not set_auto(True, "Manual START AUTO command"):
+                    telegram_send("⏳ Previous AUTO session is still waiting for its broker result/report. Please wait before starting another session.")
+                    return
                 AUTO_SESSION_ACCEPTED = 0
-            set_auto(True, "Manual START AUTO command")
-            telegram_send(f"🟢 AUTO MODE ON\nSelected strategy: {strategy_label()}\nPRACTICE verified. {money(STAKE)} stake / {strategy_expiry()}-minute expiry.\nSession limit: {MAX_TRADES_PER_AUTO_SESSION} accepted trades. Max concurrent open trades: {MAX_CONCURRENT_TRADES}; one open trade per asset.\nOnly the selected strategy can submit orders. No trade outcomes are recorded.")
+            telegram_send(f"🟢 AUTO MODE ON\nSelected strategy: {strategy_label()}\nPRACTICE verified. {money(STAKE)} stake / {strategy_expiry()}-minute expiry.\nSession limit: {MAX_TRADES_PER_AUTO_SESSION} accepted trades. Max concurrent open trades: {MAX_CONCURRENT_TRADES}; one open trade per asset.\nOnly the selected strategy can submit orders. A broker-confirmed P/L report is sent when AUTO ends.")
     elif command in ("/STOP", "STOP AUTO"):
         set_auto(False, "Stopped manually")
         telegram_send("🔴 AUTO MODE OFF. Pending signals were cleared; no queued setup will replay after a restart.")
