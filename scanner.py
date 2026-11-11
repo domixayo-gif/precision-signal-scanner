@@ -11,7 +11,7 @@ from broker_results import get_binary_option_net_profit
 from ema_martingale import next_step_after_result, MAX_STEPS
 from payout_recovery import broker_turbo_payout, stake_for_recovery, StakeLimitExceeded, MAX_SINGLE_STAKE
 from momentum_strategy import calculate_signal as calculate_momentum_signal
-from ema_strategy import calculate_signal as calculate_ema_signal
+from ema_strategy import calculate_signal as calculate_ema_signal, current_trend_direction as ema_current_trend_direction
 from session_reporting import SessionLedger
 from fusion_strategy import calculate_signal as calculate_fusion_signal
 import base64, json
@@ -908,6 +908,48 @@ def execute_signal(signal):
         return False
     if not asset or direction not in ("call", "put") or (LAST_SIGNAL_BY_ASSET.get(signal_key) == str(candle_time) and not martingale_followup):
         return False
+
+    # Re-check the live closed-candle trend immediately before every EMA order.
+    # Recovery orders keep their original direction only while EMA/DI/CHOP and
+    # the closed 5-minute trend still agree; never force a stale opposite-side
+    # martingale order after the market regime has changed.
+    if strategy == "E":
+        guard_1m = fetch_candles(asset, timeframe=CANDLE_SECONDS,
+                                 count=STRATEGY_SETTINGS["E"]["lookback"])
+        guard_5m = fetch_candles(asset, timeframe=300, count=100)
+        guard_now = int(time.time())
+        closed_1m = ([c for c in guard_1m
+                      if int(c.get("from") or 0) + CANDLE_SECONDS <= guard_now]
+                     if isinstance(guard_1m, list) else [])
+        closed_5m = ([c for c in guard_5m
+                      if int(c.get("from") or 0) + 300 <= guard_now]
+                     if isinstance(guard_5m, list) else [])
+        verified_direction = ema_current_trend_direction(closed_1m, closed_5m)
+        if verified_direction != direction:
+            reason = (f"fresh closed-candle trend is {verified_direction or 'unclear/opposing'}; "
+                      f"queued direction was {direction}")
+            logging.warning("EMA execution direction guard blocked %s %s: %s",
+                            asset, direction.upper(), reason)
+            if martingale_followup:
+                EMA_MARTINGALE_STATUS = "PAUSED — current trend no longer confirms recovery direction"
+                set_auto(False, "EMA recovery direction no longer agrees with current trend")
+                telegram_send(
+                    f"🛑 EMA RECOVERY PAUSED — DIRECTION GUARD\n{display_asset(asset)}\n"
+                    f"Previous recovery direction: {direction.upper()}\n"
+                    f"Fresh trend check: {verified_direction or 'UNCLEAR / OPPOSING'}\n"
+                    "No opposite-trend recovery order was sent. AUTO is OFF; "
+                    "the existing EMA strategy and recovery sizing are unchanged."
+                )
+            else:
+                LAST_SIGNAL_BY_ASSET[signal_key] = str(candle_time)
+                telegram_send(
+                    f"⚪ EMA ORDER BLOCKED — FRESH DIRECTION CHECK\n{display_asset(asset)}\n"
+                    f"Queued direction: {direction.upper()}\n"
+                    f"Fresh trend check: {verified_direction or 'UNCLEAR / OPPOSING'}\n"
+                    "No order was sent. The scanner will wait for another valid EMA setup."
+                )
+            return False
+
     with STATE_LOCK:
         allowed, exposure_reason = TRADE_EXPOSURE.can_open(asset, time.time())
         if not allowed:
