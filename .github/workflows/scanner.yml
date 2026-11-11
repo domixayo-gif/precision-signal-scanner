@@ -8,6 +8,8 @@ on:
       - "scanner.py"
       - "session_reporting.py"
       - "test_session_reporting.py"
+      - "payout_recovery.py"
+      - "test_payout_recovery.py"
       - "asset_execution.py"
       - "test_asset_execution.py"
       - "breakout_retest_filter.py"
@@ -91,8 +93,8 @@ jobs:
 
       - name: Check scanner
         run: |
-          python -m py_compile scanner.py session_reporting.py asset_execution.py breakout_retest_filter.py trend_filter.py execution_guard.py broker_results.py order_expiry.py momentum_strategy.py ema_strategy.py ema_martingale.py fusion_strategy.py
-          python -m unittest test_asset_execution test_breakout_retest_filter test_trend_filter test_execution_guard test_broker_results test_order_expiry test_momentum_strategy test_ema_strategy test_ema_martingale test_fusion_strategy test_session_reporting -v
+          python -m py_compile scanner.py session_reporting.py payout_recovery.py asset_execution.py breakout_retest_filter.py trend_filter.py execution_guard.py broker_results.py order_expiry.py momentum_strategy.py ema_strategy.py ema_martingale.py fusion_strategy.py
+          python -m unittest test_asset_execution test_breakout_retest_filter test_trend_filter test_execution_guard test_broker_results test_order_expiry test_momentum_strategy test_ema_strategy test_ema_martingale test_fusion_strategy test_session_reporting test_payout_recovery -v
 
       - name: Cancel older scanner workflow instances
         if: github.event_name != 'pull_request'
