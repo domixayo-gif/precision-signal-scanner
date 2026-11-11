@@ -104,7 +104,7 @@ class SessionLedger:
             f"Wins: {self.wins} | Losses: {self.losses} | Draws: {self.draws}",
             f"Total won: +${self.total_profit:.2f}",
             f"Total lost: -${self.total_loss:.2f}",
-            f"NET BOT P/L: {'+' if self.net_profit >= 0 else ''}${self.net_profit:.2f}",
+            f"NET BOT P/L: {'+' if self.net_profit >= 0 else '-'}${abs(self.net_profit):.2f}",
             f"Unconfirmed outcomes: {unknown + pending}",
         ]
         if pending:
