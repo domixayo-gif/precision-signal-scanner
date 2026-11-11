@@ -164,5 +164,26 @@ class EmaStrategyTests(unittest.TestCase):
         self.assertIn("unordered candle timestamps", reason)
 
 
+    def test_current_trend_direction_confirms_bullish_and_bearish_context(self):
+        from ema_strategy import current_trend_direction
+        self.assertEqual(
+            current_trend_direction(trending_candles("up"), higher_timeframe_candles("up")),
+            "call",
+        )
+        self.assertEqual(
+            current_trend_direction(trending_candles("down"), higher_timeframe_candles("down")),
+            "put",
+        )
+
+    def test_current_trend_direction_blocks_opposing_five_minute_context(self):
+        from ema_strategy import current_trend_direction
+        self.assertIsNone(
+            current_trend_direction(trending_candles("up"), higher_timeframe_candles("down"))
+        )
+        self.assertIsNone(
+            current_trend_direction(trending_candles("down"), higher_timeframe_candles("up"))
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
