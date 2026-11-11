@@ -38,6 +38,8 @@ on:
       - "scanner.py"
       - "session_reporting.py"
       - "test_session_reporting.py"
+      - "payout_recovery.py"
+      - "test_payout_recovery.py"
       - "breakout_retest_filter.py"
       - "execution_guard.py"
       - "momentum_strategy.py"
