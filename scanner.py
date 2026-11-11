@@ -8,9 +8,11 @@ from breakout_retest_filter import build_entry_signal
 from trend_filter import classify_trend, is_strong_trend
 from execution_guard import TradeExposureGuard, classify_profit
 from broker_results import get_binary_option_net_profit
-from ema_martingale import stake_for_step, next_step_after_result, required_balance_from_step, MAX_STEPS
+from ema_martingale import next_step_after_result, MAX_STEPS
+from payout_recovery import broker_turbo_payout, stake_for_recovery, StakeLimitExceeded, MAX_SINGLE_STAKE
 from momentum_strategy import calculate_signal as calculate_momentum_signal
 from ema_strategy import calculate_signal as calculate_ema_signal
+from session_reporting import SessionLedger
 from fusion_strategy import calculate_signal as calculate_fusion_signal
 import base64, json
 
@@ -85,9 +87,16 @@ LAST_TURBO_INIT_INFO = {}
 TRADE_EXPOSURE = TradeExposureGuard(max_open_trades=MAX_CONCURRENT_TRADES,
                                      expiry_seconds=2 * 60, expiry_grace_seconds=10)
 ORDER_ATTEMPTS = ORDER_ACCEPTED = ORDER_REJECTED = 0
+IN_FLIGHT_ORDER_REQUESTS = 0
 AUTO_SESSION_ACCEPTED = 0
+AUTO_SESSION_GENERATION = 0
+AUTO_STOP_REASON = "Not stopped in this run"
+SESSION_LEDGER = SessionLedger()
+SESSION_REPORT_LOCK = threading.Lock()
 LAST_ORDER_STATUS = "No order attempt yet"
-EMA_MARTINGALE_STATUS = "READY — next EMA trade $1"
+EMA_MARTINGALE_STATUS = "READY — payout-adjusted recovery; $2 sequence target"
+EMA_SEQUENCE_LOSSES = 0.0
+EMA_LAST_PAYOUT = None
 
 
 def utc_now():
@@ -107,6 +116,32 @@ def safe_float(value, default=0.0):
         return number if math.isfinite(number) else default
     except Exception:
         return default
+
+
+def clear_pending_execution_queue():
+    """Discard queued signals so a stopped AUTO session cannot replay them."""
+    cleared = 0
+    while True:
+        try:
+            EXECUTION_QUEUE.get_nowait()
+            cleared += 1
+        except queue.Empty:
+            break
+    if cleared:
+        logging.info("Cleared %d pending execution signal(s).", cleared)
+    return cleared
+
+
+def queue_auto_signal(signal, expected_generation=None):
+    """Queue only a signal produced during the current AUTO session."""
+    with STATE_LOCK:
+        if (not AUTO_MODE or expected_generation is None
+                or expected_generation != AUTO_SESSION_GENERATION):
+            return False
+        queued = dict(signal)
+        queued["_auto_generation"] = expected_generation
+        EXECUTION_QUEUE.put(queued)
+        return True
 
 
 def client_api_lock(client):
@@ -138,6 +173,26 @@ def telegram_send(message, keyboard=True):
         return True
     except Exception as exc:
         logging.warning("Telegram send failed: %s", exc)
+        return False
+
+
+def send_session_report_if_ready():
+    """Send one final report after accepted orders are resolved or marked unknown."""
+    with SESSION_REPORT_LOCK:
+        with STATE_LOCK:
+            if not SESSION_LEDGER.ready_to_report():
+                return False
+            if IN_FLIGHT_ORDER_REQUESTS > 0:
+                return False
+            report = SESSION_LEDGER.build_report()
+        if not report:
+            return False
+        if telegram_send(report):
+            with STATE_LOCK:
+                SESSION_LEDGER.mark_report_sent()
+            logging.info("AUTO session report sent to Telegram.")
+            return True
+        logging.warning("AUTO session report could not be delivered; it remains eligible for retry.")
         return False
 
 
@@ -191,7 +246,7 @@ def connect_iq(timeout=40):
     IQ = result[1]
     balance = result[2]
     logging.info("Connected in PRACTICE. Balance %s", money(balance))
-    telegram_send(f"🟢 IQ OPTION CONNECTED\nAccount: PRACTICE ONLY\nBalance: {money(balance)}\nSelected strategy: {ACTIVE_STRATEGY} — {STRATEGY_SETTINGS[ACTIVE_STRATEGY]['name']}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nStake: $1\nManual scans never place trades.")
+    telegram_send(f"🟢 IQ OPTION CONNECTED\nAccount: PRACTICE ONLY\nBalance: {money(balance)}\nSelected strategy: {ACTIVE_STRATEGY} — {STRATEGY_SETTINGS[ACTIVE_STRATEGY]['name']}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nEMA: live payout-adjusted recovery; +$2 sequence target; $33.74 per-trade cap; +$10 net target per AUTO run.\nManual scans never place trades.")
 
 def practice_mode_verified(timeout=15):
     client = IQ
@@ -485,14 +540,14 @@ def send_signal(signal, manual=False):
         f"{'MANUAL SCAN — no trade placed.' if manual else 'AUTO MODE — PRACTICE order only.'}"
     )
 
-def scan_market(manual=False, auto_eligible=False, strategy=None, generation=None):
+def scan_market(manual=False, auto_eligible=False, strategy=None, generation=None, auto_generation=None):
     global SCAN_IN_PROGRESS, ASSET_CURSOR, LAST_ASSET_COUNT, LAST_SCAN_FINISHED
     global LAST_SCAN_CANDIDATES, LAST_SCAN_SCANNED, LAST_SCAN_TOTAL, LAST_SCAN_TIMED_OUT
     global LAST_SCAN_ERROR, LAST_REJECTIONS
     strategy = str(strategy or ACTIVE_STRATEGY).upper()
     generation = STRATEGY_GENERATION if generation is None else int(generation)
     if strategy in ("M", "E", "F"):
-        return scan_indicator_market(manual, auto_eligible, strategy, generation)
+        return scan_indicator_market(manual, auto_eligible, strategy, generation, auto_generation)
     results, rejected = [], {}
     scanned = attempted = total = 0
     timed_out, error_text = False, ""
@@ -609,7 +664,7 @@ def scan_market(manual=False, auto_eligible=False, strategy=None, generation=Non
                                     and generation == STRATEGY_GENERATION):
                                 # Submit fresh setups through the main loop immediately,
                                 # without waiting for the remaining symbols in this batch.
-                                EXECUTION_QUEUE.put(candidate)
+                                queue_auto_signal(candidate, auto_generation)
                                 logging.info("Fresh first-retest setup queued for immediate execution: %s %s (5m trend=%s)",
                                              asset, candidate["direction"].upper(), trend)
             if index % PROGRESS_EVERY == 0:
@@ -668,7 +723,7 @@ def send_indicator_signal(signal, manual=False):
     )
 
 
-def scan_indicator_market(manual, auto_eligible, strategy, generation):
+def scan_indicator_market(manual, auto_eligible, strategy, generation, auto_generation=None):
     global SCAN_IN_PROGRESS, ASSET_CURSOR, LAST_ASSET_COUNT, LAST_SCAN_FINISHED, LAST_SCAN_CANDIDATES
     global LAST_SCAN_SCANNED, LAST_SCAN_TOTAL, LAST_SCAN_TIMED_OUT, LAST_SCAN_ERROR, LAST_REJECTIONS
     settings = STRATEGY_SETTINGS[strategy]
@@ -762,7 +817,7 @@ def scan_indicator_market(manual, auto_eligible, strategy, generation):
                     results.append(signal)
                     if (auto_eligible and AUTO_MODE and strategy == ACTIVE_STRATEGY
                             and generation == STRATEGY_GENERATION):
-                        EXECUTION_QUEUE.put(signal)
+                        queue_auto_signal(signal, auto_generation)
                         logging.info("%s signal queued for immediate PRACTICE execution: %s %s",
                                      strategy, asset, signal["direction"].upper())
                 else:
@@ -805,21 +860,27 @@ def start_scan(manual=False):
         SCAN_IN_PROGRESS = True
         LAST_SCAN_STARTED = time.time()
         eligible = bool(AUTO_MODE and not manual)
+        auto_generation = AUTO_SESSION_GENERATION if eligible else None
         strategy = ACTIVE_STRATEGY
         generation = STRATEGY_GENERATION
     threading.Thread(target=scan_market,
                      kwargs={"manual": manual, "auto_eligible": eligible,
-                             "strategy": strategy, "generation": generation},
+                             "strategy": strategy, "generation": generation,
+                             "auto_generation": auto_generation},
                      daemon=True, name=f"market-scan-{strategy}").start()
     return True
 
 
 def execute_signal(signal):
-    global ORDER_ATTEMPTS, ORDER_ACCEPTED, ORDER_REJECTED, LAST_ORDER_STATUS, AUTO_SESSION_ACCEPTED, EMA_MARTINGALE_STATUS
+    global ORDER_ATTEMPTS, ORDER_ACCEPTED, ORDER_REJECTED, IN_FLIGHT_ORDER_REQUESTS, LAST_ORDER_STATUS, AUTO_SESSION_ACCEPTED, EMA_MARTINGALE_STATUS, EMA_SEQUENCE_LOSSES, EMA_LAST_PAYOUT
     if not AUTO_TRADING_ALLOWED or not AUTO_MODE:
         return False
     strategy = str(signal.get("strategy", "B")).upper()
     generation = int(signal.get("generation", STRATEGY_GENERATION))
+    auto_generation = int(signal.get("_auto_generation", AUTO_SESSION_GENERATION))
+    if auto_generation != AUTO_SESSION_GENERATION:
+        logging.info("Skipping queued signal from an older AUTO session generation.")
+        return False
     martingale_followup = bool(signal.get("_martingale_followup")) and strategy == "E"
     if AUTO_SESSION_ACCEPTED >= MAX_TRADES_PER_AUTO_SESSION and not martingale_followup:
         set_auto(False, "20 accepted trades reached; no active EMA sequence remains")
@@ -840,7 +901,8 @@ def execute_signal(signal):
     max_age = int(signal.get("max_signal_age_seconds", MAX_SIGNAL_AGE_SECONDS))
     signal_key = f"{strategy}:{asset}"
     martingale_step = int(signal.get("_martingale_step", 1)) if strategy == "E" else 1
-    order_stake = stake_for_step(martingale_step) if strategy == "E" else STAKE
+    order_stake = STAKE
+    current_payout = None
     if (age > max_age or age < -5) and not martingale_followup:
         logging.info("Skipping stale %s signal %s (age %.1fs)", strategy, asset, age)
         return False
@@ -859,14 +921,32 @@ def execute_signal(signal):
             return False
     client = IQ
     if strategy == "E":
+        broker_asset_for_payout = BROKER_ACTIVE_NAMES.get(asset)
+        try:
+            if not broker_asset_for_payout:
+                raise RuntimeError("No exact broker asset mapping is available for payout lookup.")
+            with client_api_lock(client):
+                current_payout = broker_turbo_payout(client, broker_asset_for_payout)
+            order_stake = stake_for_recovery(EMA_SEQUENCE_LOSSES, current_payout)
+            EMA_LAST_PAYOUT = current_payout
+        except StakeLimitExceeded as exc:
+            EMA_MARTINGALE_STATUS = f"STOPPED — {exc}"
+            set_auto(False, "EMA recovery stake exceeded the $33.74 per-trade cap")
+            telegram_send(f"🛑 EMA RECOVERY STOPPED\n{exc}\nNo order was placed; the $2 target will not be reduced to force a trade.")
+            return False
+        except Exception as exc:
+            EMA_MARTINGALE_STATUS = "PAUSED — current broker payout unavailable; no order placed"
+            set_auto(False, "Current TURBO payout could not be verified")
+            telegram_send(f"🛑 EMA RECOVERY PAUSED\nCould not verify current TURBO payout for {display_asset(asset)}.\nNo order was placed.\nReason: {str(exc)[:180]}")
+            return False
         try:
             available_balance = safe_float(client.get_balance(), 0.0)
         except Exception:
             available_balance = 0.0
-        if available_balance < required_balance_from_step(martingale_step):
-            EMA_MARTINGALE_STATUS = "PAUSED — insufficient balance for remaining sequence"
-            set_auto(False, "Insufficient PRACTICE balance for EMA martingale")
-            telegram_send("EMA martingale paused: insufficient PRACTICE balance for remaining steps; no order placed.")
+        if available_balance < order_stake:
+            EMA_MARTINGALE_STATUS = f"PAUSED — balance below required stake {money(order_stake)}"
+            set_auto(False, "Insufficient PRACTICE balance for calculated EMA stake")
+            telegram_send(f"EMA recovery paused: PRACTICE balance is below calculated {money(order_stake)} stake; no order placed.")
             return False
     # Mark this candle before sending the request, so a timed-out request is never retried for the same candle.
     LAST_SIGNAL_BY_ASSET[signal_key] = str(candle_time)
@@ -877,8 +957,8 @@ def execute_signal(signal):
                 result_queue.put(("safety", "PRACTICE verification failed"))
                 return
             with STATE_LOCK:
-                if (not AUTO_MODE or strategy != ACTIVE_STRATEGY
-                        or generation != STRATEGY_GENERATION):
+                if (not AUTO_MODE or auto_generation != AUTO_SESSION_GENERATION
+                        or strategy != ACTIVE_STRATEGY or generation != STRATEGY_GENERATION):
                     result_queue.put(("cancelled", "strategy changed before order submission"))
                     return
                 with client_api_lock(client):
@@ -914,6 +994,7 @@ def execute_signal(signal):
             except queue.Full:
                 pass
     ORDER_ATTEMPTS += 1
+    IN_FLIGHT_ORDER_REQUESTS += 1
     LAST_ORDER_STATUS = f"REQUEST SENT: {display_asset(asset)} {direction.upper()}; awaiting broker confirmation"
     logging.info("ORDER REQUEST attempt=%d strategy=%s asset=%s direction=%s stake=%s expiry=%sm",
                  ORDER_ATTEMPTS, strategy, asset, direction.upper(), money(order_stake), expiry_minutes)
@@ -921,11 +1002,15 @@ def execute_signal(signal):
     try:
         status, response = result_queue.get(timeout=ORDER_REQUEST_TIMEOUT)
     except queue.Empty:
+        IN_FLIGHT_ORDER_REQUESTS = max(0, IN_FLIGHT_ORDER_REQUESTS - 1)
         ORDER_REJECTED += 1
+        with STATE_LOCK:
+            SESSION_LEDGER.note_unknown_order_request()
         LAST_ORDER_STATUS = f"TIMEOUT: {display_asset(asset)} {direction.upper()}; broker acceptance unknown"
         set_auto(False, "Order request timed out; no retry made")
         telegram_send(f"⚠️ AUTO STOPPED — ORDER RESPONSE TIMED OUT\n{display_asset(asset)} {direction.upper()}\nNo retry was made for this candle. Check the practice account before restarting.")
         return False
+    IN_FLIGHT_ORDER_REQUESTS = max(0, IN_FLIGHT_ORDER_REQUESTS - 1)
     if status == "cancelled":
         logging.info("Order safely cancelled before broker submission: %s", response)
         return False
@@ -977,16 +1062,21 @@ def execute_signal(signal):
     accepted_at = time.time()
     ORDER_ACCEPTED += 1
     AUTO_SESSION_ACCEPTED += 1
+    with STATE_LOCK:
+        SESSION_LEDGER.record_accepted(order_id, order_stake, strategy)
+        if SESSION_LEDGER.ended and strategy != "E":
+            SESSION_LEDGER.mark_unconfirmed(order_id)
     LAST_ORDER_STATUS = f"ACCEPTED: {display_asset(asset)} {direction.upper()} — order {order_id}"
     with STATE_LOCK:
         TRADE_EXPOSURE.register(order_id, asset, direction, accepted_at,
                                 expiry_seconds=expiry_minutes * 60)
-    step_note = f" | EMA martingale step {martingale_step}/{MAX_STEPS}" if strategy == "E" else ""
+    step_note = f" | EMA recovery attempt {martingale_step}/{MAX_STEPS}" if strategy == "E" else ""
+    payout_note = f" | Current payout: {current_payout * 100:.0f}%" if strategy == "E" else ""
     telegram_send(f"🟡 PRACTICE ORDER ACCEPTED\n{display_asset(asset)} — {direction.upper()}\nOrder ID: {order_id}\n"
-                  f"Strategy: {strategy} | Stake: {money(order_stake)}{step_note} | Expiry: {expiry_minutes} minute(s)\n"
+                  f"Strategy: {strategy} | Stake: {money(order_stake)}{step_note}{payout_note} | Expiry: {expiry_minutes} minute(s)\n"
                   f"Open exposure: {TRADE_EXPOSURE.count(time.time())}/{MAX_CONCURRENT_TRADES}\n"
                   f"Session trades: {AUTO_SESSION_ACCEPTED}/{MAX_TRADES_PER_AUTO_SESSION}\n"
-                  f"EMA outcomes are checked only to manage the requested $1/$2/$4 sequence.")
+                  f"EMA recovery target: +$2 net after recovering confirmed sequence losses; run target: +$10 net.")
     if AUTO_SESSION_ACCEPTED >= MAX_TRADES_PER_AUTO_SESSION and strategy != "E":
         set_auto(False, "20 accepted trades reached for this START AUTO session")
         telegram_send("🛑 AUTO MODE OFF — 20 accepted PRACTICE trades completed in this session.")
@@ -1005,33 +1095,51 @@ def execute_signal(signal):
             )
         except Exception as exc:
             EMA_MARTINGALE_STATUS = f"PAUSED — result unverified for order {order_id}"
+            with STATE_LOCK:
+                SESSION_LEDGER.mark_unconfirmed(order_id)
             LAST_ORDER_STATUS = f"RESULT UNVERIFIED: order {order_id}; no martingale retry"
             set_auto(False, "EMA outcome could not be verified; martingale stopped safely")
-            telegram_send(f"🛑 EMA MARTINGALE PAUSED\nOrder {order_id} result could not be verified.\nNo $2/$4 follow-up will be placed. AUTO is OFF.\nReason: {str(exc)[:180]}")
+            telegram_send(f"🛑 EMA RECOVERY PAUSED\nOrder {order_id} result could not be verified.\nNo recovery follow-up will be placed. AUTO is OFF.\nReason: {str(exc)[:180]}")
+            send_session_report_if_ready()
             return True
         outcome = classify_profit(net_profit)
         with STATE_LOCK:
+            SESSION_LEDGER.record_result(order_id, net_profit)
+            if outcome == "LOSS":
+                EMA_SEQUENCE_LOSSES = round(EMA_SEQUENCE_LOSSES + order_stake, 2)
+            else:
+                EMA_SEQUENCE_LOSSES = 0.0
+        with STATE_LOCK:
             TRADE_EXPOSURE.complete(order_id)
         LAST_ORDER_STATUS = f"RESULT CONFIRMED: {outcome} on order {order_id} (net {money(net_profit)})"
+        if SESSION_LEDGER.net_profit >= 10.00:
+            EMA_SEQUENCE_LOSSES = 0.0
+            EMA_MARTINGALE_STATUS = "TARGET REACHED — +$10 confirmed net; AUTO stopped for this run"
+            set_auto(False, "EMA run target of +$10 confirmed net profit reached")
+            telegram_send("🎯 EMA RUN TARGET REACHED\nConfirmed net P/L is +$10.00 or higher. AUTO is OFF for this run.\nStart AUTO manually for another independent +$10 run.")
+            send_session_report_if_ready()
+            return True
+        send_session_report_if_ready()
         next_step = next_step_after_result(outcome, martingale_step)
         if outcome == "LOSS" and next_step is not None:
             # The session cap blocks fresh sequences, never a follow-up belonging
-            # to an already accepted EMA $1/$2/$4 sequence.
+            # to an already accepted EMA recovery sequence.
             if AUTO_MODE and strategy == ACTIVE_STRATEGY and generation == STRATEGY_GENERATION and practice_mode_verified():
-                next_stake = stake_for_step(next_step)
-                EMA_MARTINGALE_STATUS = f"LOSS CONFIRMED — placing step {next_step}/{MAX_STEPS} at {money(next_stake)} in the same direction"
-                telegram_send(f"🔴 EMA LOSS CONFIRMED\n{display_asset(asset)} — {direction.upper()}\nNext trade: {money(next_stake)} in the SAME direction, without waiting for another signal.\nMartingale step {next_step}/{MAX_STEPS}.")
+                EMA_MARTINGALE_STATUS = f"LOSS CONFIRMED — refreshing broker payout for recovery step {next_step}/{MAX_STEPS}"
+                telegram_send(f"🔴 EMA LOSS CONFIRMED\n{display_asset(asset)} — {direction.upper()}\nNext trade will use a freshly checked broker payout to calculate the recovery stake.\nMartingale step {next_step}/{MAX_STEPS}.")
                 followup = dict(signal)
-                followup.update({"_martingale_followup": True, "_martingale_step": next_step, "_stake": next_stake})
+                followup.update({"_martingale_followup": True, "_martingale_step": next_step})
                 return execute_signal(followup)
-            EMA_MARTINGALE_STATUS = "STOPPED — AUTO off or safety verification failed; next stake remains $1"
-            telegram_send("⚠️ EMA martingale continuation was not placed because AUTO is OFF or PRACTICE verification failed. No trade was forced.")
+            EMA_MARTINGALE_STATUS = "STOPPED — AUTO off or safety verification failed; recovery sequence paused"
+            telegram_send("⚠️ EMA recovery continuation was not placed because AUTO is OFF or PRACTICE verification failed. No trade was forced.")
         elif outcome == "LOSS":
-            EMA_MARTINGALE_STATUS = "3/3 LOSSES — sequence ended; next fresh EMA setup starts at $1"
-            telegram_send("🛑 EMA MARTINGALE SEQUENCE ENDED\nThe $4 third trade also lost. No $8 trade will be placed. The next fresh EMA signal starts a new $1 sequence.")
+            EMA_SEQUENCE_LOSSES = 0.0
+            EMA_MARTINGALE_STATUS = "3/3 LOSSES — recovery sequence ended; no fourth recovery trade"
+            telegram_send("🛑 EMA RECOVERY SEQUENCE ENDED\nThe third attempt also lost. No fourth recovery trade will be placed. The next fresh EMA signal starts a new sequence.")
         else:
-            EMA_MARTINGALE_STATUS = f"{outcome} — sequence reset; next fresh EMA setup starts at $1"
-            telegram_send(f"✅ EMA {outcome}\nOrder {order_id} closed with net {money(net_profit)}. Martingale sequence reset. Next fresh EMA setup starts at $1.")
+            EMA_SEQUENCE_LOSSES = 0.0
+            EMA_MARTINGALE_STATUS = f"{outcome} — recovery sequence reset"
+            telegram_send(f"✅ EMA {outcome}\nOrder {order_id} closed with net {money(net_profit)}. Recovery sequence reset.")
         if AUTO_SESSION_ACCEPTED >= MAX_TRADES_PER_AUTO_SESSION:
             set_auto(False, "session cap reached and the active EMA sequence has finished")
             telegram_send("🛑 AUTO MODE OFF — the 20-trade session cap was reached and the active EMA martingale sequence has now finished. No new sequence will start.")
@@ -1039,9 +1147,32 @@ def execute_signal(signal):
 
 
 def set_auto(enabled, reason=""):
-    global AUTO_MODE
-    AUTO_MODE = bool(enabled)
-    logging.info("AUTO mode %s: %s", "ON" if enabled else "OFF", reason or "manual")
+    global AUTO_MODE, AUTO_SESSION_GENERATION, AUTO_STOP_REASON, EMA_SEQUENCE_LOSSES, EMA_LAST_PAYOUT
+    enabled = bool(enabled)
+    transitioned_off = False
+    with STATE_LOCK:
+        if enabled and not AUTO_MODE:
+            if not SESSION_LEDGER.start():
+                logging.warning("AUTO start refused: previous session report is still awaiting a broker result.")
+                return False
+            EMA_SEQUENCE_LOSSES = 0.0
+            EMA_LAST_PAYOUT = None
+        if enabled != AUTO_MODE:
+            AUTO_SESSION_GENERATION += 1
+        clear_pending_execution_queue()
+        if enabled:
+            AUTO_STOP_REASON = "None — AUTO is ON"
+        else:
+            AUTO_STOP_REASON = str(reason or "Stopped manually")[:240]
+            transitioned_off = AUTO_MODE
+        AUTO_MODE = enabled
+        if transitioned_off:
+            SESSION_LEDGER.end(AUTO_STOP_REASON)
+    logging.info("AUTO mode %s: %s (session generation=%d)",
+                 "ON" if enabled else "OFF", reason or "manual",
+                 AUTO_SESSION_GENERATION)
+    if transitioned_off:
+        send_session_report_if_ready()
     return True
 
 
@@ -1155,8 +1286,10 @@ def status_message():
     return (f"📊 IQ OPTION SCANNER STATUS\nConnection: {'CONNECTED' if connected else 'DISCONNECTED'}\n"
             f"Practice verification: {'OK' if practice else 'NOT VERIFIED'}\nBalance: {balance}\n"
             f"Selected strategy: {strategy_label()}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\n"
-            f"Stake: $1 base | EMA martingale: $1 → $2 → $4 | Expiry: {strategy_expiry()} minute(s)\n"
-            f"EMA martingale status: {EMA_MARTINGALE_STATUS}\n"
+            f"EMA stake: live broker payout | +$2 net per recovery sequence | $33.74 max per trade | +$10 net target per AUTO run | Expiry: {strategy_expiry()} minute(s)\n"
+            f"AUTO state detail: {AUTO_STOP_REASON}\n"
+            f"EMA recovery status: {EMA_MARTINGALE_STATUS}\n"
+            f"EMA confirmed sequence losses: {money(EMA_SEQUENCE_LOSSES)} | Last payout ratio: {EMA_LAST_PAYOUT}\n"
             f"Market selection: {MARKET_MODE}\n"
             f"Last discovery mode: {LAST_ASSET_DISCOVERY_MODE}\n"
             f"Asset discovery: {LAST_ASSET_DIAGNOSTIC}\n"
@@ -1165,6 +1298,7 @@ def status_message():
             f"Last order: {LAST_ORDER_STATUS}\n"
             f"Open trades: {TRADE_EXPOSURE.count(time.time())}/{MAX_CONCURRENT_TRADES}\n"
             f"Trades this AUTO session: {AUTO_SESSION_ACCEPTED}/{MAX_TRADES_PER_AUTO_SESSION}\n"
+            f"Session P/L (confirmed): {money(SESSION_LEDGER.net_profit)} | W/L/D: {SESSION_LEDGER.wins}/{SESSION_LEDGER.losses}/{SESSION_LEDGER.draws}\n"
 
             f"Discovered assets: {LAST_ASSET_COUNT}\nLast scan: {age}\n"
             f"Last batch: {LAST_SCAN_SCANNED}/{LAST_SCAN_TOTAL}\nCandidates: {LAST_SCAN_CANDIDATES}\n"
@@ -1175,7 +1309,7 @@ def status_message():
 
 
 def process_telegram_update(update):
-    global MANUAL_SCAN_REQUESTED, MARKET_MODE, AUTO_SESSION_ACCEPTED
+    global MANUAL_SCAN_REQUESTED, MARKET_MODE, AUTO_SESSION_ACCEPTED, EMA_SEQUENCE_LOSSES
     message = update.get("message") or update.get("callback_query", {}).get("message")
     if not message:
         return
@@ -1199,12 +1333,14 @@ def process_telegram_update(update):
             telegram_send("AUTO refused: connection or PRACTICE verification failed. Check STATUS; AUTO remains OFF.")
         else:
             if not AUTO_MODE:
+                if not set_auto(True, "Manual START AUTO command"):
+                    telegram_send("⏳ Previous AUTO session is still waiting for its broker result/report. Please wait before starting another session.")
+                    return
                 AUTO_SESSION_ACCEPTED = 0
-            set_auto(True)
-            telegram_send(f"🟢 AUTO MODE ON\nSelected strategy: {strategy_label()}\nPRACTICE verified. {money(STAKE)} stake / {strategy_expiry()}-minute expiry.\nSession limit: {MAX_TRADES_PER_AUTO_SESSION} accepted trades. Max concurrent open trades: {MAX_CONCURRENT_TRADES}; one open trade per asset.\nOnly the selected strategy can submit orders. No trade outcomes are recorded.")
+            telegram_send(f"🟢 AUTO MODE ON\nSelected strategy: {strategy_label()}\nPRACTICE verified. EMA uses live payout-adjusted stakes, +$2 net per recovery sequence, $33.74 per-trade cap, and +$10 confirmed net target per run.\nSession limit: {MAX_TRADES_PER_AUTO_SESSION} accepted trades. Max concurrent open trades: {MAX_CONCURRENT_TRADES}; one open trade per asset.\nEach START AUTO begins a fresh independent run; a confirmed P/L report is sent when AUTO ends.")
     elif command in ("/STOP", "STOP AUTO"):
         set_auto(False, "Stopped manually")
-        telegram_send("🔴 AUTO MODE OFF. No new automatic orders will be started.")
+        telegram_send("🔴 AUTO MODE OFF. Pending signals were cleared; no queued setup will replay after a restart.")
     elif command in ("SCAN MARKET", "/SCAN"):
         if not MANUAL_SCAN_REQUESTED and not SCAN_IN_PROGRESS:
             MANUAL_SCAN_REQUESTED = True
@@ -1225,7 +1361,7 @@ def process_telegram_update(update):
     elif command in ("STATUS", "/STATUS"):
         telegram_send(status_message())
     elif command in ("/HELP", "HELP"):
-        telegram_send("Strategy buttons: B — Breakout & Retest; M — Momentum 10; E — EMA 20/50 + ADX 14 + RSI 14; F — Precision Fusion X strict confluence\nSTART AUTO — enable PRACTICE trades for the selected strategy\nSTOP AUTO — stop new orders\nSCAN MARKET — report-only scan\nREGULAR PAIRS / OTC PAIRS / BOTH MARKETS — choose market\nSTATUS — scanner status\nSwitching strategy always turns AUTO OFF. One strategy can trade at a time. No win/loss history is recorded.")
+        telegram_send("Strategy buttons: B — Breakout & Retest; M — Momentum 10; E — EMA 20/50 + ADX 14 + RSI 14; F — Precision Fusion X strict confluence\nSTART AUTO — enable PRACTICE trades for the selected strategy\nSTOP AUTO — stop new orders\nSCAN MARKET — report-only scan\nREGULAR PAIRS / OTC PAIRS / BOTH MARKETS — choose market\nSTATUS — scanner status\nSwitching strategy always turns AUTO OFF. One strategy can trade at a time. A broker-confirmed session P/L report is sent when AUTO ends.")
     else:
         telegram_send("Unknown command. Use B, M, E, F, START AUTO, STOP AUTO, SCAN MARKET, REGULAR PAIRS, OTC PAIRS, BOTH MARKETS, STATUS, or /HELP.")
 
@@ -1285,7 +1421,7 @@ def heartbeat():
 def main():
     global RUNNING, MANUAL_SCAN_REQUESTED
     load_active_strategy()
-    telegram_send(f"🚀 IQ OPTION SCANNER STARTING\nSelected strategy: {strategy_label()}\nPRACTICE-only scanner is connecting. AUTO MODE starts OFF after every GitHub Actions restart; send START AUTO to enable PRACTICE execution.\nChoose B, M, E, or F at any time; switching turns AUTO OFF.\nManual SCAN MARKET sends signals only and never places trades.\nMax open exposure: 3 trades total, 1 per pair. No win/loss history is recorded.")
+    telegram_send(f"🚀 IQ OPTION SCANNER STARTING\nSelected strategy: {strategy_label()}\nPRACTICE-only scanner is connecting. AUTO MODE starts OFF after every GitHub Actions restart; send START AUTO to enable PRACTICE execution.\nChoose B, M, E, or F at any time; switching turns AUTO OFF.\nManual SCAN MARKET sends signals only and never places trades.\nMax open exposure: 3 trades total, 1 per pair. A broker-confirmed session P/L report is sent when AUTO ends.")
     threading.Thread(target=telegram_listener, daemon=True, name="telegram-listener").start()
     while RUNNING:
         try:
@@ -1303,6 +1439,8 @@ def main():
                     break
                 if AUTO_MODE:
                     execute_signal(fresh_signal)
+                send_session_report_if_ready()
+            send_session_report_if_ready()
             while True:
                 try:
                     completed = SCAN_RESULTS_QUEUE.get_nowait()
