@@ -982,6 +982,8 @@ def execute_signal(signal):
     except queue.Empty:
         IN_FLIGHT_ORDER_REQUESTS = max(0, IN_FLIGHT_ORDER_REQUESTS - 1)
         ORDER_REJECTED += 1
+        with STATE_LOCK:
+            SESSION_LEDGER.note_unknown_order_request()
         LAST_ORDER_STATUS = f"TIMEOUT: {display_asset(asset)} {direction.upper()}; broker acceptance unknown"
         set_auto(False, "Order request timed out; no retry made")
         telegram_send(f"⚠️ AUTO STOPPED — ORDER RESPONSE TIMED OUT\n{display_asset(asset)} {direction.upper()}\nNo retry was made for this candle. Check the practice account before restarting.")
