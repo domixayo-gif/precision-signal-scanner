@@ -215,6 +215,49 @@ def _five_minute_direction(candles):
         return None
 
 
+
+def current_trend_direction(candles, candles_5m):
+    """Return the currently confirmed EMA trend direction, without requiring a new pullback.
+
+    Used as a last-moment execution guard, especially before same-direction
+    martingale recovery orders. Returns None when the current regime is weak,
+    choppy, malformed, or disagrees with the closed 5-minute trend.
+    """
+    if not isinstance(candles, list) or len(candles) < MIN_CANDLES:
+        return None
+    if not isinstance(candles_5m, list) or len(candles_5m) < 80:
+        return None
+    try:
+        closes = [float(candle["close"]) for candle in candles]
+        if not all(isfinite(value) and value > 0 for value in closes):
+            return None
+        fast_values = ema_series(closes, EMA_FAST)
+        slow_values = ema_series(closes, EMA_SLOW)
+        fast_now, slow_now = fast_values[-1], slow_values[-1]
+        fast_previous, slow_previous = fast_values[-6], slow_values[-6]
+        directional = _directional_series(candles, ADX_PERIOD)
+        atr_value = atr(candles, ATR_PERIOD)
+        chop_value = choppiness_index(candles, CHOP_PERIOD)
+        if None in (fast_now, slow_now, fast_previous, slow_previous,
+                    directional, atr_value, chop_value):
+            return None
+        plus_di, minus_di, adx_value = directional
+        if adx_value < ADX_MIN or chop_value >= CHOP_MAX:
+            return None
+
+        bullish = (fast_now > slow_now and fast_now > fast_previous
+                   and slow_now >= slow_previous and plus_di > minus_di)
+        bearish = (fast_now < slow_now and fast_now < fast_previous
+                   and slow_now <= slow_previous and minus_di > plus_di)
+        if bullish and _five_minute_direction(candles_5m) == "call":
+            return "call"
+        if bearish and _five_minute_direction(candles_5m) == "put":
+            return "put"
+        return None
+    except (KeyError, TypeError, ValueError, OverflowError, IndexError):
+        return None
+
+
 def calculate_signal(asset, candles, candle_seconds=60, candles_5m=None):
     """Signal only on a fresh EMA20 pullback bounce in a directional market.
 
