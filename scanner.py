@@ -246,7 +246,7 @@ def connect_iq(timeout=40):
     IQ = result[1]
     balance = result[2]
     logging.info("Connected in PRACTICE. Balance %s", money(balance))
-    telegram_send(f"🟢 IQ OPTION CONNECTED\nAccount: PRACTICE ONLY\nBalance: {money(balance)}\nSelected strategy: {ACTIVE_STRATEGY} — {STRATEGY_SETTINGS[ACTIVE_STRATEGY]['name']}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nStake: $1\nManual scans never place trades.")
+    telegram_send(f"🟢 IQ OPTION CONNECTED\nAccount: PRACTICE ONLY\nBalance: {money(balance)}\nSelected strategy: {ACTIVE_STRATEGY} — {STRATEGY_SETTINGS[ACTIVE_STRATEGY]['name']}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nEMA: live payout-adjusted recovery; +$2 sequence target; $33.74 per-trade cap; +$10 net target per AUTO run.\nManual scans never place trades.")
 
 def practice_mode_verified(timeout=15):
     client = IQ
@@ -1124,11 +1124,10 @@ def execute_signal(signal):
             # The session cap blocks fresh sequences, never a follow-up belonging
             # to an already accepted EMA $1/$2/$4 sequence.
             if AUTO_MODE and strategy == ACTIVE_STRATEGY and generation == STRATEGY_GENERATION and practice_mode_verified():
-                next_stake = stake_for_step(next_step)
-                EMA_MARTINGALE_STATUS = f"LOSS CONFIRMED — placing step {next_step}/{MAX_STEPS} at {money(next_stake)} in the same direction"
-                telegram_send(f"🔴 EMA LOSS CONFIRMED\n{display_asset(asset)} — {direction.upper()}\nNext trade: {money(next_stake)} in the SAME direction, without waiting for another signal.\nMartingale step {next_step}/{MAX_STEPS}.")
+                EMA_MARTINGALE_STATUS = f"LOSS CONFIRMED — refreshing broker payout for recovery step {next_step}/{MAX_STEPS}"
+                telegram_send(f"🔴 EMA LOSS CONFIRMED\n{display_asset(asset)} — {direction.upper()}\nNext trade will use a freshly checked broker payout to calculate the recovery stake.\nMartingale step {next_step}/{MAX_STEPS}.")
                 followup = dict(signal)
-                followup.update({"_martingale_followup": True, "_martingale_step": next_step, "_stake": next_stake})
+                followup.update({"_martingale_followup": True, "_martingale_step": next_step})
                 return execute_signal(followup)
             EMA_MARTINGALE_STATUS = "STOPPED — AUTO off or safety verification failed; next stake remains $1"
             telegram_send("⚠️ EMA martingale continuation was not placed because AUTO is OFF or PRACTICE verification failed. No trade was forced.")
