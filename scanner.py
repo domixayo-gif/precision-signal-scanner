@@ -176,15 +176,17 @@ def telegram_send(message, keyboard=True):
 def send_session_report_if_ready():
     """Send one final report after accepted orders are resolved or marked unknown."""
     with SESSION_REPORT_LOCK:
-        if not SESSION_LEDGER.ready_to_report():
-            return False
-        if IN_FLIGHT_ORDER_REQUESTS > 0:
-            return False
-        report = SESSION_LEDGER.build_report()
+        with STATE_LOCK:
+            if not SESSION_LEDGER.ready_to_report():
+                return False
+            if IN_FLIGHT_ORDER_REQUESTS > 0:
+                return False
+            report = SESSION_LEDGER.build_report()
         if not report:
             return False
         if telegram_send(report):
-            SESSION_LEDGER.mark_report_sent()
+            with STATE_LOCK:
+                SESSION_LEDGER.mark_report_sent()
             logging.info("AUTO session report sent to Telegram.")
             return True
         logging.warning("AUTO session report could not be delivered; it remains eligible for retry.")
@@ -1036,9 +1038,10 @@ def execute_signal(signal):
     accepted_at = time.time()
     ORDER_ACCEPTED += 1
     AUTO_SESSION_ACCEPTED += 1
-    SESSION_LEDGER.record_accepted(order_id, order_stake, strategy)
-    if SESSION_LEDGER.ended and strategy != "E":
-        SESSION_LEDGER.mark_unconfirmed(order_id)
+    with STATE_LOCK:
+        SESSION_LEDGER.record_accepted(order_id, order_stake, strategy)
+        if SESSION_LEDGER.ended and strategy != "E":
+            SESSION_LEDGER.mark_unconfirmed(order_id)
     LAST_ORDER_STATUS = f"ACCEPTED: {display_asset(asset)} {direction.upper()} — order {order_id}"
     with STATE_LOCK:
         TRADE_EXPOSURE.register(order_id, asset, direction, accepted_at,
@@ -1067,14 +1070,16 @@ def execute_signal(signal):
             )
         except Exception as exc:
             EMA_MARTINGALE_STATUS = f"PAUSED — result unverified for order {order_id}"
-            SESSION_LEDGER.mark_unconfirmed(order_id)
+            with STATE_LOCK:
+                SESSION_LEDGER.mark_unconfirmed(order_id)
             LAST_ORDER_STATUS = f"RESULT UNVERIFIED: order {order_id}; no martingale retry"
             set_auto(False, "EMA outcome could not be verified; martingale stopped safely")
             telegram_send(f"🛑 EMA MARTINGALE PAUSED\nOrder {order_id} result could not be verified.\nNo $2/$4 follow-up will be placed. AUTO is OFF.\nReason: {str(exc)[:180]}")
             send_session_report_if_ready()
             return True
         outcome = classify_profit(net_profit)
-        SESSION_LEDGER.record_result(order_id, net_profit)
+        with STATE_LOCK:
+            SESSION_LEDGER.record_result(order_id, net_profit)
         with STATE_LOCK:
             TRADE_EXPOSURE.complete(order_id)
         LAST_ORDER_STATUS = f"RESULT CONFIRMED: {outcome} on order {order_id} (net {money(net_profit)})"
@@ -1376,7 +1381,7 @@ def heartbeat():
 def main():
     global RUNNING, MANUAL_SCAN_REQUESTED
     load_active_strategy()
-    telegram_send(f"🚀 IQ OPTION SCANNER STARTING\nSelected strategy: {strategy_label()}\nPRACTICE-only scanner is connecting. AUTO MODE starts OFF after every GitHub Actions restart; send START AUTO to enable PRACTICE execution.\nChoose B, M, E, or F at any time; switching turns AUTO OFF.\nManual SCAN MARKET sends signals only and never places trades.\nMax open exposure: 3 trades total, 1 per pair. No win/loss history is recorded.")
+    telegram_send(f"🚀 IQ OPTION SCANNER STARTING\nSelected strategy: {strategy_label()}\nPRACTICE-only scanner is connecting. AUTO MODE starts OFF after every GitHub Actions restart; send START AUTO to enable PRACTICE execution.\nChoose B, M, E, or F at any time; switching turns AUTO OFF.\nManual SCAN MARKET sends signals only and never places trades.\nMax open exposure: 3 trades total, 1 per pair. A broker-confirmed session P/L report is sent when AUTO ends.")
     threading.Thread(target=telegram_listener, daemon=True, name="telegram-listener").start()
     while RUNNING:
         try:
