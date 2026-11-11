@@ -1070,12 +1070,13 @@ def execute_signal(signal):
     with STATE_LOCK:
         TRADE_EXPOSURE.register(order_id, asset, direction, accepted_at,
                                 expiry_seconds=expiry_minutes * 60)
-    step_note = f" | EMA martingale step {martingale_step}/{MAX_STEPS}" if strategy == "E" else ""
+    step_note = f" | EMA recovery attempt {martingale_step}/{MAX_STEPS}" if strategy == "E" else ""
+    payout_note = f" | Current payout: {current_payout * 100:.0f}%" if strategy == "E" else ""
     telegram_send(f"🟡 PRACTICE ORDER ACCEPTED\n{display_asset(asset)} — {direction.upper()}\nOrder ID: {order_id}\n"
-                  f"Strategy: {strategy} | Stake: {money(order_stake)}{step_note} | Expiry: {expiry_minutes} minute(s)\n"
+                  f"Strategy: {strategy} | Stake: {money(order_stake)}{step_note}{payout_note} | Expiry: {expiry_minutes} minute(s)\n"
                   f"Open exposure: {TRADE_EXPOSURE.count(time.time())}/{MAX_CONCURRENT_TRADES}\n"
                   f"Session trades: {AUTO_SESSION_ACCEPTED}/{MAX_TRADES_PER_AUTO_SESSION}\n"
-                  f"EMA outcomes are checked only to manage the requested $1/$2/$4 sequence.")
+                  f"EMA recovery target: +$2 net after recovering confirmed sequence losses; run target: +$10 net.")
     if AUTO_SESSION_ACCEPTED >= MAX_TRADES_PER_AUTO_SESSION and strategy != "E":
         set_auto(False, "20 accepted trades reached for this START AUTO session")
         telegram_send("🛑 AUTO MODE OFF — 20 accepted PRACTICE trades completed in this session.")
@@ -1098,7 +1099,7 @@ def execute_signal(signal):
                 SESSION_LEDGER.mark_unconfirmed(order_id)
             LAST_ORDER_STATUS = f"RESULT UNVERIFIED: order {order_id}; no martingale retry"
             set_auto(False, "EMA outcome could not be verified; martingale stopped safely")
-            telegram_send(f"🛑 EMA MARTINGALE PAUSED\nOrder {order_id} result could not be verified.\nNo $2/$4 follow-up will be placed. AUTO is OFF.\nReason: {str(exc)[:180]}")
+            telegram_send(f"🛑 EMA RECOVERY PAUSED\nOrder {order_id} result could not be verified.\nNo recovery follow-up will be placed. AUTO is OFF.\nReason: {str(exc)[:180]}")
             send_session_report_if_ready()
             return True
         outcome = classify_profit(net_profit)
@@ -1122,15 +1123,15 @@ def execute_signal(signal):
         next_step = next_step_after_result(outcome, martingale_step)
         if outcome == "LOSS" and next_step is not None:
             # The session cap blocks fresh sequences, never a follow-up belonging
-            # to an already accepted EMA $1/$2/$4 sequence.
+            # to an already accepted EMA recovery sequence.
             if AUTO_MODE and strategy == ACTIVE_STRATEGY and generation == STRATEGY_GENERATION and practice_mode_verified():
                 EMA_MARTINGALE_STATUS = f"LOSS CONFIRMED — refreshing broker payout for recovery step {next_step}/{MAX_STEPS}"
                 telegram_send(f"🔴 EMA LOSS CONFIRMED\n{display_asset(asset)} — {direction.upper()}\nNext trade will use a freshly checked broker payout to calculate the recovery stake.\nMartingale step {next_step}/{MAX_STEPS}.")
                 followup = dict(signal)
                 followup.update({"_martingale_followup": True, "_martingale_step": next_step})
                 return execute_signal(followup)
-            EMA_MARTINGALE_STATUS = "STOPPED — AUTO off or safety verification failed; next stake remains $1"
-            telegram_send("⚠️ EMA martingale continuation was not placed because AUTO is OFF or PRACTICE verification failed. No trade was forced.")
+            EMA_MARTINGALE_STATUS = "STOPPED — AUTO off or safety verification failed; recovery sequence paused"
+            telegram_send("⚠️ EMA recovery continuation was not placed because AUTO is OFF or PRACTICE verification failed. No trade was forced.")
         elif outcome == "LOSS":
             EMA_SEQUENCE_LOSSES = 0.0
             EMA_MARTINGALE_STATUS = "3/3 LOSSES — recovery sequence ended; no fourth recovery trade"
