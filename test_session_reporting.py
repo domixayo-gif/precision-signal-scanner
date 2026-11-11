@@ -51,6 +51,15 @@ class SessionLedgerTests(unittest.TestCase):
         self.assertTrue(ledger.mark_report_sent())
         self.assertTrue(ledger.start())
 
+    def test_report_separates_unknown_order_acceptance_from_confirmed_trades(self):
+        ledger = SessionLedger()
+        ledger.start()
+        ledger.note_unknown_order_request()
+        ledger.end("Order request timed out")
+        report = ledger.build_report()
+        self.assertIn("Order requests with unknown broker acceptance: 1", report)
+        self.assertIn("Accepted trades: 0", report)
+
 
 if __name__ == "__main__":
     unittest.main()
