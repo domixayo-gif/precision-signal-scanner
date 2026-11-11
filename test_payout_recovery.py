@@ -1,4 +1,5 @@
 import unittest
+from decimal import Decimal
 from payout_recovery import (
     MAX_SINGLE_STAKE, StakeLimitExceeded, broker_turbo_payout,
     normalize_payout, stake_for_recovery,
@@ -36,7 +37,7 @@ class PayoutRecoveryTests(unittest.TestCase):
         self.assertGreaterEqual(stake * 0.83, 2.00)
 
     def test_hard_cap_blocks_stake_instead_of_underfunding_target(self):
-        self.assertEqual(MAX_SINGLE_STAKE, 33.74)
+        self.assertEqual(MAX_SINGLE_STAKE, Decimal('33.74'))
         with self.assertRaises(StakeLimitExceeded):
             stake_for_recovery(30, 0.60)
 
