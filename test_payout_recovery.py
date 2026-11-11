@@ -16,6 +16,17 @@ class PayoutRecoveryTests(unittest.TestCase):
         self.assertEqual(stake_for_recovery(2.71, 0.74), 6.37)
         self.assertEqual(stake_for_recovery(9.08, 0.74), 14.98)
 
+    def test_three_attempt_sequence_at_sixty_percent(self):
+        first = stake_for_recovery(0, 0.60)
+        second = stake_for_recovery(first, 0.60)
+        third = stake_for_recovery(first + second, 0.60)
+        self.assertEqual((first, second, third), (3.34, 8.90, 23.74))
+
+    def test_changed_payout_is_used_for_next_recovery_order(self):
+        first = stake_for_recovery(0, 0.82)
+        second = stake_for_recovery(first, 0.74)
+        self.assertEqual((first, second), (2.44, 6.00))
+
     def test_payout_can_be_ratio_or_percent(self):
         self.assertEqual(normalize_payout(0.82), normalize_payout(82))
         self.assertEqual(stake_for_recovery(0, 82), 2.44)
