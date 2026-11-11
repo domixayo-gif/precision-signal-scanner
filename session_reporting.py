@@ -8,6 +8,7 @@ class SessionLedger:
         self.ended_at = None
         self.end_reason = ""
         self.accepted = 0
+        self.unknown_order_requests = 0
         self.wins = 0
         self.losses = 0
         self.draws = 0
@@ -33,7 +34,8 @@ class SessionLedger:
         self.started_at = datetime.now(timezone.utc)
         self.ended_at = None
         self.end_reason = ""
-        self.accepted = self.wins = self.losses = self.draws = 0
+        self.accepted = self.unknown_order_requests = 0
+        self.wins = self.losses = self.draws = 0
         self.total_profit = self.total_loss = self.net_profit = 0.0
         self.pending = {}
         self.unconfirmed = set()
@@ -49,6 +51,9 @@ class SessionLedger:
         self.accepted += 1
         self.pending[key] = {"stake": float(stake), "strategy": str(strategy).upper()}
         return True
+
+    def note_unknown_order_request(self):
+        self.unknown_order_requests += 1
 
     def record_result(self, order_id, net_profit):
         key = str(order_id)
@@ -106,6 +111,7 @@ class SessionLedger:
             f"Total lost: -${self.total_loss:.2f}",
             f"NET BOT P/L: {'+' if self.net_profit >= 0 else '-'}${abs(self.net_profit):.2f}",
             f"Unconfirmed outcomes: {unknown + pending}",
+            f"Order requests with unknown broker acceptance: {self.unknown_order_requests}",
         ]
         if pending:
             lines.append(f"Still awaiting broker result: {pending}")
