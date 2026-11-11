@@ -125,13 +125,14 @@ def clear_pending_execution_queue():
     return cleared
 
 
-def queue_auto_signal(signal):
-    """Queue a signal tagged to the current AUTO session generation."""
+def queue_auto_signal(signal, expected_generation=None):
+    """Queue only a signal produced during the current AUTO session."""
     with STATE_LOCK:
-        if not AUTO_MODE:
+        if (not AUTO_MODE or expected_generation is None
+                or expected_generation != AUTO_SESSION_GENERATION):
             return False
         queued = dict(signal)
-        queued["_auto_generation"] = AUTO_SESSION_GENERATION
+        queued["_auto_generation"] = expected_generation
         EXECUTION_QUEUE.put(queued)
         return True
 
@@ -512,14 +513,14 @@ def send_signal(signal, manual=False):
         f"{'MANUAL SCAN — no trade placed.' if manual else 'AUTO MODE — PRACTICE order only.'}"
     )
 
-def scan_market(manual=False, auto_eligible=False, strategy=None, generation=None):
+def scan_market(manual=False, auto_eligible=False, strategy=None, generation=None, auto_generation=None):
     global SCAN_IN_PROGRESS, ASSET_CURSOR, LAST_ASSET_COUNT, LAST_SCAN_FINISHED
     global LAST_SCAN_CANDIDATES, LAST_SCAN_SCANNED, LAST_SCAN_TOTAL, LAST_SCAN_TIMED_OUT
     global LAST_SCAN_ERROR, LAST_REJECTIONS
     strategy = str(strategy or ACTIVE_STRATEGY).upper()
     generation = STRATEGY_GENERATION if generation is None else int(generation)
     if strategy in ("M", "E", "F"):
-        return scan_indicator_market(manual, auto_eligible, strategy, generation)
+        return scan_indicator_market(manual, auto_eligible, strategy, generation, auto_generation)
     results, rejected = [], {}
     scanned = attempted = total = 0
     timed_out, error_text = False, ""
@@ -636,7 +637,7 @@ def scan_market(manual=False, auto_eligible=False, strategy=None, generation=Non
                                     and generation == STRATEGY_GENERATION):
                                 # Submit fresh setups through the main loop immediately,
                                 # without waiting for the remaining symbols in this batch.
-                                queue_auto_signal(candidate)
+                                queue_auto_signal(candidate, auto_generation)
                                 logging.info("Fresh first-retest setup queued for immediate execution: %s %s (5m trend=%s)",
                                              asset, candidate["direction"].upper(), trend)
             if index % PROGRESS_EVERY == 0:
@@ -695,7 +696,7 @@ def send_indicator_signal(signal, manual=False):
     )
 
 
-def scan_indicator_market(manual, auto_eligible, strategy, generation):
+def scan_indicator_market(manual, auto_eligible, strategy, generation, auto_generation=None):
     global SCAN_IN_PROGRESS, ASSET_CURSOR, LAST_ASSET_COUNT, LAST_SCAN_FINISHED, LAST_SCAN_CANDIDATES
     global LAST_SCAN_SCANNED, LAST_SCAN_TOTAL, LAST_SCAN_TIMED_OUT, LAST_SCAN_ERROR, LAST_REJECTIONS
     settings = STRATEGY_SETTINGS[strategy]
@@ -789,7 +790,7 @@ def scan_indicator_market(manual, auto_eligible, strategy, generation):
                     results.append(signal)
                     if (auto_eligible and AUTO_MODE and strategy == ACTIVE_STRATEGY
                             and generation == STRATEGY_GENERATION):
-                        queue_auto_signal(signal)
+                        queue_auto_signal(signal, auto_generation)
                         logging.info("%s signal queued for immediate PRACTICE execution: %s %s",
                                      strategy, asset, signal["direction"].upper())
                 else:
@@ -832,11 +833,13 @@ def start_scan(manual=False):
         SCAN_IN_PROGRESS = True
         LAST_SCAN_STARTED = time.time()
         eligible = bool(AUTO_MODE and not manual)
+        auto_generation = AUTO_SESSION_GENERATION if eligible else None
         strategy = ACTIVE_STRATEGY
         generation = STRATEGY_GENERATION
     threading.Thread(target=scan_market,
                      kwargs={"manual": manual, "auto_eligible": eligible,
-                             "strategy": strategy, "generation": generation},
+                             "strategy": strategy, "generation": generation,
+                             "auto_generation": auto_generation},
                      daemon=True, name=f"market-scan-{strategy}").start()
     return True
 
