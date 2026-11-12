@@ -94,7 +94,7 @@ AUTO_STOP_REASON = "Not stopped in this run"
 SESSION_LEDGER = SessionLedger()
 SESSION_REPORT_LOCK = threading.Lock()
 LAST_ORDER_STATUS = "No order attempt yet"
-EMA_MARTINGALE_STATUS = "READY — payout-adjusted recovery; $2 sequence target"
+EMA_MARTINGALE_STATUS = "READY — payout-adjusted recovery; $1.50 sequence target"
 EMA_SEQUENCE_LOSSES = 0.0
 EMA_LAST_PAYOUT = None
 
@@ -246,7 +246,7 @@ def connect_iq(timeout=40):
     IQ = result[1]
     balance = result[2]
     logging.info("Connected in PRACTICE. Balance %s", money(balance))
-    telegram_send(f"🟢 IQ OPTION CONNECTED\nAccount: PRACTICE ONLY\nBalance: {money(balance)}\nSelected strategy: {ACTIVE_STRATEGY} — {STRATEGY_SETTINGS[ACTIVE_STRATEGY]['name']}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nEMA: live payout-adjusted recovery; +$2 sequence target; $33.74 per-trade cap; +$10 net target per AUTO run.\nManual scans never place trades.")
+    telegram_send(f"🟢 IQ OPTION CONNECTED\nAccount: PRACTICE ONLY\nBalance: {money(balance)}\nSelected strategy: {ACTIVE_STRATEGY} — {STRATEGY_SETTINGS[ACTIVE_STRATEGY]['name']}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nEMA: live payout-adjusted recovery; +$1.50 sequence target; $33.74 per-trade cap; +$10 net target per AUTO run.\nManual scans never place trades.")
 
 def practice_mode_verified(timeout=15):
     client = IQ
@@ -932,7 +932,7 @@ def execute_signal(signal):
         except StakeLimitExceeded as exc:
             EMA_MARTINGALE_STATUS = f"STOPPED — {exc}"
             set_auto(False, "EMA recovery stake exceeded the $33.74 per-trade cap")
-            telegram_send(f"🛑 EMA RECOVERY STOPPED\n{exc}\nNo order was placed; the $2 target will not be reduced to force a trade.")
+            telegram_send(f"🛑 EMA RECOVERY STOPPED\n{exc}\nNo order was placed; the $1.50 target will not be reduced to force a trade.")
             return False
         except Exception as exc:
             EMA_MARTINGALE_STATUS = "PAUSED — current broker payout unavailable; no order placed"
@@ -1076,7 +1076,7 @@ def execute_signal(signal):
                   f"Strategy: {strategy} | Stake: {money(order_stake)}{step_note}{payout_note} | Expiry: {expiry_minutes} minute(s)\n"
                   f"Open exposure: {TRADE_EXPOSURE.count(time.time())}/{MAX_CONCURRENT_TRADES}\n"
                   f"Session trades: {AUTO_SESSION_ACCEPTED}/{MAX_TRADES_PER_AUTO_SESSION}\n"
-                  f"EMA recovery target: +$2 net after recovering confirmed sequence losses; run target: +$10 net.")
+                  f"EMA recovery target: +$1.50 net after recovering confirmed sequence losses; run target: +$10 net.")
     if AUTO_SESSION_ACCEPTED >= MAX_TRADES_PER_AUTO_SESSION and strategy != "E":
         set_auto(False, "20 accepted trades reached for this START AUTO session")
         telegram_send("🛑 AUTO MODE OFF — 20 accepted PRACTICE trades completed in this session.")
@@ -1286,7 +1286,7 @@ def status_message():
     return (f"📊 IQ OPTION SCANNER STATUS\nConnection: {'CONNECTED' if connected else 'DISCONNECTED'}\n"
             f"Practice verification: {'OK' if practice else 'NOT VERIFIED'}\nBalance: {balance}\n"
             f"Selected strategy: {strategy_label()}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\n"
-            f"EMA stake: live broker payout | +$2 net per recovery sequence | $33.74 max per trade | +$10 net target per AUTO run | Expiry: {strategy_expiry()} minute(s)\n"
+            f"EMA stake: live broker payout | +$1.50 net per recovery sequence | $33.74 max per trade | +$10 net target per AUTO run | Expiry: {strategy_expiry()} minute(s)\n"
             f"AUTO state detail: {AUTO_STOP_REASON}\n"
             f"EMA recovery status: {EMA_MARTINGALE_STATUS}\n"
             f"EMA confirmed sequence losses: {money(EMA_SEQUENCE_LOSSES)} | Last payout ratio: {EMA_LAST_PAYOUT}\n"
@@ -1337,7 +1337,7 @@ def process_telegram_update(update):
                     telegram_send("⏳ Previous AUTO session is still waiting for its broker result/report. Please wait before starting another session.")
                     return
                 AUTO_SESSION_ACCEPTED = 0
-            telegram_send(f"🟢 AUTO MODE ON\nSelected strategy: {strategy_label()}\nPRACTICE verified. EMA uses live payout-adjusted stakes, +$2 net per recovery sequence, $33.74 per-trade cap, and +$10 confirmed net target per run.\nSession limit: {MAX_TRADES_PER_AUTO_SESSION} accepted trades. Max concurrent open trades: {MAX_CONCURRENT_TRADES}; one open trade per asset.\nEach START AUTO begins a fresh independent run; a confirmed P/L report is sent when AUTO ends.")
+            telegram_send(f"🟢 AUTO MODE ON\nSelected strategy: {strategy_label()}\nPRACTICE verified. EMA uses live payout-adjusted stakes, +$1.50 net per recovery sequence, $33.74 per-trade cap, and +$10 confirmed net target per run.\nSession limit: {MAX_TRADES_PER_AUTO_SESSION} accepted trades. Max concurrent open trades: {MAX_CONCURRENT_TRADES}; one open trade per asset.\nEach START AUTO begins a fresh independent run; a confirmed P/L report is sent when AUTO ends.")
     elif command in ("/STOP", "STOP AUTO"):
         set_auto(False, "Stopped manually")
         telegram_send("🔴 AUTO MODE OFF. Pending signals were cleared; no queued setup will replay after a restart.")
