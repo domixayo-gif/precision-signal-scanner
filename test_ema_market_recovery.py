@@ -1,5 +1,5 @@
 import unittest
-from ema_market_recovery import recovery_quality_score, rank_recovery_candidates
+from ema_market_recovery import recovery_quality_score, rank_recovery_candidates, is_fresh_recovery_candidate
 
 def candidate(asset="EURUSD", direction="call", **overrides):
     value = {"asset": asset, "direction": direction, "candle_time": 1000, "adx14": 35.0, "plus_di14": 32.0, "minus_di14": 12.0, "chop25": 38.0, "extension_atr": 0.20, "rsi14": 60.0}
@@ -18,6 +18,12 @@ class MarketRecoveryRankingTests(unittest.TestCase):
     def test_invalid_and_nonfinite_candidates_are_rejected(self):
         self.assertIsNone(recovery_quality_score(candidate(direction="sideways")))
         self.assertIsNone(recovery_quality_score(candidate(adx14=float("nan"))))
+    def test_freshness_guard_rejects_stale_candidates_for_execution(self):
+        self.assertTrue(is_fresh_recovery_candidate(candidate(candle_time=950), now=1000, max_age_seconds=90))
+        self.assertFalse(is_fresh_recovery_candidate(candidate(candle_time=800), now=1000, max_age_seconds=90))
+        self.assertFalse(is_fresh_recovery_candidate(candidate(candle_time=1010), now=1000, max_age_seconds=90))
+        self.assertFalse(is_fresh_recovery_candidate({}, now=1000, max_age_seconds=90))
+
     def test_ranking_does_not_mutate_input(self):
         original = candidate(); ranked = rank_recovery_candidates([original], now=1000)
         self.assertNotIn("_recovery_quality_score", original); self.assertIn("_recovery_quality_score", ranked[0])
