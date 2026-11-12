@@ -1,7 +1,7 @@
 import unittest
 
 from ema_strategy import (
-    MIN_CANDLES, adx, atr, calculate_signal, choppiness_index,
+    MIN_CANDLES, adx, atr, calculate_signal, current_trend_direction, choppiness_index,
     ema, ema_series, rsi,
 )
 
@@ -106,6 +106,17 @@ class EmaStrategyTests(unittest.TestCase):
         self.assertIsNotNone(signal)
         self.assertEqual(signal["direction"], "put")
         self.assertGreater(signal["minus_di14"], signal["plus_di14"])
+
+    def test_recovery_guard_confirms_same_direction_without_requiring_pullback(self):
+        self.assertEqual(current_trend_direction(trending_candles("up"), higher_timeframe_candles("up")), "call")
+        self.assertEqual(current_trend_direction(trending_candles("down"), higher_timeframe_candles("down")), "put")
+
+    def test_recovery_guard_rejects_opposing_five_minute_trend(self):
+        self.assertIsNone(current_trend_direction(trending_candles("up"), higher_timeframe_candles("down")))
+
+    def test_recovery_guard_rejects_missing_or_insufficient_context(self):
+        self.assertIsNone(current_trend_direction(trending_candles()[:MIN_CANDLES - 1], higher_timeframe_candles()))
+        self.assertIsNone(current_trend_direction(trending_candles(), []))
 
     def test_insufficient_warmup_is_blocked(self):
         signal, reason = calculate_signal("EURUSD", trending_candles()[:MIN_CANDLES - 1])
