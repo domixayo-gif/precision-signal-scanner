@@ -6,27 +6,27 @@ from payout_recovery import (
 )
 
 class PayoutRecoveryTests(unittest.TestCase):
-    def test_first_stake_uses_actual_payout_and_targets_two_dollars(self):
-        self.assertEqual(stake_for_recovery(0, 0.82), 2.44)
-        self.assertEqual(stake_for_recovery(0, 0.84), 2.39)
-        self.assertEqual(stake_for_recovery(0, 0.60), 3.34)
+    def test_first_stake_uses_actual_payout_and_targets_one_dollar_fifty(self):
+        self.assertEqual(stake_for_recovery(0, 0.82), 1.83)
+        self.assertEqual(stake_for_recovery(0, 0.84), 1.79)
+        self.assertEqual(stake_for_recovery(0, 0.60), 2.50)
 
     def test_recovery_stakes_include_all_confirmed_losses(self):
-        self.assertEqual(stake_for_recovery(2.44, 0.82), 5.42)
-        self.assertEqual(stake_for_recovery(7.86, 0.82), 12.03)
-        self.assertEqual(stake_for_recovery(2.71, 0.74), 6.37)
-        self.assertEqual(stake_for_recovery(9.08, 0.74), 14.98)
+        self.assertEqual(stake_for_recovery(2.44, 0.82), 4.81)
+        self.assertEqual(stake_for_recovery(7.86, 0.82), 11.42)
+        self.assertEqual(stake_for_recovery(2.71, 0.74), 5.69)
+        self.assertEqual(stake_for_recovery(9.08, 0.74), 14.30)
 
     def test_three_attempt_sequence_at_sixty_percent(self):
         first = stake_for_recovery(0, 0.60)
         second = stake_for_recovery(first, 0.60)
         third = stake_for_recovery(first + second, 0.60)
-        self.assertEqual((first, second, third), (3.34, 8.90, 23.74))
+        self.assertEqual((first, second, third), (2.50, 6.67, 17.79))
 
     def test_changed_payout_is_used_for_next_recovery_order(self):
         first = stake_for_recovery(0, 0.82)
         second = stake_for_recovery(first, 0.74)
-        self.assertEqual((first, second), (2.44, 6.00))
+        self.assertEqual((first, second), (1.83, 4.50))
 
     def test_payout_can_be_ratio_or_percent(self):
         self.assertEqual(normalize_payout(0.82), normalize_payout(82))
