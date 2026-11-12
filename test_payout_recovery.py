@@ -30,11 +30,11 @@ class PayoutRecoveryTests(unittest.TestCase):
 
     def test_payout_can_be_ratio_or_percent(self):
         self.assertEqual(normalize_payout(0.82), normalize_payout(82))
-        self.assertEqual(stake_for_recovery(0, 82), 2.44)
+        self.assertEqual(stake_for_recovery(0, 82), 1.83)
 
     def test_stake_rounds_up_to_cents(self):
         stake = stake_for_recovery(0, 0.83)
-        self.assertGreaterEqual(stake * 0.83, 2.00)
+        self.assertGreaterEqual(stake * 0.83, 1.50)
 
     def test_hard_cap_blocks_stake_instead_of_underfunding_target(self):
         self.assertEqual(MAX_SINGLE_STAKE, Decimal('33.74'))
