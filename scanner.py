@@ -15,6 +15,7 @@ from ema_strategy import (calculate_signal as calculate_ema_signal,
                           current_trend_direction, MIN_CANDLES as EMA_MIN_CANDLES)
 from session_reporting import SessionLedger
 from ema_trade_history import EmaTradeHistory
+from ema_market_recovery import is_fresh_recovery_candidate
 from fusion_strategy import calculate_signal as calculate_fusion_signal
 import base64, json
 
@@ -874,6 +875,83 @@ def start_scan(manual=False):
     return True
 
 
+def find_market_analyzed_recovery_candidate(next_step, auto_generation, strategy_generation):
+    """Scan every eligible FX pair until a fresh, qualified EMA setup appears."""
+    global EMA_MARTINGALE_STATUS
+    from ema_market_recovery import rank_recovery_candidates
+    scan_round = 0
+    while RUNNING:
+        with STATE_LOCK:
+            allowed = (AUTO_MODE and auto_generation == AUTO_SESSION_GENERATION and ACTIVE_STRATEGY == "E" and strategy_generation == STRATEGY_GENERATION)
+        if not allowed: return None
+        if not ensure_connection() or not practice_mode_verified():
+            EMA_MARTINGALE_STATUS = "PAUSED — connection/PRACTICE verification unavailable; losses retained"
+            set_auto(False, "Market-wide EMA recovery safety verification failed")
+            telegram_send("🛑 EMA RECOVERY PAUSED — connection or PRACTICE verification failed. No order was sent; confirmed losses remain recorded.")
+            return None
+        assets = get_asset_names()
+        if not assets:
+            EMA_MARTINGALE_STATUS = "WAITING — no eligible FX assets discovered; confirmed losses retained"
+            time.sleep(10)
+            continue
+        now = int(time.time())
+        candidates = []
+        rejected = 0
+        for asset in assets:
+            with STATE_LOCK:
+                allowed = (AUTO_MODE and auto_generation == AUTO_SESSION_GENERATION and ACTIVE_STRATEGY == "E" and strategy_generation == STRATEGY_GENERATION)
+            if not allowed: return None
+            if not ensure_connection(): break
+            one_minute = fetch_candles(asset, timeframe=60, count=300)
+            if not isinstance(one_minute, list):
+                rejected += 1
+                time.sleep(REQUEST_PAUSE_SECONDS)
+                continue
+            five_minute = fetch_candles(asset, timeframe=300, count=100)
+            if not isinstance(five_minute, list):
+                rejected += 1
+                time.sleep(REQUEST_PAUSE_SECONDS)
+                continue
+            closed_1m = [c for c in one_minute if int(c.get("from") or 0) + 60 <= now]
+            closed_5m = [c for c in five_minute if int(c.get("from") or 0) + 300 <= now]
+            signal, reason = calculate_ema_signal(asset, closed_1m, CANDLE_SECONDS, closed_5m)
+            if signal is None:
+                rejected += 1
+                time.sleep(REQUEST_PAUSE_SECONDS)
+                continue
+            stamp = int(signal.get("candle_time") or 0)
+            age = time.time() - stamp
+            if age > MAX_SIGNAL_AGE_SECONDS or age < -5:
+                rejected += 1
+                time.sleep(REQUEST_PAUSE_SECONDS)
+                continue
+            with STATE_LOCK:
+                can_open, _ = TRADE_EXPOSURE.can_open(asset, time.time())
+            if not can_open:
+                rejected += 1
+                time.sleep(REQUEST_PAUSE_SECONDS)
+                continue
+            signal.update({"strategy":"E","generation":strategy_generation,"expiry_minutes":STRATEGY_SETTINGS["E"]["expiry_minutes"],"max_signal_age_seconds":MAX_SIGNAL_AGE_SECONDS,"_martingale_followup":True,"_martingale_step":int(next_step),"_auto_generation":int(auto_generation)})
+            candidates.append(signal)
+            time.sleep(REQUEST_PAUSE_SECONDS)
+        ranked = rank_recovery_candidates(candidates, now=int(time.time()), max_age_seconds=MAX_SIGNAL_AGE_SECONDS)
+        if ranked:
+            selected = ranked[0]
+            age = time.time() - int(selected["candle_time"])
+            if -5 <= age <= MAX_SIGNAL_AGE_SECONDS:
+                selected_asset = selected.get("asset", "")
+                selected_direction = str(selected.get("direction", "")).upper()
+                quality_score = float(selected.get("_recovery_quality_score", 0.0))
+                telegram_send(f"🎯 MARKET-ANALYZED RECOVERY CANDIDATE\n{display_asset(selected_asset)} — {selected_direction}\nQuality: {quality_score:.1f}/100 | Scanned: {len(assets)} | Qualified: {len(ranked)}\nStep: {next_step}/{MAX_STEPS}. Checking live payout and stake cap.")
+                return selected
+        scan_round += 1
+        EMA_MARTINGALE_STATUS = f"WAITING — full-market scan {scan_round}; {len(assets)} pairs checked, {rejected} rejected; losses retained"
+        logging.info("Market-wide EMA recovery scan %d: assets=%d rejected=%d candidates=0; waiting before retry.", scan_round, len(assets), rejected)
+        for _ in range(STRATEGY_SETTINGS["E"]["scan_interval_seconds"]):
+            with STATE_LOCK:
+                if not AUTO_MODE or auto_generation != AUTO_SESSION_GENERATION or ACTIVE_STRATEGY != "E" or strategy_generation != STRATEGY_GENERATION: return None
+            time.sleep(1)
+    return None
 def execute_signal(signal):
     global ORDER_ATTEMPTS, ORDER_ACCEPTED, ORDER_REJECTED, IN_FLIGHT_ORDER_REQUESTS, LAST_ORDER_STATUS, AUTO_SESSION_ACCEPTED, EMA_MARTINGALE_STATUS, EMA_SEQUENCE_LOSSES, EMA_LAST_PAYOUT
     if not AUTO_TRADING_ALLOWED or not AUTO_MODE:
@@ -906,8 +984,11 @@ def execute_signal(signal):
     martingale_step = int(signal.get("_martingale_step", 1)) if strategy == "E" else 1
     order_stake = STAKE
     current_payout = None
-    if (age > max_age or age < -5) and not martingale_followup:
-        logging.info("Skipping stale %s signal %s (age %.1fs)", strategy, asset, age)
+    if not is_fresh_recovery_candidate(signal, time.time(), max_age):
+        logging.info("Skipping stale %s signal %s (age %.1fs; recovery=%s)", strategy, asset, age, martingale_followup)
+        if martingale_followup:
+            EMA_MARTINGALE_STATUS = "WAITING — selected recovery candle expired; losses retained for next full-market scan"
+            telegram_send("⏳ EMA RECOVERY CANDIDATE EXPIRED before order submission. No order was sent; confirmed losses remain recorded and the market scan will retry.")
         return False
     if not asset or direction not in ("call", "put") or (LAST_SIGNAL_BY_ASSET.get(signal_key) == str(candle_time) and not martingale_followup):
         return False
@@ -1020,7 +1101,7 @@ def execute_signal(signal):
     if status == "unavailable":
         LAST_ORDER_STATUS = f"SKIPPED — {display_asset(asset)} {direction.upper()}: {response}"
         logging.info("Skipped broker order locally for %s: %s", asset, response)
-        telegram_send(f"⚪ ORDER SKIPPED — NOT SENT TO BROKER\\n{display_asset(asset)} {direction.upper()}\nReason: {str(response)[:180]}")
+        telegram_send(f"⚪ ORDER SKIPPED — NOT SENT TO BROKER\n{display_asset(asset)} {direction.upper()}\nReason: {str(response)[:180]}")
         if martingale_followup:
             EMA_MARTINGALE_STATUS = "PAUSED — follow-up asset unavailable in TURBO market"
             set_auto(False, "EMA martingale follow-up asset unavailable")
@@ -1125,7 +1206,8 @@ def execute_signal(signal):
             except Exception:
                 logging.exception("Could not update EMA CSV history with broker result.")
             if outcome == "LOSS":
-                EMA_SEQUENCE_LOSSES = round(EMA_SEQUENCE_LOSSES + order_stake, 2)
+                # Track the broker-confirmed net loss, not an assumed stake amount.
+                EMA_SEQUENCE_LOSSES = round(EMA_SEQUENCE_LOSSES + abs(min(float(net_profit), 0.0)), 2)
             else:
                 EMA_SEQUENCE_LOSSES = 0.0
         with STATE_LOCK:
@@ -1145,38 +1227,22 @@ def execute_signal(signal):
             # to an already accepted EMA recovery sequence.
             if AUTO_MODE and strategy == ACTIVE_STRATEGY and generation == STRATEGY_GENERATION and practice_mode_verified():
                 EMA_MARTINGALE_STATUS = f"LOSS CONFIRMED — refreshing broker payout for recovery step {next_step}/{MAX_STEPS}"
-                # Recovery is permitted only while fresh, fully closed 1m and
-                # 5m candles still confirm the original direction. First-entry
-                # EMA qualification and all indicator thresholds remain unchanged.
-                latest_1m = fetch_candles(asset, timeframe=CANDLE_SECONDS, count=300)
-                latest_5m = fetch_candles(asset, timeframe=300, count=100)
-                check_time = int(time.time())
-                closed_1m = ([c for c in latest_1m if int(c.get("from") or 0) + CANDLE_SECONDS <= check_time]
-                             if isinstance(latest_1m, list) else [])
-                closed_5m = ([c for c in latest_5m if int(c.get("from") or 0) + 300 <= check_time]
-                             if isinstance(latest_5m, list) else [])
-                if len(closed_1m) < EMA_MIN_CANDLES or len(closed_5m) < 80:
-                    EMA_MARTINGALE_STATUS = "PAUSED — fresh closed-candle trend could not be verified before recovery"
-                    set_auto(False, "Fresh EMA recovery trend context unavailable")
-                    telegram_send("🛑 EMA RECOVERY PAUSED — fresh closed 1-minute/5-minute candles could not be verified. No recovery order was sent; AUTO is OFF.")
+                telegram_send(
+                    f"🔴 EMA LOSS CONFIRMED\n{display_asset(asset)} — {direction.upper()}\n"
+                    f"Confirmed sequence losses: {money(EMA_SEQUENCE_LOSSES)}. Searching all eligible FX pairs for a fresh EMA setup for recovery step {next_step}/{MAX_STEPS}."
+                )
+                candidate = find_market_analyzed_recovery_candidate(next_step, auto_generation, generation)
+                if candidate is not None:
+                    candidate_asset = candidate.get("asset", "")
+                    candidate_direction = str(candidate.get("direction", "")).upper()
+                    EMA_MARTINGALE_STATUS = f"RECOVERY CANDIDATE — {display_asset(candidate_asset)} {candidate_direction} step {next_step}/{MAX_STEPS}"
+                    return execute_signal(candidate)
+                if AUTO_MODE:
+                    EMA_MARTINGALE_STATUS = "WAITING — no fresh qualified market-wide EMA setup; confirmed losses retained"
+                    telegram_send("⏳ EMA RECOVERY WAITING\nNo eligible FX pair currently has a fresh, fully qualified EMA20/50 pullback setup. Confirmed losses are retained. The scanner will keep checking; no order was forced.")
                     return True
-                fresh_direction = current_trend_direction(closed_1m, closed_5m)
-                if fresh_direction != direction:
-                    EMA_SEQUENCE_LOSSES = 0.0
-                    EMA_MARTINGALE_STATUS = "SEQUENCE ENDED — fresh trend no longer confirms original direction; next setup starts at base stake"
-                    telegram_send(
-                        f"🛑 EMA RECOVERY NOT SENT\n{display_asset(asset)} — original {direction.upper()}\n"
-                        f"Fresh trend check: {str(fresh_direction or 'UNCLEAR / OPPOSING').upper()}\\n"
-                        "Old recovery sequence ended. No outdated same-direction order was placed; "
-                        "the next independently qualified EMA setup starts a new base-stake sequence."
-                    )
-                else:
-                    telegram_send(f"🔴 EMA LOSS CONFIRMED\\n{display_asset(asset)} — {direction.upper()}\nFresh 1m/5m trend still confirms the direction. Checking live payout for recovery step {next_step}/{MAX_STEPS}.")
-                    followup = dict(signal)
-                    followup.update({"_martingale_followup": True, "_martingale_step": next_step})
-                    return execute_signal(followup)
-            EMA_MARTINGALE_STATUS = "STOPPED — AUTO off or safety verification failed; recovery sequence paused"
-            telegram_send("⚠️ EMA recovery continuation was not placed because AUTO is OFF or PRACTICE verification failed. No trade was forced.")
+            EMA_MARTINGALE_STATUS = "PAUSED — AUTO stopped or PRACTICE verification failed; confirmed losses retained"
+            telegram_send("⚠️ EMA recovery paused because AUTO is OFF or PRACTICE verification failed. Confirmed losses were retained; no trade was forced.")
         elif outcome == "LOSS":
             EMA_SEQUENCE_LOSSES = 0.0
             EMA_MARTINGALE_STATUS = "3/3 LOSSES — recovery sequence ended; no fourth recovery trade"
