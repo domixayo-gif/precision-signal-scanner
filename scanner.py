@@ -15,6 +15,7 @@ from ema_strategy import (calculate_signal as calculate_ema_signal,
                           current_trend_direction, MIN_CANDLES as EMA_MIN_CANDLES)
 from session_reporting import SessionLedger
 from ema_trade_history import EmaTradeHistory
+from ema_market_recovery import is_fresh_recovery_candidate
 from fusion_strategy import calculate_signal as calculate_fusion_signal
 import base64, json
 
@@ -876,6 +877,7 @@ def start_scan(manual=False):
 
 def find_market_analyzed_recovery_candidate(next_step, auto_generation, strategy_generation):
     """Scan every eligible FX pair until a fresh, qualified EMA setup appears."""
+    global EMA_MARTINGALE_STATUS
     from ema_market_recovery import rank_recovery_candidates
     scan_round = 0
     while RUNNING:
@@ -903,21 +905,31 @@ def find_market_analyzed_recovery_candidate(next_step, auto_generation, strategy
             one_minute = fetch_candles(asset, timeframe=60, count=300)
             if not isinstance(one_minute, list):
                 rejected += 1
+                time.sleep(REQUEST_PAUSE_SECONDS)
                 continue
             five_minute = fetch_candles(asset, timeframe=300, count=100)
             if not isinstance(five_minute, list):
                 rejected += 1
+                time.sleep(REQUEST_PAUSE_SECONDS)
                 continue
             closed_1m = [c for c in one_minute if int(c.get("from") or 0) + 60 <= now]
             closed_5m = [c for c in five_minute if int(c.get("from") or 0) + 300 <= now]
             signal, reason = calculate_ema_signal(asset, closed_1m, CANDLE_SECONDS, closed_5m)
             if signal is None:
                 rejected += 1
+                time.sleep(REQUEST_PAUSE_SECONDS)
                 continue
             stamp = int(signal.get("candle_time") or 0)
             age = time.time() - stamp
             if age > MAX_SIGNAL_AGE_SECONDS or age < -5:
                 rejected += 1
+                time.sleep(REQUEST_PAUSE_SECONDS)
+                continue
+            with STATE_LOCK:
+                can_open, _ = TRADE_EXPOSURE.can_open(asset, time.time())
+            if not can_open:
+                rejected += 1
+                time.sleep(REQUEST_PAUSE_SECONDS)
                 continue
             signal.update({"strategy":"E","generation":strategy_generation,"expiry_minutes":STRATEGY_SETTINGS["E"]["expiry_minutes"],"max_signal_age_seconds":MAX_SIGNAL_AGE_SECONDS,"_martingale_followup":True,"_martingale_step":int(next_step),"_auto_generation":int(auto_generation)})
             candidates.append(signal)
@@ -972,8 +984,11 @@ def execute_signal(signal):
     martingale_step = int(signal.get("_martingale_step", 1)) if strategy == "E" else 1
     order_stake = STAKE
     current_payout = None
-    if (age > max_age or age < -5) and not martingale_followup:
-        logging.info("Skipping stale %s signal %s (age %.1fs)", strategy, asset, age)
+    if age > max_age or age < -5:
+        logging.info("Skipping stale %s signal %s (age %.1fs; recovery=%s)", strategy, asset, age, martingale_followup)
+        if martingale_followup:
+            EMA_MARTINGALE_STATUS = "WAITING — selected recovery candle expired; losses retained for next full-market scan"
+            telegram_send("⏳ EMA RECOVERY CANDIDATE EXPIRED before order submission. No order was sent; confirmed losses remain recorded and the market scan will retry.")
         return False
     if not asset or direction not in ("call", "put") or (LAST_SIGNAL_BY_ASSET.get(signal_key) == str(candle_time) and not martingale_followup):
         return False
