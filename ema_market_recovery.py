@@ -20,13 +20,20 @@ def recovery_quality_score(signal):
         return round(adx_points + di_points + chop_points + extension_points + rsi_points, 4)
     except (KeyError, TypeError, ValueError, OverflowError): return None
 
+def is_fresh_recovery_candidate(candidate, now, max_age_seconds=90):
+    """Return True only when the candidate candle is within the allowed age window."""
+    try:
+        age = float(now) - int(candidate["candle_time"])
+        return -5 <= age <= float(max_age_seconds)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+
 def rank_recovery_candidates(candidates, now, max_age_seconds=90):
     """Reject stale candidates and sort by transparent 0-100 quality score."""
     ranked = []
     for candidate in candidates or []:
         try:
-            age = float(now) - int(candidate["candle_time"])
-            if age < -5 or age > float(max_age_seconds): continue
+            if not is_fresh_recovery_candidate(candidate, now, max_age_seconds): continue
             score = recovery_quality_score(candidate)
             if score is None: continue
             item = dict(candidate); item["_recovery_quality_score"] = score
