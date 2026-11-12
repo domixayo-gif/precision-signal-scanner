@@ -1020,7 +1020,7 @@ def execute_signal(signal):
     if status == "unavailable":
         LAST_ORDER_STATUS = f"SKIPPED — {display_asset(asset)} {direction.upper()}: {response}"
         logging.info("Skipped broker order locally for %s: %s", asset, response)
-        telegram_send(f"⚪ ORDER SKIPPED — NOT SENT TO BROKER\\n{display_asset(asset)} {direction.upper()}\\nReason: {str(response)[:180]}")
+        telegram_send(f"⚪ ORDER SKIPPED — NOT SENT TO BROKER\\n{display_asset(asset)} {direction.upper()}\nReason: {str(response)[:180]}")
         if martingale_followup:
             EMA_MARTINGALE_STATUS = "PAUSED — follow-up asset unavailable in TURBO market"
             set_auto(False, "EMA martingale follow-up asset unavailable")
@@ -1165,13 +1165,13 @@ def execute_signal(signal):
                     EMA_SEQUENCE_LOSSES = 0.0
                     EMA_MARTINGALE_STATUS = "SEQUENCE ENDED — fresh trend no longer confirms original direction; next setup starts at base stake"
                     telegram_send(
-                        f"🛑 EMA RECOVERY NOT SENT\\n{display_asset(asset)} — original {direction.upper()}\\n"
+                        f"🛑 EMA RECOVERY NOT SENT\n{display_asset(asset)} — original {direction.upper()}\n"
                         f"Fresh trend check: {str(fresh_direction or 'UNCLEAR / OPPOSING').upper()}\\n"
                         "Old recovery sequence ended. No outdated same-direction order was placed; "
                         "the next independently qualified EMA setup starts a new base-stake sequence."
                     )
                 else:
-                    telegram_send(f"🔴 EMA LOSS CONFIRMED\\n{display_asset(asset)} — {direction.upper()}\\nFresh 1m/5m trend still confirms the direction. Checking live payout for recovery step {next_step}/{MAX_STEPS}.")
+                    telegram_send(f"🔴 EMA LOSS CONFIRMED\\n{display_asset(asset)} — {direction.upper()}\nFresh 1m/5m trend still confirms the direction. Checking live payout for recovery step {next_step}/{MAX_STEPS}.")
                     followup = dict(signal)
                     followup.update({"_martingale_followup": True, "_martingale_step": next_step})
                     return execute_signal(followup)
