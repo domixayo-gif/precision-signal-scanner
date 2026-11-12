@@ -1222,6 +1222,7 @@ def execute_signal(signal):
                     candidate_direction = str(candidate.get("direction", "")).upper()
                     EMA_MARTINGALE_STATUS = f"RECOVERY CANDIDATE — {display_asset(candidate_asset)} {candidate_direction} step {next_step}/{MAX_STEPS}"
                     return execute_signal(candidate)
+                if AUTO_MODE:
                     EMA_MARTINGALE_STATUS = "WAITING — no fresh qualified market-wide EMA setup; confirmed losses retained"
                     telegram_send("⏳ EMA RECOVERY WAITING\nNo eligible FX pair currently has a fresh, fully qualified EMA20/50 pullback setup. Confirmed losses are retained. The scanner will keep checking; no order was forced.")
                     return True
