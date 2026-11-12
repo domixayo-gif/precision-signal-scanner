@@ -6,27 +6,27 @@ from payout_recovery import (
 )
 
 class PayoutRecoveryTests(unittest.TestCase):
-    def test_first_stake_uses_actual_payout_and_targets_one_dollar_fifty(self):
-        self.assertEqual(stake_for_recovery(0, 0.82), 1.83)
-        self.assertEqual(stake_for_recovery(0, 0.84), 1.79)
-        self.assertEqual(stake_for_recovery(0, 0.60), 2.50)
+    def test_first_stake_uses_actual_payout_and_targets_one_dollar(self):
+        self.assertEqual(stake_for_recovery(0, 0.82), 1.22)
+        self.assertEqual(stake_for_recovery(0, 0.84), 1.20)
+        self.assertEqual(stake_for_recovery(0, 0.60), 1.67)
 
     def test_recovery_stakes_include_all_confirmed_losses(self):
-        self.assertEqual(stake_for_recovery(2.44, 0.82), 4.81)
-        self.assertEqual(stake_for_recovery(7.86, 0.82), 11.42)
-        self.assertEqual(stake_for_recovery(2.71, 0.74), 5.69)
-        self.assertEqual(stake_for_recovery(9.08, 0.74), 14.30)
+        self.assertEqual(stake_for_recovery(2.44, 0.82), 4.20)
+        self.assertEqual(stake_for_recovery(7.86, 0.82), 10.81)
+        self.assertEqual(stake_for_recovery(2.71, 0.74), 5.02)
+        self.assertEqual(stake_for_recovery(9.08, 0.74), 13.63)
 
     def test_three_attempt_sequence_at_sixty_percent(self):
         first = stake_for_recovery(0, 0.60)
         second = stake_for_recovery(first, 0.60)
         third = stake_for_recovery(first + second, 0.60)
-        self.assertEqual((first, second, third), (2.50, 6.67, 17.79))
+        self.assertEqual((first, second, third), (1.67, 4.45, 10.20))
 
     def test_changed_payout_is_used_for_next_recovery_order(self):
         first = stake_for_recovery(0, 0.82)
         second = stake_for_recovery(first, 0.74)
-        self.assertEqual((first, second), (1.83, 4.50))
+        self.assertEqual((first, second), (1.22, 3.00))
 
     def test_payout_can_be_ratio_or_percent(self):
         self.assertEqual(normalize_payout(0.82), normalize_payout(82))
@@ -34,7 +34,7 @@ class PayoutRecoveryTests(unittest.TestCase):
 
     def test_stake_rounds_up_to_cents(self):
         stake = stake_for_recovery(0, 0.83)
-        self.assertGreaterEqual(stake * 0.83, 1.50)
+        self.assertGreaterEqual(stake * 0.83, 1.00)
 
     def test_hard_cap_blocks_stake_instead_of_underfunding_target(self):
         self.assertEqual(MAX_SINGLE_STAKE, Decimal('33.74'))
