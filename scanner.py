@@ -13,6 +13,7 @@ from payout_recovery import broker_turbo_payout, stake_for_recovery, StakeLimitE
 from momentum_strategy import calculate_signal as calculate_momentum_signal
 from ema_strategy import (calculate_signal as calculate_ema_signal,\n                          current_trend_direction, MIN_CANDLES as EMA_MIN_CANDLES)
 from session_reporting import SessionLedger
+from ema_trade_history import EmaTradeHistory
 from fusion_strategy import calculate_signal as calculate_fusion_signal
 import base64, json
 
@@ -92,6 +93,7 @@ AUTO_SESSION_ACCEPTED = 0
 AUTO_SESSION_GENERATION = 0
 AUTO_STOP_REASON = "Not stopped in this run"
 SESSION_LEDGER = SessionLedger()
+EMA_TRADE_HISTORY = EmaTradeHistory()
 SESSION_REPORT_LOCK = threading.Lock()
 LAST_ORDER_STATUS = "No order attempt yet"
 EMA_MARTINGALE_STATUS = "READY — payout-adjusted recovery; $1.00 sequence target"
@@ -1064,6 +1066,14 @@ def execute_signal(signal):
     AUTO_SESSION_ACCEPTED += 1
     with STATE_LOCK:
         SESSION_LEDGER.record_accepted(order_id, order_stake, strategy)
+        if strategy == "E":
+            try:
+                EMA_TRADE_HISTORY.record_accepted(
+                    order_id, asset, direction, order_stake, current_payout,
+                    accepted_at, expiry_minutes, martingale_step,
+                )
+            except Exception:
+                logging.exception("Could not write accepted EMA trade to CSV history.")
         if SESSION_LEDGER.ended and strategy != "E":
             SESSION_LEDGER.mark_unconfirmed(order_id)
     LAST_ORDER_STATUS = f"ACCEPTED: {display_asset(asset)} {direction.upper()} — order {order_id}"
@@ -1097,6 +1107,10 @@ def execute_signal(signal):
             EMA_MARTINGALE_STATUS = f"PAUSED — result unverified for order {order_id}"
             with STATE_LOCK:
                 SESSION_LEDGER.mark_unconfirmed(order_id)
+            try:
+                EMA_TRADE_HISTORY.record_result(order_id, "UNVERIFIED")
+            except Exception:
+                logging.exception("Could not mark EMA CSV history row unverified.")
             LAST_ORDER_STATUS = f"RESULT UNVERIFIED: order {order_id}; no martingale retry"
             set_auto(False, "EMA outcome could not be verified; martingale stopped safely")
             telegram_send(f"🛑 EMA RECOVERY PAUSED\nOrder {order_id} result could not be verified.\nNo recovery follow-up will be placed. AUTO is OFF.\nReason: {str(exc)[:180]}")
@@ -1105,6 +1119,10 @@ def execute_signal(signal):
         outcome = classify_profit(net_profit)
         with STATE_LOCK:
             SESSION_LEDGER.record_result(order_id, net_profit)
+            try:
+                EMA_TRADE_HISTORY.record_result(order_id, outcome, net_profit)
+            except Exception:
+                logging.exception("Could not update EMA CSV history with broker result.")
             if outcome == "LOSS":
                 EMA_SEQUENCE_LOSSES = round(EMA_SEQUENCE_LOSSES + order_stake, 2)
             else:
