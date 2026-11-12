@@ -927,7 +927,10 @@ def find_market_analyzed_recovery_candidate(next_step, auto_generation, strategy
             selected = ranked[0]
             age = time.time() - int(selected["candle_time"])
             if -5 <= age <= MAX_SIGNAL_AGE_SECONDS:
-                telegram_send(f"🎯 MARKET-ANALYZED RECOVERY CANDIDATE\\n{display_asset(selected.get(\"asset\"))} — {selected.get(\"direction\").upper()}\\nQuality: {selected.get(\"_recovery_quality_score\"):.1f}/100 | Scanned: {len(assets)} | Qualified: {len(ranked)}\\nStep: {next_step}/{MAX_STEPS}. Checking live payout and stake cap.")
+                selected_asset = selected.get("asset", "")
+                selected_direction = str(selected.get("direction", "")).upper()
+                quality_score = float(selected.get("_recovery_quality_score", 0.0))
+                telegram_send(f"🎯 MARKET-ANALYZED RECOVERY CANDIDATE\n{display_asset(selected_asset)} — {selected_direction}\nQuality: {quality_score:.1f}/100 | Scanned: {len(assets)} | Qualified: {len(ranked)}\nStep: {next_step}/{MAX_STEPS}. Checking live payout and stake cap.")
                 return selected
         scan_round += 1
         EMA_MARTINGALE_STATUS = f"WAITING — full-market scan {scan_round}; {len(assets)} pairs checked, {rejected} rejected; losses retained"
@@ -1083,7 +1086,7 @@ def execute_signal(signal):
     if status == "unavailable":
         LAST_ORDER_STATUS = f"SKIPPED — {display_asset(asset)} {direction.upper()}: {response}"
         logging.info("Skipped broker order locally for %s: %s", asset, response)
-        telegram_send(f"⚪ ORDER SKIPPED — NOT SENT TO BROKER\\n{display_asset(asset)} {direction.upper()}\nReason: {str(response)[:180]}")
+        telegram_send(f"⚪ ORDER SKIPPED — NOT SENT TO BROKER\n{display_asset(asset)} {direction.upper()}\nReason: {str(response)[:180]}")
         if martingale_followup:
             EMA_MARTINGALE_STATUS = "PAUSED — follow-up asset unavailable in TURBO market"
             set_auto(False, "EMA martingale follow-up asset unavailable")
@@ -1210,16 +1213,17 @@ def execute_signal(signal):
             if AUTO_MODE and strategy == ACTIVE_STRATEGY and generation == STRATEGY_GENERATION and practice_mode_verified():
                 EMA_MARTINGALE_STATUS = f"LOSS CONFIRMED — refreshing broker payout for recovery step {next_step}/{MAX_STEPS}"
                 telegram_send(
-                    f"🔴 EMA LOSS CONFIRMED\\n{display_asset(asset)} — {direction.upper()}\\n"
+                    f"🔴 EMA LOSS CONFIRMED\n{display_asset(asset)} — {direction.upper()}\n"
                     f"Confirmed sequence losses: {money(EMA_SEQUENCE_LOSSES)}. Searching all eligible FX pairs for a fresh EMA setup for recovery step {next_step}/{MAX_STEPS}."
                 )
                 candidate = find_market_analyzed_recovery_candidate(next_step, auto_generation, generation)
                 if candidate is not None:
-                    EMA_MARTINGALE_STATUS = f"RECOVERY CANDIDATE — {display_asset(candidate.get(\"asset\"))} {candidate.get(\"direction\").upper()} step {next_step}/{MAX_STEPS}"
+                    candidate_asset = candidate.get("asset", "")
+                    candidate_direction = str(candidate.get("direction", "")).upper()
+                    EMA_MARTINGALE_STATUS = f"RECOVERY CANDIDATE — {display_asset(candidate_asset)} {candidate_direction} step {next_step}/{MAX_STEPS}"
                     return execute_signal(candidate)
-                if AUTO_MODE:
                     EMA_MARTINGALE_STATUS = "WAITING — no fresh qualified market-wide EMA setup; confirmed losses retained"
-                    telegram_send("⏳ EMA RECOVERY WAITING\\nNo eligible FX pair currently has a fresh, fully qualified EMA20/50 pullback setup. Confirmed losses are retained. The scanner will keep checking; no order was forced.")
+                    telegram_send("⏳ EMA RECOVERY WAITING\nNo eligible FX pair currently has a fresh, fully qualified EMA20/50 pullback setup. Confirmed losses are retained. The scanner will keep checking; no order was forced.")
                     return True
             EMA_MARTINGALE_STATUS = "PAUSED — AUTO stopped or PRACTICE verification failed; confirmed losses retained"
             telegram_send("⚠️ EMA recovery paused because AUTO is OFF or PRACTICE verification failed. Confirmed losses were retained; no trade was forced.")
