@@ -11,7 +11,8 @@ from broker_results import get_binary_option_net_profit
 from ema_martingale import next_step_after_result, MAX_STEPS
 from payout_recovery import broker_turbo_payout, stake_for_recovery, StakeLimitExceeded, MAX_SINGLE_STAKE
 from momentum_strategy import calculate_signal as calculate_momentum_signal
-from ema_strategy import (calculate_signal as calculate_ema_signal,\n                          current_trend_direction, MIN_CANDLES as EMA_MIN_CANDLES)
+from ema_strategy import (calculate_signal as calculate_ema_signal,
+                          current_trend_direction, MIN_CANDLES as EMA_MIN_CANDLES)
 from session_reporting import SessionLedger
 from ema_trade_history import EmaTradeHistory
 from fusion_strategy import calculate_signal as calculate_fusion_signal
