@@ -5,7 +5,7 @@ losses. Payout is read fresh from the broker for every new order.
 """
 from decimal import Decimal, ROUND_CEILING, InvalidOperation
 
-SEQUENCE_NET_TARGET = Decimal("1.50")
+SEQUENCE_NET_TARGET = Decimal("1.00")
 MAX_STEPS = 3
 MAX_SINGLE_STAKE = Decimal("33.74")
 
