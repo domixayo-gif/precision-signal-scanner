@@ -1141,42 +1141,53 @@ def execute_signal(signal):
         send_session_report_if_ready()
         next_step = next_step_after_result(outcome, martingale_step)
         if outcome == "LOSS" and next_step is not None:
+            # Keep the safety gates distinct so the alert reports the actual blocker.
+            if not AUTO_MODE:
+                EMA_MARTINGALE_STATUS = "PAUSED — AUTO is OFF; recovery sequence not continued"
+                telegram_send("⚠️ EMA recovery continuation not placed: AUTO is OFF. No trade was forced.")
+                return True
+            if strategy != ACTIVE_STRATEGY or generation != STRATEGY_GENERATION:
+                EMA_MARTINGALE_STATUS = "PAUSED — strategy changed; recovery sequence not continued"
+                telegram_send("⚠️ EMA recovery continuation not placed: the selected strategy changed. No trade was forced.")
+                return True
+            if not practice_mode_verified():
+                EMA_MARTINGALE_STATUS = "PAUSED — PRACTICE account verification failed; recovery sequence not continued"
+                telegram_send("🛑 EMA recovery continuation blocked: PRACTICE account verification failed. No trade was forced.")
+                return True
+
             # The session cap blocks fresh sequences, never a follow-up belonging
             # to an already accepted EMA recovery sequence.
-            if AUTO_MODE and strategy == ACTIVE_STRATEGY and generation == STRATEGY_GENERATION and practice_mode_verified():
-                EMA_MARTINGALE_STATUS = f"LOSS CONFIRMED — refreshing broker payout for recovery step {next_step}/{MAX_STEPS}"
-                # Recovery is permitted only while fresh, fully closed 1m and
-                # 5m candles still confirm the original direction. First-entry
-                # EMA qualification and all indicator thresholds remain unchanged.
-                latest_1m = fetch_candles(asset, timeframe=CANDLE_SECONDS, count=300)
-                latest_5m = fetch_candles(asset, timeframe=300, count=100)
-                check_time = int(time.time())
-                closed_1m = ([c for c in latest_1m if int(c.get("from") or 0) + CANDLE_SECONDS <= check_time]
-                             if isinstance(latest_1m, list) else [])
-                closed_5m = ([c for c in latest_5m if int(c.get("from") or 0) + 300 <= check_time]
-                             if isinstance(latest_5m, list) else [])
-                if len(closed_1m) < EMA_MIN_CANDLES or len(closed_5m) < 80:
-                    EMA_MARTINGALE_STATUS = "PAUSED — fresh closed-candle trend could not be verified before recovery"
-                    set_auto(False, "Fresh EMA recovery trend context unavailable")
-                    telegram_send("🛑 EMA RECOVERY PAUSED — fresh closed 1-minute/5-minute candles could not be verified. No recovery order was sent; AUTO is OFF.")
-                    return True
-                fresh_direction = current_trend_direction(closed_1m, closed_5m)
-                if fresh_direction != direction:
-                    EMA_SEQUENCE_LOSSES = 0.0
-                    EMA_MARTINGALE_STATUS = "SEQUENCE ENDED — fresh trend no longer confirms original direction; next setup starts at base stake"
-                    telegram_send(
-                        f"🛑 EMA RECOVERY NOT SENT\n{display_asset(asset)} — original {direction.upper()}\n"
-                        f"Fresh trend check: {str(fresh_direction or 'UNCLEAR / OPPOSING').upper()}\\n"
-                        "Old recovery sequence ended. No outdated same-direction order was placed; "
-                        "the next independently qualified EMA setup starts a new base-stake sequence."
-                    )
-                else:
-                    telegram_send(f"🔴 EMA LOSS CONFIRMED\\n{display_asset(asset)} — {direction.upper()}\nFresh 1m/5m trend still confirms the direction. Checking live payout for recovery step {next_step}/{MAX_STEPS}.")
-                    followup = dict(signal)
-                    followup.update({"_martingale_followup": True, "_martingale_step": next_step})
-                    return execute_signal(followup)
-            EMA_MARTINGALE_STATUS = "STOPPED — AUTO off or safety verification failed; recovery sequence paused"
-            telegram_send("⚠️ EMA recovery continuation was not placed because AUTO is OFF or PRACTICE verification failed. No trade was forced.")
+            EMA_MARTINGALE_STATUS = f"LOSS CONFIRMED — refreshing broker payout for recovery step {next_step}/{MAX_STEPS}"
+            # Recovery requires fresh, fully closed 1m and 5m candles to confirm
+            # the original direction. First-entry EMA qualification is unchanged.
+            latest_1m = fetch_candles(asset, timeframe=CANDLE_SECONDS, count=300)
+            latest_5m = fetch_candles(asset, timeframe=300, count=100)
+            check_time = int(time.time())
+            closed_1m = ([c for c in latest_1m if int(c.get("from") or 0) + CANDLE_SECONDS <= check_time]
+                         if isinstance(latest_1m, list) else [])
+            closed_5m = ([c for c in latest_5m if int(c.get("from") or 0) + 300 <= check_time]
+                         if isinstance(latest_5m, list) else [])
+            if len(closed_1m) < EMA_MIN_CANDLES or len(closed_5m) < 80:
+                EMA_MARTINGALE_STATUS = "PAUSED — fresh closed-candle trend could not be verified before recovery"
+                set_auto(False, "Fresh EMA recovery trend context unavailable")
+                telegram_send("🛑 EMA RECOVERY PAUSED — fresh closed 1-minute/5-minute candles could not be verified. No recovery order was sent; AUTO is OFF.")
+                return True
+            fresh_direction = current_trend_direction(closed_1m, closed_5m)
+            if fresh_direction != direction:
+                EMA_SEQUENCE_LOSSES = 0.0
+                EMA_MARTINGALE_STATUS = "SEQUENCE ENDED — fresh trend no longer confirms original direction; next setup starts at base stake"
+                telegram_send(
+                    f"🛑 EMA RECOVERY NOT SENT\\n{display_asset(asset)} — original {direction.upper()}\\n"
+                    f"Fresh trend check: {str(fresh_direction or 'UNCLEAR / OPPOSING').upper()}\\n"
+                    "Old recovery sequence ended. No outdated same-direction order was placed; "
+                    "the next independently qualified EMA setup starts a new base-stake sequence."
+                )
+                return True
+
+            telegram_send(f"🔴 EMA LOSS CONFIRMED\\n{display_asset(asset)} — {direction.upper()}\\nFresh 1m/5m trend still confirms the direction. Checking live payout for recovery step {next_step}/{MAX_STEPS}.")
+            followup = dict(signal)
+            followup.update({"_martingale_followup": True, "_martingale_step": next_step})
+            return execute_signal(followup)
         elif outcome == "LOSS":
             EMA_SEQUENCE_LOSSES = 0.0
             EMA_MARTINGALE_STATUS = "3/3 LOSSES — recovery sequence ended; no fourth recovery trade"
