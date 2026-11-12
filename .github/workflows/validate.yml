@@ -16,6 +16,8 @@ on:
       - "test_execution_guard.py"
       - "broker_results.py"
       - "test_broker_results.py"
+      - "ema_trade_history.py"
+      - "test_ema_trade_history.py"
       - "ema_strategy.py"
       - "ema_martingale.py"
       - "test_ema_martingale.py"
@@ -43,6 +45,6 @@ jobs:
       - name: Install scanner requirements
         run: python -m pip install -r requirements.txt
       - name: Compile scanner modules
-        run: python -m py_compile scanner.py session_reporting.py payout_recovery.py breakout_retest_filter.py trend_filter.py execution_guard.py broker_results.py ema_strategy.py ema_martingale.py
+        run: python -m py_compile scanner.py ema_trade_history.py session_reporting.py payout_recovery.py breakout_retest_filter.py trend_filter.py execution_guard.py broker_results.py ema_strategy.py ema_martingale.py
       - name: Run breakout/retest, exposure, and broker-result regression tests
-        run: python -m unittest test_breakout_retest_filter test_trend_filter test_execution_guard test_broker_results test_ema_strategy test_ema_martingale test_session_reporting test_payout_recovery -v
+        run: python -m unittest test_breakout_retest_filter test_trend_filter test_execution_guard test_broker_results test_ema_trade_history test_ema_strategy test_ema_martingale test_session_reporting test_payout_recovery -v
