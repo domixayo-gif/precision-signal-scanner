@@ -984,7 +984,7 @@ def execute_signal(signal):
     martingale_step = int(signal.get("_martingale_step", 1)) if strategy == "E" else 1
     order_stake = STAKE
     current_payout = None
-    if age > max_age or age < -5:
+    if not is_fresh_recovery_candidate(signal, time.time(), max_age):
         logging.info("Skipping stale %s signal %s (age %.1fs; recovery=%s)", strategy, asset, age, martingale_followup)
         if martingale_followup:
             EMA_MARTINGALE_STATUS = "WAITING — selected recovery candle expired; losses retained for next full-market scan"
