@@ -8,11 +8,10 @@ from breakout_retest_filter import build_entry_signal
 from trend_filter import classify_trend, is_strong_trend
 from execution_guard import TradeExposureGuard, classify_profit
 from broker_results import get_binary_option_net_profit
-from ema_martingale import next_step_after_result, MAX_STEPS
-from payout_recovery import broker_turbo_payout, stake_for_recovery, StakeLimitExceeded, MAX_SINGLE_STAKE
+from ema_martingale import (stake_for_step, required_balance_from_step,
+                            next_step_after_result, MAX_STEPS)
 from momentum_strategy import calculate_signal as calculate_momentum_signal
-from ema_strategy import (calculate_signal as calculate_ema_signal,
-                          current_trend_direction, MIN_CANDLES as EMA_MIN_CANDLES)
+from ema_strategy import calculate_signal as calculate_ema_signal
 from session_reporting import SessionLedger
 from ema_trade_history import EmaTradeHistory
 from fusion_strategy import calculate_signal as calculate_fusion_signal
@@ -48,7 +47,7 @@ MARKET_MODE = "BOTH"
 STRATEGY_SETTINGS = {
     "B": {"name": "Breakout & Retest", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 60},
     "M": {"name": "Momentum 10", "expiry_minutes": 1, "scan_interval_seconds": 60, "lookback": 50},
-    "E": {"name": "EMA Precision — 20/50 Pullback + ADX/DI + CHOP/ATR", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 300},
+    "E": {"name": "EMA 20/50 + ADX 14 + RSI 14", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 80},
     "F": {"name": "Precision Fusion X — Strict Confluence", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 80},
 }
 ACTIVE_STRATEGY = "B"
@@ -97,7 +96,7 @@ SESSION_LEDGER = SessionLedger()
 EMA_TRADE_HISTORY = EmaTradeHistory()
 SESSION_REPORT_LOCK = threading.Lock()
 LAST_ORDER_STATUS = "No order attempt yet"
-EMA_MARTINGALE_STATUS = "READY — payout-adjusted recovery; $1.00 sequence target"
+EMA_MARTINGALE_STATUS = "READY — fixed $1 → $2 → $4 EMA martingale"
 EMA_SEQUENCE_LOSSES = 0.0
 EMA_LAST_PAYOUT = None
 
@@ -249,7 +248,7 @@ def connect_iq(timeout=40):
     IQ = result[1]
     balance = result[2]
     logging.info("Connected in PRACTICE. Balance %s", money(balance))
-    telegram_send(f"🟢 IQ OPTION CONNECTED\nAccount: PRACTICE ONLY\nBalance: {money(balance)}\nSelected strategy: {ACTIVE_STRATEGY} — {STRATEGY_SETTINGS[ACTIVE_STRATEGY]['name']}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nEMA: live payout-adjusted recovery; +$1.00 sequence target; $33.74 per-trade cap; +$10 net target per AUTO run.\nManual scans never place trades.")
+    telegram_send(f"🟢 IQ OPTION CONNECTED\nAccount: PRACTICE ONLY\nBalance: {money(balance)}\nSelected strategy: {ACTIVE_STRATEGY} — {STRATEGY_SETTINGS[ACTIVE_STRATEGY]['name']}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\nEMA: fixed $1 → $2 → $4 martingale; 2-minute expiry.\nManual scans never place trades.")
 
 def practice_mode_verified(timeout=15):
     client = IQ
@@ -776,15 +775,7 @@ def scan_indicator_market(manual, auto_eligible, strategy, generation, auto_gene
             if strategy == "M":
                 signal, reason = calculate_momentum_signal(asset, closed, CANDLE_SECONDS)
             elif strategy == "E":
-                trend_candles = fetch_candles(asset, timeframe=300, count=100)
-                if trend_candles is None:
-                    signal, reason = None, "5-minute candle request timed out"
-                else:
-                    closed_trend = [c for c in trend_candles
-                                    if int(c.get("from") or 0) + 300 <= now]
-                    signal, reason = calculate_ema_signal(
-                        asset, closed, CANDLE_SECONDS, closed_trend
-                    )
+                signal, reason = calculate_ema_signal(asset, closed, CANDLE_SECONDS)
             else:
                 trend_candles = fetch_candles(asset, timeframe=300, count=80)
                 if trend_candles is None:
@@ -904,7 +895,7 @@ def execute_signal(signal):
     max_age = int(signal.get("max_signal_age_seconds", MAX_SIGNAL_AGE_SECONDS))
     signal_key = f"{strategy}:{asset}"
     martingale_step = int(signal.get("_martingale_step", 1)) if strategy == "E" else 1
-    order_stake = STAKE
+    order_stake = stake_for_step(martingale_step) if strategy == "E" else STAKE
     current_payout = None
     if (age > max_age or age < -5) and not martingale_followup:
         logging.info("Skipping stale %s signal %s (age %.1fs)", strategy, asset, age)
@@ -924,32 +915,14 @@ def execute_signal(signal):
             return False
     client = IQ
     if strategy == "E":
-        broker_asset_for_payout = BROKER_ACTIVE_NAMES.get(asset)
-        try:
-            if not broker_asset_for_payout:
-                raise RuntimeError("No exact broker asset mapping is available for payout lookup.")
-            with client_api_lock(client):
-                current_payout = broker_turbo_payout(client, broker_asset_for_payout)
-            order_stake = stake_for_recovery(EMA_SEQUENCE_LOSSES, current_payout)
-            EMA_LAST_PAYOUT = current_payout
-        except StakeLimitExceeded as exc:
-            EMA_MARTINGALE_STATUS = f"STOPPED — {exc}"
-            set_auto(False, "EMA recovery stake exceeded the $33.74 per-trade cap")
-            telegram_send(f"🛑 EMA RECOVERY STOPPED\n{exc}\nNo order was placed; the $1.00 target will not be reduced to force a trade.")
-            return False
-        except Exception as exc:
-            EMA_MARTINGALE_STATUS = "PAUSED — current broker payout unavailable; no order placed"
-            set_auto(False, "Current TURBO payout could not be verified")
-            telegram_send(f"🛑 EMA RECOVERY PAUSED\nCould not verify current TURBO payout for {display_asset(asset)}.\nNo order was placed.\nReason: {str(exc)[:180]}")
-            return False
         try:
             available_balance = safe_float(client.get_balance(), 0.0)
         except Exception:
             available_balance = 0.0
-        if available_balance < order_stake:
-            EMA_MARTINGALE_STATUS = f"PAUSED — balance below required stake {money(order_stake)}"
-            set_auto(False, "Insufficient PRACTICE balance for calculated EMA stake")
-            telegram_send(f"EMA recovery paused: PRACTICE balance is below calculated {money(order_stake)} stake; no order placed.")
+        if available_balance < required_balance_from_step(martingale_step):
+            EMA_MARTINGALE_STATUS = "PAUSED — insufficient balance for remaining $1/$2/$4 sequence"
+            set_auto(False, "Insufficient PRACTICE balance for EMA martingale")
+            telegram_send("EMA martingale paused: insufficient PRACTICE balance for remaining $1/$2/$4 steps; no order placed.")
             return False
     # Mark this candle before sending the request, so a timed-out request is never retried for the same candle.
     LAST_SIGNAL_BY_ASSET[signal_key] = str(candle_time)
@@ -1082,12 +1055,11 @@ def execute_signal(signal):
         TRADE_EXPOSURE.register(order_id, asset, direction, accepted_at,
                                 expiry_seconds=expiry_minutes * 60)
     step_note = f" | EMA recovery attempt {martingale_step}/{MAX_STEPS}" if strategy == "E" else ""
-    payout_note = f" | Current payout: {current_payout * 100:.0f}%" if strategy == "E" else ""
     telegram_send(f"🟡 PRACTICE ORDER ACCEPTED\n{display_asset(asset)} — {direction.upper()}\nOrder ID: {order_id}\n"
-                  f"Strategy: {strategy} | Stake: {money(order_stake)}{step_note}{payout_note} | Expiry: {expiry_minutes} minute(s)\n"
+                  f"Strategy: {strategy} | Stake: {money(order_stake)}{step_note} | Expiry: {expiry_minutes} minute(s)\n"
                   f"Open exposure: {TRADE_EXPOSURE.count(time.time())}/{MAX_CONCURRENT_TRADES}\n"
                   f"Session trades: {AUTO_SESSION_ACCEPTED}/{MAX_TRADES_PER_AUTO_SESSION}\n"
-                  f"EMA recovery target: +$1.00 net after recovering confirmed sequence losses; run target: +$10 net.")
+                  f"EMA progression: fixed $1 → $2 → $4; run target: +$10 net.")
     if AUTO_SESSION_ACCEPTED >= MAX_TRADES_PER_AUTO_SESSION and strategy != "E":
         set_auto(False, "20 accepted trades reached for this START AUTO session")
         telegram_send("🛑 AUTO MODE OFF — 20 accepted PRACTICE trades completed in this session.")
@@ -1144,37 +1116,12 @@ def execute_signal(signal):
             # The session cap blocks fresh sequences, never a follow-up belonging
             # to an already accepted EMA recovery sequence.
             if AUTO_MODE and strategy == ACTIVE_STRATEGY and generation == STRATEGY_GENERATION and practice_mode_verified():
-                EMA_MARTINGALE_STATUS = f"LOSS CONFIRMED — refreshing broker payout for recovery step {next_step}/{MAX_STEPS}"
-                # Recovery is permitted only while fresh, fully closed 1m and
-                # 5m candles still confirm the original direction. First-entry
-                # EMA qualification and all indicator thresholds remain unchanged.
-                latest_1m = fetch_candles(asset, timeframe=CANDLE_SECONDS, count=300)
-                latest_5m = fetch_candles(asset, timeframe=300, count=100)
-                check_time = int(time.time())
-                closed_1m = ([c for c in latest_1m if int(c.get("from") or 0) + CANDLE_SECONDS <= check_time]
-                             if isinstance(latest_1m, list) else [])
-                closed_5m = ([c for c in latest_5m if int(c.get("from") or 0) + 300 <= check_time]
-                             if isinstance(latest_5m, list) else [])
-                if len(closed_1m) < EMA_MIN_CANDLES or len(closed_5m) < 80:
-                    EMA_MARTINGALE_STATUS = "PAUSED — fresh closed-candle trend could not be verified before recovery"
-                    set_auto(False, "Fresh EMA recovery trend context unavailable")
-                    telegram_send("🛑 EMA RECOVERY PAUSED — fresh closed 1-minute/5-minute candles could not be verified. No recovery order was sent; AUTO is OFF.")
-                    return True
-                fresh_direction = current_trend_direction(closed_1m, closed_5m)
-                if fresh_direction != direction:
-                    EMA_SEQUENCE_LOSSES = 0.0
-                    EMA_MARTINGALE_STATUS = "SEQUENCE ENDED — fresh trend no longer confirms original direction; next setup starts at base stake"
-                    telegram_send(
-                        f"🛑 EMA RECOVERY NOT SENT\n{display_asset(asset)} — original {direction.upper()}\n"
-                        f"Fresh trend check: {str(fresh_direction or 'UNCLEAR / OPPOSING').upper()}\\n"
-                        "Old recovery sequence ended. No outdated same-direction order was placed; "
-                        "the next independently qualified EMA setup starts a new base-stake sequence."
-                    )
-                else:
-                    telegram_send(f"🔴 EMA LOSS CONFIRMED\\n{display_asset(asset)} — {direction.upper()}\nFresh 1m/5m trend still confirms the direction. Checking live payout for recovery step {next_step}/{MAX_STEPS}.")
-                    followup = dict(signal)
-                    followup.update({"_martingale_followup": True, "_martingale_step": next_step})
-                    return execute_signal(followup)
+                next_stake = stake_for_step(next_step)
+                EMA_MARTINGALE_STATUS = f"LOSS CONFIRMED — placing step {next_step}/{MAX_STEPS} at {money(next_stake)} in the same direction"
+                telegram_send(f"🔴 EMA LOSS CONFIRMED\\n{display_asset(asset)} — {direction.upper()}\nNext trade: {money(next_stake)} in the SAME direction, without waiting for another signal.\nMartingale step {next_step}/{MAX_STEPS}.")
+                followup = dict(signal)
+                followup.update({"_martingale_followup": True, "_martingale_step": next_step, "_stake": next_stake})
+                return execute_signal(followup)
             EMA_MARTINGALE_STATUS = "STOPPED — AUTO off or safety verification failed; recovery sequence paused"
             telegram_send("⚠️ EMA recovery continuation was not placed because AUTO is OFF or PRACTICE verification failed. No trade was forced.")
         elif outcome == "LOSS":
@@ -1331,10 +1278,10 @@ def status_message():
     return (f"📊 IQ OPTION SCANNER STATUS\nConnection: {'CONNECTED' if connected else 'DISCONNECTED'}\n"
             f"Practice verification: {'OK' if practice else 'NOT VERIFIED'}\nBalance: {balance}\n"
             f"Selected strategy: {strategy_label()}\nAUTO MODE: {'ON' if AUTO_MODE else 'OFF'}\n"
-            f"EMA stake: live broker payout | +$1.00 net per recovery sequence | $33.74 max per trade | +$10 net target per AUTO run | Expiry: {strategy_expiry()} minute(s)\n"
+            f"EMA stake: fixed $1 → $2 → $4 | +$10 net target per AUTO run | Expiry: {strategy_expiry()} minute(s)\n"
             f"AUTO state detail: {AUTO_STOP_REASON}\n"
             f"EMA recovery status: {EMA_MARTINGALE_STATUS}\n"
-            f"EMA confirmed sequence losses: {money(EMA_SEQUENCE_LOSSES)} | Last payout ratio: {EMA_LAST_PAYOUT}\n"
+            f"EMA confirmed sequence losses: {money(EMA_SEQUENCE_LOSSES)}\n"
             f"Market selection: {MARKET_MODE}\n"
             f"Last discovery mode: {LAST_ASSET_DISCOVERY_MODE}\n"
             f"Asset discovery: {LAST_ASSET_DIAGNOSTIC}\n"
@@ -1382,7 +1329,7 @@ def process_telegram_update(update):
                     telegram_send("⏳ Previous AUTO session is still waiting for its broker result/report. Please wait before starting another session.")
                     return
                 AUTO_SESSION_ACCEPTED = 0
-            telegram_send(f"🟢 AUTO MODE ON\nSelected strategy: {strategy_label()}\nPRACTICE verified. EMA uses live payout-adjusted stakes, +$1.00 net per recovery sequence, $33.74 per-trade cap, and +$10 confirmed net target per run.\nSession limit: {MAX_TRADES_PER_AUTO_SESSION} accepted trades. Max concurrent open trades: {MAX_CONCURRENT_TRADES}; one open trade per asset.\nEach START AUTO begins a fresh independent run; a confirmed P/L report is sent when AUTO ends.")
+            telegram_send(f"🟢 AUTO MODE ON\nSelected strategy: {strategy_label()}\nPRACTICE verified. EMA uses fixed $1 → $2 → $4 martingale stakes and a +$10 confirmed net target per run.\nSession limit: {MAX_TRADES_PER_AUTO_SESSION} accepted trades. Max concurrent open trades: {MAX_CONCURRENT_TRADES}; one open trade per asset.\nEach START AUTO begins a fresh independent run; a confirmed P/L report is sent when AUTO ends.")
     elif command in ("/STOP", "STOP AUTO"):
         set_auto(False, "Stopped manually")
         telegram_send("🔴 AUTO MODE OFF. Pending signals were cleared; no queued setup will replay after a restart.")
