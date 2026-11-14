@@ -831,6 +831,21 @@ def scan_indicator_market(manual, auto_eligible, strategy, generation, auto_gene
         LAST_SCAN_SCANNED, LAST_SCAN_TOTAL = scanned, total
         LAST_SCAN_TIMED_OUT, LAST_SCAN_ERROR = timed_out, error_text
         LAST_REJECTIONS = dict(sorted(rejected.items(), key=lambda item: item[1], reverse=True)[:8])
+        if strategy == "E":
+            try:
+                EMA_TRADE_HISTORY.record_scan_summary(
+                    assets_available=total,
+                    assets_attempted=attempted,
+                    assets_scanned=scanned,
+                    valid_candidates=len(results),
+                    rejections=rejected,
+                    auto_mode=AUTO_MODE,
+                    manual_scan=manual,
+                    timed_out=timed_out,
+                    error=error_text,
+                )
+            except Exception:
+                logging.exception("Could not write EMA scan audit CSV.")
         logging.info("%s scan finished: scanned=%d/%d candidates=%d timeout=%s error=%s",
                      strategy, scanned, total, len(results), timed_out, error_text or "none")
         if manual and not results and strategy == ACTIVE_STRATEGY and generation == STRATEGY_GENERATION:

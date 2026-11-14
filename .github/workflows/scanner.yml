@@ -190,11 +190,15 @@ jobs:
         run: |
           python scanner.py
 
-      - name: Upload EMA trade history
-        if: always()
+      - name: Upload EMA account audit CSVs
+        # Account performance files are private financial information.
+        # Do not publish these artifacts while this repository is public.
+        if: always() && github.event.repository.private == true
         uses: actions/upload-artifact@v4
         with:
-          name: ema-trade-history-${{ github.run_id }}
-          path: ema_trade_history.csv
+          name: ema-account-audit-${{ github.run_id }}
+          path: |
+            ema_trade_history.csv
+            ema_scan_audit.csv
           if-no-files-found: ignore
           retention-days: 90

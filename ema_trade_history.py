@@ -102,6 +102,48 @@ class EmaTradeHistory:
                 writer.writerow(row)
         return True
 
+    def record_scan_summary(self, assets_available, assets_attempted, assets_scanned,
+                            valid_candidates, rejections, auto_mode, manual_scan,
+                            timed_out=False, error=""):
+        """Append one row per EMA rejection reason for transparent scan diagnostics."""
+        scan_time = datetime.now(timezone.utc).isoformat()
+        session_id = f"{os.getenv('GITHUB_RUN_ID', 'local')}-{os.getenv('GITHUB_RUN_ATTEMPT', '1')}"
+        common = {
+            "scan_time_utc": scan_time,
+            "session_id": session_id,
+            "strategy": "E",
+            "market_mode": str(os.getenv("EMA_AUDIT_MARKET_MODE", "")),
+            "auto_mode": bool(auto_mode),
+            "manual_scan": bool(manual_scan),
+            "assets_available": int(assets_available),
+            "assets_attempted": int(assets_attempted),
+            "assets_scanned": int(assets_scanned),
+            "valid_candidates": int(valid_candidates),
+            "timed_out": bool(timed_out),
+            "error": str(error or "")[:240],
+        }
+        reasons = list((rejections or {}).items()) or [("NONE", 0)]
+        with self.lock:
+            path = self.path.with_name("ema_scan_audit.csv")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            exists = path.exists() and path.stat().st_size > 0
+            with path.open("a", newline="", encoding="utf-8") as handle:
+                fields = (
+                    "scan_time_utc", "session_id", "strategy", "market_mode",
+                    "auto_mode", "manual_scan", "assets_available",
+                    "assets_attempted", "assets_scanned", "valid_candidates",
+                    "rejection_reason", "rejection_count", "timed_out", "error",
+                )
+                writer = csv.DictWriter(handle, fieldnames=fields)
+                if not exists:
+                    writer.writeheader()
+                for reason, count in reasons:
+                    row = dict(common)
+                    row["rejection_reason"] = str(reason)
+                    row["rejection_count"] = int(count)
+                    writer.writerow(row)
+        return True
+
     def record_result(self, order_id, outcome, net_profit=None, balance_after=None):
         wanted = str(order_id)
         with self.lock:
