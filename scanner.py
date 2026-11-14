@@ -42,7 +42,7 @@ HEARTBEAT_SECONDS, REQUEST_TIMEOUT = 300, 15
 MAX_SYMBOLS_PER_SCAN, TOP_SIGNALS, PROGRESS_EVERY = 40, 3, 10
 MAX_SIGNAL_AGE_SECONDS, ORDER_REQUEST_TIMEOUT = 90, 12
 MAX_CONCURRENT_TRADES = 3
-MAX_TRADES_PER_AUTO_SESSION = 20
+MAX_TRADES_PER_AUTO_SESSION = 50
 MARKET_MODE = "BOTH"
 STRATEGY_SETTINGS = {
     "B": {"name": "Breakout & Retest", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 60},
@@ -877,8 +877,8 @@ def execute_signal(signal):
         return False
     martingale_followup = bool(signal.get("_martingale_followup")) and strategy == "E"
     if AUTO_SESSION_ACCEPTED >= MAX_TRADES_PER_AUTO_SESSION and not martingale_followup:
-        set_auto(False, "20 accepted trades reached; no active EMA sequence remains")
-        telegram_send("🛑 AUTO MODE OFF — 20 accepted PRACTICE trades reached. No new trade sequence will start.")
+        set_auto(False, "50 accepted trades reached; no active EMA sequence remains")
+        telegram_send("🛑 AUTO MODE OFF — 50 accepted PRACTICE trades reached. No new trade sequence will start.")
         return False
     if not practice_mode_verified():
         set_auto(False, "PRACTICE mode could not be verified")
@@ -1134,7 +1134,7 @@ def execute_signal(signal):
             telegram_send(f"✅ EMA {outcome}\nOrder {order_id} closed with net {money(net_profit)}. Recovery sequence reset.")
         if AUTO_SESSION_ACCEPTED >= MAX_TRADES_PER_AUTO_SESSION:
             set_auto(False, "session cap reached and the active EMA sequence has finished")
-            telegram_send("🛑 AUTO MODE OFF — the 20-trade session cap was reached and the active EMA martingale sequence has now finished. No new sequence will start.")
+            telegram_send("🛑 AUTO MODE OFF — the 50-trade session cap was reached and the active EMA martingale sequence has now finished. No new sequence will start.")
     return True
 
 
