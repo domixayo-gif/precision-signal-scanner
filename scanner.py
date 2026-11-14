@@ -914,6 +914,7 @@ def execute_signal(signal):
                 telegram_send("🛑 EMA MARTINGALE PAUSED — the next same-direction step was blocked by the open-trade safety limit. AUTO is OFF; no new $1 sequence will start.")
             return False
     client = IQ
+    available_balance = None
     if strategy == "E":
         try:
             available_balance = safe_float(client.get_balance(), 0.0)
@@ -1045,6 +1046,18 @@ def execute_signal(signal):
                 EMA_TRADE_HISTORY.record_accepted(
                     order_id, asset, direction, order_stake, current_payout,
                     accepted_at, expiry_minutes, martingale_step,
+                    {
+                        "session_id": f"{os.getenv('GITHUB_RUN_ID', 'local')}-{auto_generation}",
+                        "strategy": strategy,
+                        "market_mode": MARKET_MODE,
+                        "balance_before": available_balance,
+                        "candle_time": candle_time,
+                        "price": signal.get("price"),
+                        "ema20": signal.get("ema20"),
+                        "ema50": signal.get("ema50"),
+                        "rsi14": signal.get("rsi14"),
+                        "adx14": signal.get("adx14"),
+                    },
                 )
             except Exception:
                 logging.exception("Could not write accepted EMA trade to CSV history.")
@@ -1090,10 +1103,16 @@ def execute_signal(signal):
             send_session_report_if_ready()
             return True
         outcome = classify_profit(net_profit)
+        try:
+            balance_after = float(client.get_balance())
+        except Exception:
+            balance_after = None
         with STATE_LOCK:
             SESSION_LEDGER.record_result(order_id, net_profit)
             try:
-                EMA_TRADE_HISTORY.record_result(order_id, outcome, net_profit)
+                EMA_TRADE_HISTORY.record_result(
+                    order_id, outcome, net_profit, balance_after=balance_after
+                )
             except Exception:
                 logging.exception("Could not update EMA CSV history with broker result.")
             if outcome == "LOSS":

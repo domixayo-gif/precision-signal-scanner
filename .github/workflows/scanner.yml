@@ -197,4 +197,4 @@ jobs:
           name: ema-trade-history-${{ github.run_id }}
           path: ema_trade_history.csv
           if-no-files-found: ignore
-          retention-days: 30
+          retention-days: 90
