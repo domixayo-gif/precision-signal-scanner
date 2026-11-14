@@ -190,15 +190,12 @@ jobs:
         run: |
           python scanner.py
 
-      - name: Upload EMA account audit CSVs
-        # Account performance files are private financial information.
-        # Do not publish these artifacts while this repository is public.
-        if: always() && github.event.repository.private == true
-        uses: actions/upload-artifact@v4
-        with:
-          name: ema-account-audit-${{ github.run_id }}
-          path: |
-            ema_trade_history.csv
-            ema_scan_audit.csv
-          if-no-files-found: ignore
-          retention-days: 90
+      - name: Upload EMA audit CSVs to private Google Drive
+        if: always() && github.event_name != 'pull_request'
+        env:
+          GDRIVE_WEB_APP_URL: ${{ secrets.GDRIVE_WEB_APP_URL }}
+          GDRIVE_UPLOAD_TOKEN: ${{ secrets.GDRIVE_UPLOAD_TOKEN }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python google_drive_upload.py
