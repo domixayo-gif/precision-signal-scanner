@@ -104,15 +104,14 @@ class EmaTradeHistory:
 
     def record_scan_summary(self, assets_available, assets_attempted, assets_scanned,
                             valid_candidates, rejections, auto_mode, manual_scan,
-                            timed_out=False, error=""):
+                            session_id="", market_mode="", timed_out=False, error=""):
         """Append one row per EMA rejection reason for transparent scan diagnostics."""
         scan_time = datetime.now(timezone.utc).isoformat()
-        session_id = f"{os.getenv('GITHUB_RUN_ID', 'local')}-{os.getenv('GITHUB_RUN_ATTEMPT', '1')}"
         common = {
             "scan_time_utc": scan_time,
             "session_id": session_id,
             "strategy": "E",
-            "market_mode": str(os.getenv("EMA_AUDIT_MARKET_MODE", "")),
+            "market_mode": str(market_mode),
             "auto_mode": bool(auto_mode),
             "manual_scan": bool(manual_scan),
             "assets_available": int(assets_available),

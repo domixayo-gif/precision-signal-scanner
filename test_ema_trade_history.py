@@ -63,6 +63,27 @@ class EmaTradeHistoryTests(unittest.TestCase):
             self.assertEqual(row["net_profit"], "")
             self.assertEqual(row["balance_after"], "")
 
+    def test_scan_summary_records_each_rejection_reason(self):
+        with tempfile.TemporaryDirectory() as directory:
+            history = EmaTradeHistory(Path(directory) / "ema_trade_history.csv")
+            history.record_scan_summary(
+                assets_available=40, assets_attempted=20, assets_scanned=18,
+                valid_candidates=2,
+                rejections={"ADX below or equal to 20": 10, "candle timeout": 2},
+                auto_mode=True, manual_scan=False,
+                session_id="run-123-4", market_mode="BOTH",
+            )
+            path = Path(directory) / "ema_scan_audit.csv"
+            with path.open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]["session_id"], "run-123-4")
+            self.assertEqual(rows[0]["market_mode"], "BOTH")
+            self.assertEqual(rows[0]["assets_scanned"], "18")
+            self.assertEqual(rows[0]["rejection_reason"], "ADX below or equal to 20")
+            self.assertEqual(rows[0]["rejection_count"], "10")
+            self.assertEqual(rows[1]["rejection_reason"], "candle timeout")
+
     def test_unknown_order_result_does_not_create_a_row(self):
         with tempfile.TemporaryDirectory() as directory:
             history = EmaTradeHistory(Path(directory) / "ema_trade_history.csv")

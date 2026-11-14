@@ -841,6 +841,8 @@ def scan_indicator_market(manual, auto_eligible, strategy, generation, auto_gene
                     rejections=rejected,
                     auto_mode=AUTO_MODE,
                     manual_scan=manual,
+                    session_id=f"{os.getenv('GITHUB_RUN_ID', 'local')}-{auto_generation if auto_generation is not None else AUTO_SESSION_GENERATION}",
+                    market_mode=MARKET_MODE,
                     timed_out=timed_out,
                     error=error_text,
                 )
