@@ -47,7 +47,7 @@ MARKET_MODE = "BOTH"
 STRATEGY_SETTINGS = {
     "B": {"name": "Breakout & Retest", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 60},
     "M": {"name": "Momentum 10", "expiry_minutes": 1, "scan_interval_seconds": 60, "lookback": 50},
-    "E": {"name": "EMA 20/50 + ADX 14 + RSI 14", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 80},
+    "E": {"name": "EMA Precision Pullback — EMA20/50 + ADX/DI + CHOP25/ATR + 5m trend", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 300},
     "F": {"name": "Precision Fusion X — Strict Confluence", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 80},
 }
 ACTIVE_STRATEGY = "B"
@@ -775,7 +775,17 @@ def scan_indicator_market(manual, auto_eligible, strategy, generation, auto_gene
             if strategy == "M":
                 signal, reason = calculate_momentum_signal(asset, closed, CANDLE_SECONDS)
             elif strategy == "E":
-                signal, reason = calculate_ema_signal(asset, closed, CANDLE_SECONDS)
+                # EMA Precision requires 260 closed 1-minute candles plus
+                # 80 closed 5-minute candles for higher-timeframe alignment.
+                trend_candles = fetch_candles(asset, timeframe=300, count=80)
+                if trend_candles is None:
+                    signal, reason = None, "5-minute EMA trend candle request timed out"
+                else:
+                    closed_trend = [c for c in trend_candles
+                                    if int(c.get("from") or 0) + 300 <= now]
+                    signal, reason = calculate_ema_signal(
+                        asset, closed, CANDLE_SECONDS, closed_trend
+                    )
             else:
                 trend_candles = fetch_candles(asset, timeframe=300, count=80)
                 if trend_candles is None:
