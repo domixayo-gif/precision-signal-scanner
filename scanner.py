@@ -50,7 +50,7 @@ STRATEGY_SETTINGS = {
     "E": {"name": "EMA Precision Pullback — EMA20/50 + ADX/DI + CHOP25/ATR + 5m trend", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 300},
     "F": {"name": "Precision Fusion X — Strict Confluence", "expiry_minutes": 2, "scan_interval_seconds": 30, "lookback": 80},
 }
-ACTIVE_STRATEGY = "B"
+ACTIVE_STRATEGY = "E"
 STRATEGY_GENERATION = 0
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 GITHUB_REPOSITORY = os.getenv("GITHUB_REPOSITORY", "")
